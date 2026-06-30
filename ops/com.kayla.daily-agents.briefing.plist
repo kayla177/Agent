@@ -1,0 +1,39 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.kayla.daily-agents.briefing</string>
+
+    <!-- Run: uv run python scripts/run_briefing.py --send  -->
+    <key>ProgramArguments</key>
+    <array>
+        <string>/Users/kayla.li/.local/bin/uv</string>
+        <string>run</string>
+        <string>python</string>
+        <string>scripts/run_briefing.py</string>
+        <string>--send</string>
+    </array>
+
+    <key>WorkingDirectory</key>
+    <string>/Users/kayla.li/dev/daily-agents</string>
+
+    <!-- Fire at 07:00 local time every day. -->
+    <key>StartCalendarInterval</key>
+    <dict>
+        <key>Hour</key>
+        <integer>7</integer>
+        <key>Minute</key>
+        <integer>0</integer>
+    </dict>
+
+    <key>StandardOutPath</key>
+    <string>/Users/kayla.li/dev/daily-agents/briefing.log</string>
+    <key>StandardErrorPath</key>
+    <string>/Users/kayla.li/dev/daily-agents/briefing.error.log</string>
+
+    <key>RunAtLoad</key>
+    <false/>
+</dict>
+</plist>

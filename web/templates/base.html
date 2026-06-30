@@ -1,0 +1,25 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>{% block title %}daily-agents{% endblock %}</title>
+  <link rel="stylesheet" href="/static/app.css" />
+  <script src="/static/htmx.min.js" defer></script>
+</head>
+<body>
+  <header class="topbar">
+    <a class="brand" href="/">🤖 daily-agents</a>
+    <nav>
+      <a href="/" class="{% if active == 'dashboard' %}on{% endif %}">Dashboard</a>
+      <a href="/applications" class="{% if active == 'applications' %}on{% endif %}">Applications</a>
+      <a href="/history" class="{% if active == 'history' %}on{% endif %}">History</a>
+      <a href="/settings" class="{% if active == 'settings' %}on{% endif %}">Settings</a>
+    </nav>
+  </header>
+  <main class="container">
+    {% block content %}{% endblock %}
+  </main>
+  {% block scripts %}{% endblock %}
+</body>
+</html>

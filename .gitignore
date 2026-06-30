@@ -1,0 +1,23 @@
+# Python-generated files
+__pycache__/
+*.py[oc]
+build/
+dist/
+wheels/
+*.egg-info
+
+# Virtual environments
+.venv
+
+# Secrets & local credentials — NEVER commit
+.env
+*.key
+google_oauth_client.json
+google_token.json
+
+# Runtime logs and per-agent local state
+*.log
+agents/job_scraper/data/
+
+# Web control-center local state (SQLite DB + prefs overlay)
+data/

@@ -1,0 +1,23 @@
+[project]
+name = "daily-agents"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "apscheduler>=3.11.3",
+    "discord-py>=2.7.1",
+    "fastapi>=0.115",
+    "google-api-python-client>=2.198.0",
+    "google-auth-httplib2>=0.4.0",
+    "google-auth-oauthlib>=1.4.0",
+    "httpx>=0.28.1",
+    "jinja2>=3.1",
+    "langgraph>=1.2.7",
+    "linkify-it-py>=2.0",
+    "litellm>=1.90.1",
+    "markdown-it-py>=3.0",
+    "python-dotenv>=1.2.2",
+    "python-multipart>=0.0.9",
+    "uvicorn[standard]>=0.30",
+]

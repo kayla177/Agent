@@ -1,0 +1,72 @@
+{% extends "base.html" %}
+{% set active = "dashboard" %}
+{% block title %}Dashboard · daily-agents{% endblock %}
+{% block content %}
+<div class="hero">
+  <div id="hero-mountains"></div>
+  <div id="tree-canvas"></div>
+  <div class="hero-overlay">
+    <h1>Good day, Kayla</h1>
+    <p>Your agents at a glance.</p>
+  </div>
+</div>
+
+<h2>Agents</h2>
+<div class="cards">
+  {% for spec in specs %}
+  <div class="card">
+    <div class="emoji">{{ spec.emoji }}</div>
+    <h3>{{ spec.display_name }}</h3>
+    <p>{{ spec.description }}</p>
+    <div class="card-actions">
+      <form class="inline" method="post" action="/agents/{{ spec.key }}/run">
+        <input type="hidden" name="send" value="0" />
+        <button type="submit" class="primary">▶ Preview</button>
+      </form>
+      <form class="inline" method="post" action="/agents/{{ spec.key }}/run"
+            onsubmit="return confirm('Run {{ spec.display_name }} and deliver to Discord?');">
+        <input type="hidden" name="send" value="1" />
+        <button type="submit">Run &amp; send</button>
+      </form>
+    </div>
+  </div>
+  {% endfor %}
+</div>
+
+<h2>Snapshot</h2>
+<div class="chart-grid">
+  <div class="chart-card">
+    <h3>📋 Application pipeline</h3>
+    <div id="chart-applications"></div>
+  </div>
+  <div class="chart-card">
+    <h3>📈 Watchlist today</h3>
+    <div id="chart-stocks"></div>
+  </div>
+</div>
+
+<h2>Recent runs</h2>
+{% if recent %}
+<table>
+  <thead><tr><th>Agent</th><th>Status</th><th>Started (UTC)</th><th>Mode</th></tr></thead>
+  <tbody>
+    {% for r in recent %}
+    <tr onclick="location='/runs/{{ r.id }}'" style="cursor:pointer">
+      <td><a href="/runs/{{ r.id }}">{{ r.agent_key }}</a></td>
+      <td><span class="badge {{ r.status }}">{{ r.status }}</span></td>
+      <td class="muted">{{ r.started_at }}</td>
+      <td class="muted">{{ "send" if r.send else "preview" }}</td>
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+{% else %}
+<p class="muted">No runs yet — trigger an agent above.</p>
+{% endif %}
+{% endblock %}
+{% block scripts %}
+<script src="/static/p5.min.js"></script>
+<script src="/static/tree.js" defer></script>
+<script src="/static/apexcharts.min.js"></script>
+<script src="/static/charts.js" defer></script>
+{% endblock %}

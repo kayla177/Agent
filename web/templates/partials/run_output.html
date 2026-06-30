@@ -1,0 +1,7 @@
+{% if missing %}
+<div class="output empty">Run not found.</div>
+{% elif message %}
+<div class="output">{{ md(message) | safe }}</div>
+{% else %}
+<div class="output empty">No output yet.</div>
+{% endif %}

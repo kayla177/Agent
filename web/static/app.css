@@ -1,0 +1,242 @@
+/* daily-agents — "eco analytics" theme.
+   Neutral dark-slate canvas (cool, near-black), sage + warm-copper accents,
+   thin/airy sans typography, restrained panels. Mirrors the reference dashboards:
+   premium and data-led, with a green gradient "mountains" band as the hero. */
+:root {
+  --bg: #161d22;          /* dark cool slate, only faintly blue-green */
+  --bg-deep: #11171b;
+  --panel: #1b242a;
+  --panel-2: #212c33;
+  --border: #2c3940;
+  --border-soft: #283239;
+  --text: #dde3e2;        /* soft cool off-white */
+  --muted: #8a958f;       /* cool gray */
+
+  --leaf: #a8c47e;        /* sage / olive green accent */
+  --leaf-deep: #7fa157;
+  --bark: #c89a6a;        /* warm copper / tan */
+  --bark-deep: #a87c4f;
+  --mint: #c9e0c4;
+  --cream: #e7dccf;
+
+  --accent: var(--leaf);
+  --green: #93bd6f;
+  --red: #d98b73;         /* muted clay */
+  --amber: #d8b074;
+
+  --radius: 14px;
+  --shadow: 0 1px 2px rgba(0,0,0,.3), 0 12px 32px rgba(0,0,0,.32);
+  --sans: ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+}
+
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  min-height: 100vh;
+  color: var(--text);
+  font: 14.5px/1.6 var(--sans);
+  font-weight: 400;
+  letter-spacing: 0.1px;
+  background:
+    radial-gradient(1200px 700px at 50% -20%, rgba(120,150,110,.06), transparent 60%),
+    var(--bg);
+  background-attachment: fixed;
+}
+
+a { color: var(--leaf); text-decoration: none; }
+a:hover { text-decoration: underline; }
+
+/* Top bar */
+.topbar {
+  display: flex;
+  align-items: center;
+  gap: 1.75rem;
+  padding: 0.85rem 1.5rem;
+  background: rgba(20, 27, 31, 0.78);
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
+  border-bottom: 1px solid var(--border-soft);
+  position: sticky;
+  top: 0;
+  z-index: 10;
+}
+.brand {
+  font-weight: 500;
+  font-size: 1.05rem;
+  letter-spacing: 0.3px;
+  color: var(--text);
+}
+.brand:hover { text-decoration: none; }
+.topbar nav { display: flex; gap: 1.4rem; }
+.topbar nav a { color: var(--muted); font-size: 0.9rem; padding-bottom: 2px; border-bottom: 2px solid transparent; }
+.topbar nav a:hover { color: var(--text); text-decoration: none; }
+.topbar nav a.on { color: var(--leaf); border-bottom-color: var(--leaf); }
+
+.container { max-width: 1000px; margin: 2rem auto; padding: 0 1.5rem; }
+
+h1 { font-weight: 400; font-size: 1.55rem; letter-spacing: 0.3px; margin: 0 0 1.25rem; }
+h2 {
+  font-weight: 600;
+  font-size: 0.82rem;
+  text-transform: uppercase;
+  letter-spacing: 1.4px;
+  color: var(--muted);
+  margin: 2rem 0 0.9rem;
+}
+
+/* Agent cards */
+.cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(270px, 1fr)); gap: 1.1rem; }
+.card {
+  position: relative;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 1.3rem 1.35rem;
+  box-shadow: var(--shadow);
+  overflow: hidden;
+  transition: transform .15s ease, border-color .15s ease, box-shadow .15s ease;
+}
+.card:hover { transform: translateY(-2px); border-color: var(--leaf-deep); box-shadow: 0 16px 36px rgba(0,0,0,.36); }
+.card .emoji { font-size: 1.9rem; opacity: .95; }
+.card h3 { margin: 0.5rem 0 0.3rem; font-size: 1.05rem; font-weight: 500; letter-spacing: 0.2px; }
+.card p { color: var(--muted); margin: 0 0 1.2rem; font-size: 0.88rem; }
+.card-actions { display: flex; gap: 0.5rem; }
+
+/* Buttons */
+button, .btn {
+  font: inherit;
+  cursor: pointer;
+  border: 1px solid var(--border);
+  background: var(--panel-2);
+  color: var(--text);
+  padding: 0.5rem 0.95rem;
+  border-radius: 10px;
+  transition: border-color .15s ease, background .15s ease, transform .1s ease;
+}
+button:hover, .btn:hover { border-color: var(--leaf); text-decoration: none; }
+button:active, .btn:active { transform: translateY(1px); }
+button.primary, .btn.primary {
+  background: linear-gradient(180deg, var(--leaf), var(--leaf-deep));
+  color: #0c1a0d;
+  border-color: var(--leaf-deep);
+  font-weight: 600;
+}
+button.primary:hover, .btn.primary:hover { filter: brightness(1.06); border-color: var(--leaf); }
+form.inline { display: inline-flex; gap: 0.35rem; align-items: center; margin: 0; }
+
+/* Tables */
+table { width: 100%; border-collapse: collapse; }
+th, td { text-align: left; padding: 0.65rem 0.7rem; border-bottom: 1px solid var(--border-soft); }
+th { color: var(--muted); font-weight: 600; font-size: 0.82rem; text-transform: uppercase; letter-spacing: 0.4px; }
+tr:hover td { background: rgba(158, 199, 125, 0.05); }
+
+/* Status badges */
+.badge { display: inline-block; padding: 0.12rem 0.6rem; border-radius: 999px; font-size: 0.78rem; font-weight: 600; }
+.badge.running { background: rgba(200,154,106,0.16); color: var(--bark); }
+.badge.success { background: rgba(134,185,106,0.18); color: var(--green); }
+.badge.error   { background: rgba(216,131,109,0.16); color: var(--red); }
+
+.muted { color: var(--muted); }
+.row-between { display: flex; align-items: center; justify-content: space-between; gap: 1rem; }
+
+/* Node execution log */
+.node-log {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 0.9rem 1.1rem;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 0.9rem;
+  box-shadow: var(--shadow);
+}
+.node-line { display: flex; align-items: center; gap: 0.6rem; padding: 0.2rem 0; }
+.node-line .ico { width: 1.3rem; text-align: center; color: var(--leaf); }
+.node-line.start .name { color: var(--muted); }
+.node-line.finish .name { color: var(--text); }
+.node-line.error .ico, .node-line.error .name { color: var(--red); }
+.spinner { animation: spin 1s linear infinite; display: inline-block; color: var(--bark); }
+@keyframes spin { to { transform: rotate(360deg); } }
+
+/* Rendered output */
+.output {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 1.1rem 1.4rem;
+  margin-top: 1rem;
+  box-shadow: var(--shadow);
+}
+.output h1, .output h2, .output h3 { font-weight: 600; font-size: 1.05rem; text-transform: none; letter-spacing: 0; color: var(--text); margin: 0.7rem 0 0.35rem; }
+.output p { margin: 0.45rem 0; }
+.output a { color: var(--leaf); word-break: break-all; }
+.output.empty { color: var(--muted); font-style: italic; }
+
+/* Forms */
+.form-grid { display: grid; grid-template-columns: 210px 1fr; gap: 0.95rem 1.1rem; align-items: start; max-width: 760px; }
+.form-grid label { color: var(--muted); padding-top: 0.45rem; }
+input[type=text], input[type=number], input[type=date], input[type=url], input[type=email], select, textarea {
+  width: 100%;
+  background: var(--bg-deep);
+  border: 1px solid var(--border);
+  color: var(--text);
+  border-radius: 10px;
+  padding: 0.5rem 0.65rem;
+  font: inherit;
+  transition: border-color .15s ease, box-shadow .15s ease;
+}
+input:focus, select:focus, textarea:focus {
+  outline: none;
+  border-color: var(--leaf-deep);
+  box-shadow: 0 0 0 3px rgba(158,199,125,0.14);
+}
+textarea { min-height: 5rem; resize: vertical; font-family: ui-monospace, Menlo, monospace; font-size: 0.88rem; }
+.hint { color: var(--muted); font-size: 0.82rem; margin-top: 0.25rem; }
+
+.banner { padding: 0.65rem 0.95rem; border-radius: 10px; margin-bottom: 1.25rem; border: 1px solid transparent; }
+.banner.ok { background: rgba(134,185,106,0.12); color: var(--green); border-color: rgba(134,185,106,0.3); }
+.banner.err { background: rgba(216,131,109,0.12); color: var(--red); border-color: rgba(216,131,109,0.3); }
+
+.secrets { display: grid; grid-template-columns: 1fr auto; gap: 0.4rem 1rem; max-width: 440px; }
+.secrets .ok { color: var(--green); }
+.secrets .no { color: var(--amber); }
+
+/* --- Application tracker --- */
+.pill { display: inline-block; padding: 0.12rem 0.65rem; border-radius: 999px; font-size: 0.78rem; font-weight: 600; text-transform: capitalize; }
+.pill.applied   { background: rgba(200,154,106,0.16); color: var(--bark); }
+.pill.interview { background: rgba(216,173,106,0.18); color: var(--amber); }
+.pill.offer,
+.pill.accepted  { background: rgba(134,185,106,0.18); color: var(--green); }
+.pill.rejected  { background: rgba(216,131,109,0.16); color: var(--red); }
+
+button.danger { color: var(--red); background: transparent; border: 1px solid var(--border); border-radius: 8px; cursor: pointer; padding: 0.25rem 0.55rem; }
+button.danger:hover { background: rgba(216,131,109,0.12); border-color: var(--red); }
+table.apps td { vertical-align: middle; }
+
+/* --- Tree hero: tree canvas layered over a green gradient "mountains" chart --- */
+.hero {
+  position: relative;
+  margin-bottom: 2rem;
+  height: 320px;
+  border-radius: var(--radius);
+  overflow: hidden;
+  background: var(--panel);
+  border: 1px solid var(--border);
+}
+#hero-mountains { position: absolute; left: 0; right: 0; bottom: 0; height: 100%; }
+#tree-canvas { position: absolute; left: 0; right: 0; bottom: -4px; display: block; width: 100%; }
+.hero-overlay { position: absolute; top: 1.1rem; left: 1.4rem; pointer-events: none; }
+.hero-overlay h1 { margin: 0; font-size: 1.5rem; }
+.hero-overlay p { color: var(--muted); margin: 0.25rem 0 0; font-size: 0.92rem; }
+
+/* --- Chart cards --- */
+.chart-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 1.1rem; }
+.chart-card {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 1.1rem 1.25rem;
+  box-shadow: var(--shadow);
+}
+.chart-card h3 { margin: 0 0 0.5rem; font-weight: 600; font-size: 0.82rem; text-transform: uppercase; letter-spacing: 1.2px; color: var(--muted); }
+@media (max-width: 760px) { .chart-grid { grid-template-columns: 1fr; } }
