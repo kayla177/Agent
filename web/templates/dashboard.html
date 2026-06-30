@@ -4,7 +4,7 @@
 {% block content %}
 <div class="hero">
   <div id="hero-mountains"></div>
-  <div id="tree-canvas"></div>
+  <div id="tree3d"></div>
   <div class="hero-overlay">
     <h1>Good day, Kayla</h1>
     <p>Your agents at a glance.</p>
@@ -65,8 +65,15 @@
 {% endif %}
 {% endblock %}
 {% block scripts %}
-<script src="/static/p5.min.js"></script>
-<script src="/static/tree.js" defer></script>
 <script src="/static/apexcharts.min.js"></script>
 <script src="/static/charts.js" defer></script>
+<script type="importmap">
+{
+  "imports": {
+    "three": "/static/three.module.js",
+    "@dgreenheck/ez-tree": "/static/ez-tree.es.js"
+  }
+}
+</script>
+<script type="module" src="/static/hero3d.js"></script>
 {% endblock %}

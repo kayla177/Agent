@@ -224,7 +224,8 @@ table.apps td { vertical-align: middle; }
   border: 1px solid var(--border);
 }
 #hero-mountains { position: absolute; left: 0; right: 0; bottom: 0; height: 100%; }
-#tree-canvas { position: absolute; left: 0; right: 0; bottom: -4px; display: block; width: 100%; }
+#tree3d { position: absolute; left: 0; right: 0; top: 0; bottom: 0; }
+#tree3d canvas { display: block; width: 100% !important; height: 100% !important; }
 .hero-overlay { position: absolute; top: 1.1rem; left: 1.4rem; pointer-events: none; }
 .hero-overlay h1 { margin: 0; font-size: 1.5rem; }
 .hero-overlay p { color: var(--muted); margin: 0.25rem 0 0; font-size: 0.92rem; }
