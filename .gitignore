@@ -21,3 +21,13 @@ agents/job_scraper/data/
 
 # Web control-center local state (SQLite DB + prefs overlay)
 data/
+
+# OS / editor cruft
+.DS_Store
+.vscode/
+.idea/
+*.swp
+*~
+
+# Playwright MCP screenshot dumps
+.playwright-mcp/
