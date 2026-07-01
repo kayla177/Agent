@@ -375,11 +375,23 @@ textarea { min-height: 5rem; resize: vertical; font-family: ui-monospace, Menlo,
 .pill.interview { background: rgba(224,177,90,0.18);   color: var(--amber); }
 .pill.offer,
 .pill.accepted  { background: rgba(127,192,138,0.18);  color: var(--green); }
-.pill.rejected  { background: rgba(224,112,90,0.16);   color: var(--red); }
+.pill.rejected,
+.pill.dismissed { background: rgba(224,112,90,0.16);   color: var(--red); }
+.pill.new       { background: rgba(74,144,255,0.16);   color: #7fb0ff; }
+.pill.viewed    { background: rgba(139,147,166,0.16);  color: var(--muted); }
 
 button.danger { color: var(--red); background: transparent; border: 1px solid var(--border); border-radius: 999px; cursor: pointer; padding: 0.25rem 0.6rem; }
 button.danger:hover { background: rgba(224,112,90,0.12); border-color: var(--red); }
 table.apps td { vertical-align: middle; }
+
+/* ---------- Jobs view ---------- */
+.filters { display: flex; flex-wrap: wrap; gap: 1rem; align-items: center; margin: 1rem 0 1.5rem; }
+.filters label { color: var(--muted); font-size: 0.85rem; display: inline-flex; gap: 0.4rem; align-items: center; }
+.filters label.check { cursor: pointer; }
+.fit { font-weight: 700; color: var(--green); }
+td.actions { white-space: nowrap; }
+td.actions form.inline { margin-right: 0.35rem; }
+table.apps tr.ghost td { opacity: 0.6; }
 
 /* ---------- Chart cards ---------- */
 .chart-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 1.1rem; }
