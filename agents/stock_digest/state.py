@@ -1,8 +1,12 @@
-"""Shared state for the stock-digest graph.
+"""Shared state for the multi-node stock-digest graph.
 
-Each data-gathering node writes to its OWN key so the parallel fan-out nodes
-never write the same key concurrently (LangGraph merges disjoint keys safely).
-`synthesize` reads the section keys and writes `message`; `deliver` reads it.
+Each node writes its OWN top-level key so parallel branches never write the same
+key concurrently (LangGraph merges disjoint keys safely):
+
+  market_data     -> "market"     {"rows": [...], "warnings": [...]}
+  technical        -> "technical"  {"summary": str, "by_symbol": {...}}   (runs after market_data)
+  news_sentiment   -> "news"       {"overall": str, "by_symbol": {...}, "warnings": [...]}
+  synthesize       -> "message"    (final digest; consumed by deliver)
 """
 
 from __future__ import annotations
@@ -11,10 +15,7 @@ from typing import TypedDict
 
 
 class StockDigestState(TypedDict, total=False):
-    # Pre-formatted quote lines, one per ticker (deterministic — numbers never
-    # come from the LLM). Produced by the quotes node.
-    quotes: str
-    # LLM-summarized market-news theme. Produced by the headlines node.
-    headlines: str
-    # Final assembled message produced by synthesize, consumed by deliver.
+    market: dict
+    technical: dict
+    news: dict
     message: str

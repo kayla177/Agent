@@ -58,6 +58,7 @@ def _apply_prefs() -> None:
     global COMMUTE_ORIGIN, COMMUTE_DESTINATION
     global NEWS_TOPICS, NEWS_MAX_ITEMS_PER_TOPIC
     global STOCK_WATCHLIST, STOCK_HEADLINE_TOPICS, JOB_SOURCES
+    global JOB_MAX_AGE_DAYS, JOB_DROP_GHOSTS, JOB_PROFILE, JOB_MIN_FIT
 
     # Weather location (Open-Meteo, no API key). Waterloo, Ontario.
     WEATHER_LATITUDE = float(os.getenv("WEATHER_LATITUDE", _pref("WEATHER_LATITUDE", 43.4643)))
@@ -83,6 +84,18 @@ def _apply_prefs() -> None:
     # Job scraper — list of {company, ats, token} sources (overlay the module
     # defaults in agents/job_scraper/sources.py). Empty -> use module defaults.
     JOB_SOURCES = _pref("JOB_SOURCES", [])
+
+    # Job scraper — freshness / ghost-job controls.
+    #   JOB_MAX_AGE_DAYS: postings older than this are flagged as stale/ghost.
+    #   JOB_DROP_GHOSTS:  when True, drop flagged roles instead of just tagging.
+    JOB_MAX_AGE_DAYS = int(_pref("JOB_MAX_AGE_DAYS", 60))
+    JOB_DROP_GHOSTS = bool(_pref("JOB_DROP_GHOSTS", False))
+
+    # Job scraper — LLM fit-ranking.
+    #   JOB_PROFILE: free-text description of the candidate (drives fit scores).
+    #   JOB_MIN_FIT: drop roles scoring below this (0 = keep everything).
+    JOB_PROFILE = _pref("JOB_PROFILE", "")
+    JOB_MIN_FIT = int(_pref("JOB_MIN_FIT", 0))
 
 
 def refresh() -> None:
@@ -134,3 +147,8 @@ GOOGLE_OAUTH_CLIENT_FILE = PROJECT_ROOT / os.getenv(
 )
 GOOGLE_TOKEN_FILE = PROJECT_ROOT / os.getenv("GOOGLE_TOKEN_FILE", "google_token.json")
 ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY", "")
+
+# Twelve Data (stock digest): free tier at https://twelvedata.com/pricing
+# (800 req/day, 8/min). Optional — without it the digest falls back to keyless
+# CNBC quotes (no price history, so technical indicators show as n/a).
+TWELVE_DATA_API_KEY = os.getenv("TWELVE_DATA_API_KEY", "")
