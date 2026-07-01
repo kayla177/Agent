@@ -1,0 +1,60 @@
+{% extends "base.html" %}
+{% set active = "resume" %}
+{% block title %}Résumé · daily-agents{% endblock %}
+{% block content %}
+<div class="row-between">
+  <h1>📄 Résumé tailor</h1>
+  {% if mode == "smart" %}
+    <span class="pill offer" title="ANTHROPIC_API_KEY is set">⚡ Hosted mode (Claude)</span>
+  {% else %}
+    <span class="pill applied" title="No ANTHROPIC_API_KEY — running fully on your machine">💻 Local mode</span>
+  {% endif %}
+</div>
+
+{% if error %}<div class="banner err">⚠️ {{ error }}</div>{% endif %}
+{% if saved_path %}<div class="banner ok">✓ Draft saved as <code>{{ saved_path }}</code>.</div>{% endif %}
+
+{% if not base.present %}
+  <div class="banner err">No base résumé found. Add one at <code>{{ base.path }}</code>.</div>
+{% elif base.is_placeholder %}
+  <div class="banner err">Using the <strong>placeholder</strong> résumé — replace <code>{{ base.path }}</code> with your real one for useful output.</div>
+{% else %}
+  <p class="muted">Base résumé loaded ({{ base.chars }} chars).</p>
+{% endif %}
+
+<form method="post" action="/resume/tailor">
+  <div class="form-grid">
+    <label>Company</label>
+    <input type="text" name="company" value="{{ form.company }}" placeholder="Stripe" />
+
+    <label>Role</label>
+    <input type="text" name="role" value="{{ form.role }}" placeholder="SWE Intern (Summer 2026)" />
+
+    <label>Job description</label>
+    <div>
+      <textarea name="job_description" style="min-height:11rem" placeholder="Paste the full job posting here…">{{ form.job_description }}</textarea>
+      <div class="hint">Facts come only from your base résumé — nothing is invented.</div>
+    </div>
+
+    <label>Also log to tracker</label>
+    <div><label class="muted"><input type="checkbox" name="log" value="1" style="width:auto" /> add this as an "applied" entry</label></div>
+  </div>
+  <p><button type="submit" class="primary">✨ Tailor résumé + cover letter</button>
+     <span class="hint">Uses the hosted model if <code>ANTHROPIC_API_KEY</code> is set, otherwise the local model.</span></p>
+</form>
+
+{% if result %}
+<h2>Result</h2>
+<div class="output">{{ md(result) | safe }}</div>
+{% endif %}
+
+<h2>Recent drafts</h2>
+{% if drafts %}
+<ul class="muted">
+  {% for d in drafts %}<li><code>{{ d.name }}</code></li>{% endfor %}
+</ul>
+<p class="hint">Saved under <code>data/drafts/</code>.</p>
+{% else %}
+<p class="muted">No drafts yet.</p>
+{% endif %}
+{% endblock %}

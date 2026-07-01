@@ -22,7 +22,7 @@ from fastapi import FastAPI  # noqa: E402
 from fastapi.staticfiles import StaticFiles  # noqa: E402
 
 from web import db  # noqa: E402
-from web.routers import applications, charts, pages, runs, settings  # noqa: E402
+from web.routers import applications, charts, pages, resume, runs, settings  # noqa: E402
 
 app = FastAPI(title="daily-agents control center")
 
@@ -34,6 +34,7 @@ app.include_router(runs.router)
 app.include_router(settings.router)
 app.include_router(applications.router)
 app.include_router(charts.router)
+app.include_router(resume.router)
 
 
 @app.on_event("startup")
