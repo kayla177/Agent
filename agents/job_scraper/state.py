@@ -6,7 +6,14 @@ accumulates per-source failure strings so one bad ATS token never kills the run.
 
 A posting is a normalized dict:
     {"company": str, "ats": str, "title": str, "location": str,
-     "url": str, "id": str}
+     "url": str, "id": str,
+     # enrichment from the ATS adapter (best-effort; "" / None when omitted):
+     "posted_at": str, "updated_at": str, "deadline": str, "remote": bool|None,
+     "department": str, "compensation": str|None, "description": str,
+     # derived downstream by the freshness / dedupe / rank nodes:
+     "age_days": int|None, "ghost": bool, "ghost_reason": str,
+     "canonical_location": str, "dup_of": str|None, "also_on": list[str],
+     "fit_score": int|None, "fit_reason": str}
 where `id` is already prefixed with company+ats to be globally unique.
 """
 
