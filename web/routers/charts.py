@@ -12,6 +12,7 @@ import time
 from fastapi import APIRouter
 
 from agents.application_tracker import store
+from agents.job_scraper import store as jobstore
 
 router = APIRouter()
 
@@ -45,6 +46,32 @@ def applications_chart() -> dict:
         "labels": [s.capitalize() for s in labels],
         "series": [counts[s] for s in labels],
         "colors": [_STATUS_COLORS[s] for s in labels],
+        "total": sum(counts.values()),
+    }
+
+
+_JOB_STATUS_COLORS = {
+    "new": _BLUE,
+    "viewed": _AMBER,
+    "applied": _GREEN,
+    "dismissed": _RED,
+}
+
+
+@router.get("/charts/jobs")
+def jobs_chart() -> dict:
+    """Scraped-role counts per status (donut)."""
+    records = jobstore.load_records().values()
+    counts = {s: 0 for s in jobstore.STATUSES}
+    for r in records:
+        s = r.get("status")
+        if s in counts:
+            counts[s] += 1
+    labels = [s for s in jobstore.STATUSES if counts[s] > 0]
+    return {
+        "labels": [s.capitalize() for s in labels],
+        "series": [counts[s] for s in labels],
+        "colors": [_JOB_STATUS_COLORS[s] for s in labels],
         "total": sum(counts.values()),
     }
 

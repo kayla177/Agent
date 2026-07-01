@@ -5,7 +5,7 @@ HOW TO USE YOUR OWN COMPANIES
 ============================================================================
 Replace the entries in SOURCES below with the companies YOU care about. Each
 entry is a dict: {"company": <display name>, "ats": <"greenhouse"|"lever"|
-"ashby">, "token": <the board token>}.
+"ashby"|"smartrecruiters"|"workable"|"workday">, "token": <the board token>}.
 
 How to find a company's ATS and token:
   - Visit the company's careers page and look at the job-listing URL.
@@ -19,6 +19,16 @@ How to find a company's ATS and token:
   - ASHBY: URL looks like  jobs.ashbyhq.com/<token> . The <token> is that
     slug and is CASE-SENSITIVE (e.g. "Ramp", not "ramp").
     Verify:  https://api.ashbyhq.com/posting-api/job-board/<token>
+  - SMARTRECRUITERS: URL looks like  jobs.smartrecruiters.com/<token> . The
+    <token> is the company identifier (e.g. "McDonaldsCorporation").
+    Verify:  https://api.smartrecruiters.com/v1/companies/<token>/postings
+  - WORKABLE: URL looks like  apply.workable.com/<token> . The <token> is the
+    account subdomain slug.
+    Verify:  https://apply.workable.com/api/v1/widget/accounts/<token>?details=true
+  - WORKDAY: custom host like  <tenant>.<wd>.myworkdayjobs.com/<board> . The
+    <token> encodes all three as "tenant/wd/board" (e.g.
+    "nvidia/wd5/NVIDIAExternalCareerSite").
+    Verify (POST):  https://<tenant>.<wd>.myworkdayjobs.com/wday/cxs/<tenant>/<board>/jobs
 
 If the verify URL returns JSON with jobs/postings, the token is good.
 ============================================================================
@@ -56,8 +66,9 @@ _DEFAULT_SOURCES: list[dict] = [
     {"company": "Plaid", "ats": "ashby", "token": "plaid"},
     {"company": "Ramp", "ats": "ashby", "token": "ramp"},
     # NOTE: Apple, Google, Amazon, NVIDIA, AMD, Sony, Rippling use Workday or
-    # custom career systems with no open API — not reachable via this scraper.
-    # Supporting them would require a separate Workday adapter (future work).
+    # custom career systems. These are now reachable via the "workday" adapter
+    # (token = "tenant/wd/board"); add them here once you confirm the tenant/board
+    # from the careers URL. Amazon/Google use bespoke systems still not covered.
 ]
 
 # company display name, ATS provider, and the board token.

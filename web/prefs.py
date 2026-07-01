@@ -27,7 +27,7 @@ INT_KEYS = ("NEWS_MAX_ITEMS_PER_TOPIC",)
 LIST_KEYS = ("NEWS_TOPICS", "STOCK_WATCHLIST", "STOCK_HEADLINE_TOPICS")
 # JOB_SOURCES is a list of {company, ats, token} dicts, handled specially.
 
-_VALID_ATS = {"greenhouse", "lever", "ashby"}
+_VALID_ATS = {"greenhouse", "lever", "ashby", "smartrecruiters", "workable", "workday"}
 
 
 def current() -> dict[str, Any]:
