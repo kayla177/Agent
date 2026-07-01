@@ -4,8 +4,8 @@
 (function () {
   if (typeof ApexCharts === "undefined") return;
 
-  var MUTED = "#8fa394";
-  var BORDER = "#283a31";
+  var MUTED = "#8b93a6";
+  var BORDER = "rgba(255,255,255,0.14)";
 
   function getJSON(url) {
     return fetch(url).then(function (r) {
@@ -31,9 +31,9 @@
           series: d.series,
           labels: d.labels,
           colors: d.colors,
-          stroke: { width: 2, colors: ["#13201b"] },
+          stroke: { width: 2, colors: ["#05060b"] },
           legend: { position: "bottom", labels: { colors: MUTED } },
-          dataLabels: { enabled: true, style: { colors: ["#0c1a0d"] } },
+          dataLabels: { enabled: true, style: { colors: ["#04060d"] } },
           plotOptions: {
             pie: {
               donut: {
@@ -86,7 +86,7 @@
             formatter: function (v) {
               return (v >= 0 ? "+" : "") + v.toFixed(1) + "%";
             },
-            style: { colors: ["#0c1a0d"] },
+            style: { colors: ["#04060d"] },
           },
           legend: { show: false },
           grid: { borderColor: BORDER },
@@ -98,33 +98,6 @@
       });
   }
 
-  // Decorative green "mountains" backdrop for the hero (no data — just ambiance).
-  function renderMountains(el) {
-    new ApexCharts(el, {
-      chart: {
-        type: "area",
-        height: 320,
-        sparkline: { enabled: true },
-        animations: { enabled: true, easing: "easeinout", speed: 900 },
-      },
-      series: [
-        { name: "ridge", data: [34, 58, 44, 72, 52, 88, 62, 78, 48, 68, 54, 64, 50] },
-        { name: "hill", data: [16, 32, 24, 40, 30, 48, 36, 44, 28, 38, 30, 36, 28] },
-      ],
-      colors: ["#7fa157", "#3f5a36"],
-      stroke: { curve: "smooth", width: 2 },
-      fill: {
-        type: "gradient",
-        gradient: { shadeIntensity: 1, opacityFrom: 0.55, opacityTo: 0.05, stops: [0, 100] },
-      },
-      tooltip: { enabled: false },
-      legend: { show: false },
-      dataLabels: { enabled: false },
-    }).render();
-  }
-
-  var mountains = document.getElementById("hero-mountains");
-  if (mountains) renderMountains(mountains);
   var apps = document.getElementById("chart-applications");
   if (apps) renderApplications(apps);
   var stocks = document.getElementById("chart-stocks");

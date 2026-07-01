@@ -1,22 +1,31 @@
 {% extends "base.html" %}
 {% set active = "dashboard" %}
 {% block title %}Dashboard · daily-agents{% endblock %}
+{% set planets = {
+  "morning_briefing": {"planet": "earth",   "label": "briefing"},
+  "stock_digest":     {"planet": "jupiter", "label": "stocks"},
+  "job_scraper":      {"planet": "mars",    "label": "jobs"},
+  "application_tracker": {"planet": "saturn", "label": "tracker"}
+} %}
 {% block content %}
 <div class="hero">
-  <div id="hero-mountains"></div>
-  <div id="tree3d"></div>
-  <div class="hero-overlay">
-    <h1>Good day, Kayla</h1>
-    <p>Your agents at a glance.</p>
+  <div class="hero-title">agents</div>
+  <div class="planet-far"></div>
+  <div class="planet"></div>
+  <div class="hero-sub">daily</div>
+  <div class="pill-nav">
+    {% for spec in specs %}
+      {% set meta = planets.get(spec.key, {"planet": "earth", "label": spec.key}) %}
+      <button type="button" data-agent="{{ spec.key }}" data-planet="{{ meta.planet }}"
+              class="{% if loop.first %}on{% endif %}">{{ meta.label }}</button>
+    {% endfor %}
   </div>
 </div>
 
-<h2>Agents</h2>
-<div class="cards">
-  {% for spec in specs %}
-  <div class="card">
-    <div class="emoji">{{ spec.emoji }}</div>
-    <h3>{{ spec.display_name }}</h3>
+{% for spec in specs %}
+  {% set meta = planets.get(spec.key, {"planet": "earth", "label": spec.key}) %}
+  <div class="featured" id="feat-{{ spec.key }}" {% if not loop.first %}hidden{% endif %}>
+    <h3>{{ spec.emoji }} {{ spec.display_name }}</h3>
     <p>{{ spec.description }}</p>
     <div class="card-actions">
       <form class="inline" method="post" action="/agents/{{ spec.key }}/run">
@@ -30,22 +39,21 @@
       </form>
     </div>
   </div>
-  {% endfor %}
-</div>
+{% endfor %}
 
-<h2>Snapshot</h2>
+<h2>snapshot</h2>
 <div class="chart-grid">
   <div class="chart-card">
-    <h3>📋 Application pipeline</h3>
+    <h3>application pipeline</h3>
     <div id="chart-applications"></div>
   </div>
   <div class="chart-card">
-    <h3>📈 Watchlist today</h3>
+    <h3>watchlist today</h3>
     <div id="chart-stocks"></div>
   </div>
 </div>
 
-<h2>Recent runs</h2>
+<h2>recent runs</h2>
 {% if recent %}
 <table>
   <thead><tr><th>Agent</th><th>Status</th><th>Started (UTC)</th><th>Mode</th></tr></thead>
@@ -61,19 +69,11 @@
   </tbody>
 </table>
 {% else %}
-<p class="muted">No runs yet — trigger an agent above.</p>
+<p class="muted">No runs yet — pick a planet and preview an agent above.</p>
 {% endif %}
 {% endblock %}
 {% block scripts %}
 <script src="/static/apexcharts.min.js"></script>
 <script src="/static/charts.js" defer></script>
-<script type="importmap">
-{
-  "imports": {
-    "three": "/static/three.module.js",
-    "@dgreenheck/ez-tree": "/static/ez-tree.es.js"
-  }
-}
-</script>
-<script type="module" src="/static/hero3d.js"></script>
+<script src="/static/dashboard.js" defer></script>
 {% endblock %}

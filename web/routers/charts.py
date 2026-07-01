@@ -15,17 +15,17 @@ from agents.application_tracker import store
 
 router = APIRouter()
 
-# Palette (kept in sync with app.css) for per-series colors.
-_LEAF = "#86b96a"
-_BARK = "#c89a6a"
-_AMBER = "#d8ad6a"
-_RED = "#d8836d"
+# Palette (kept in sync with the app.css space theme) for per-series colors.
+_GREEN = "#7fc08a"
+_BLUE = "#7fb0ff"
+_AMBER = "#e0b15a"
+_RED = "#e0705a"
 
 _STATUS_COLORS = {
-    "applied": _BARK,
+    "applied": _BLUE,
     "interview": _AMBER,
-    "offer": _LEAF,
-    "accepted": _LEAF,
+    "offer": _GREEN,
+    "accepted": _GREEN,
     "rejected": _RED,
 }
 
@@ -68,7 +68,7 @@ def _compute_stocks() -> dict:
         pct = ((price - prev) / prev * 100.0) if prev else 0.0
         labels.append(symbol)
         series.append(round(pct, 2))
-        colors.append(_LEAF if pct >= 0 else _RED)
+        colors.append(_GREEN if pct >= 0 else _RED)
     return {"labels": labels, "series": series, "colors": colors}
 
 

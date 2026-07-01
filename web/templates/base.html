@@ -4,17 +4,20 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>{% block title %}daily-agents{% endblock %}</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Italiana&display=swap" rel="stylesheet" />
   <link rel="stylesheet" href="/static/app.css" />
   <script src="/static/htmx.min.js" defer></script>
 </head>
-<body>
+<body data-planet="{{ planet | default('earth') }}">
   <header class="topbar">
-    <a class="brand" href="/">🤖 daily-agents</a>
+    <a class="brand" href="/">daily · agents</a>
     <nav>
-      <a href="/" class="{% if active == 'dashboard' %}on{% endif %}">Dashboard</a>
-      <a href="/applications" class="{% if active == 'applications' %}on{% endif %}">Applications</a>
-      <a href="/history" class="{% if active == 'history' %}on{% endif %}">History</a>
-      <a href="/settings" class="{% if active == 'settings' %}on{% endif %}">Settings</a>
+      <a href="/" class="{% if active == 'dashboard' %}on{% endif %}">dashboard</a>
+      <a href="/applications" class="{% if active == 'applications' %}on{% endif %}">applications</a>
+      <a href="/history" class="{% if active == 'history' %}on{% endif %}">history</a>
+      <a href="/settings" class="{% if active == 'settings' %}on{% endif %}">settings</a>
     </nav>
   </header>
   <main class="container">
