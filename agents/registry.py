@@ -55,6 +55,12 @@ def _tracker_builder():
     return build_tracker_graph
 
 
+def _trader_builder():
+    from agents.paper_trader.graph import build_paper_trader_graph
+
+    return build_paper_trader_graph
+
+
 REGISTRY: dict[str, AgentSpec] = {
     "morning_briefing": AgentSpec(
         key="morning_briefing",
@@ -87,6 +93,14 @@ REGISTRY: dict[str, AgentSpec] = {
         emoji="📋",
         _builder=_tracker_builder,
         node_order=("summary", "followups", "synthesize", "deliver"),
+    ),
+    "paper_trader": AgentSpec(
+        key="paper_trader",
+        display_name="Paper Trader",
+        description="Rule-based paper trading on Alpaca — simulated money, not advice.",
+        emoji="🤖",
+        _builder=_trader_builder,
+        node_order=("market_data", "technical", "decision", "execute", "synthesize", "deliver"),
     ),
 }
 

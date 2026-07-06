@@ -152,3 +152,22 @@ ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY", "")
 # (800 req/day, 8/min). Optional — without it the digest falls back to keyless
 # CNBC quotes (no price history, so technical indicators show as n/a).
 TWELVE_DATA_API_KEY = os.getenv("TWELVE_DATA_API_KEY", "")
+
+# --------------------------------------------------------------------------
+# Paper trader (Alpaca) — SIMULATED money only. Free keys from a PAPER account
+# at https://alpaca.markets. Without keys the trader runs in dry-run (decides
+# but places no orders). Base URL stays on paper-api so real money is never hit.
+# --------------------------------------------------------------------------
+ALPACA_API_KEY_ID = os.getenv("ALPACA_API_KEY_ID", "")
+ALPACA_API_SECRET_KEY = os.getenv("ALPACA_API_SECRET_KEY", "")
+ALPACA_BASE_URL = os.getenv("ALPACA_BASE_URL", "https://paper-api.alpaca.markets")
+
+# Rule thresholds & guardrails (a transparent mean-reversion starter strategy).
+TRADER_BUY_RSI = 35            # buy when RSI dips below this (oversold)
+TRADER_SELL_RSI = 70           # sell a holding when RSI rises above this (overbought)
+TRADER_STOP_LOSS_PCT = -8.0    # sell a holding down more than this % vs avg entry
+TRADER_MAX_POSITION_PCT = 25.0  # cap any single name at this % of the portfolio
+TRADER_BUY_FRACTION_PCT = 20.0  # deploy this % of *cash* per new buy
+TRADER_MIN_CASH_PCT = 10.0     # never spend below this % cash buffer
+TRADER_MAX_TRADES_PER_RUN = 3  # safety cap on orders placed in one run
+TRADER_DRYRUN_CASH = 100.0     # assumed cash when no Alpaca keys (dry-run sizing)
