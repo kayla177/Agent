@@ -7,6 +7,8 @@
   "job_scraper":      {"planet": "mars",    "label": "jobs"},
   "application_tracker": {"planet": "saturn", "label": "tracker"}
 } %}
+{# paper_trader is merged into the stocks tab, so it gets no pill/panel of its own #}
+{% set nav_specs = specs | rejectattr("key", "equalto", "paper_trader") | list %}
 {% block content %}
 <div class="hero">
   <div class="hero-title">agents</div>
@@ -14,7 +16,7 @@
   <div class="planet"></div>
   <div class="hero-sub">daily</div>
   <div class="pill-nav">
-    {% for spec in specs %}
+    {% for spec in nav_specs %}
       {% set meta = planets.get(spec.key, {"planet": "earth", "label": spec.key}) %}
       <button type="button" data-agent="{{ spec.key }}" data-planet="{{ meta.planet }}"
               class="{% if loop.first %}on{% endif %}">{{ meta.label }}</button>
@@ -22,36 +24,53 @@
   </div>
 </div>
 
-{% for spec in specs %}
+{% for spec in nav_specs %}
   {% set meta = planets.get(spec.key, {"planet": "earth", "label": spec.key}) %}
-  <div class="featured" id="feat-{{ spec.key }}" {% if not loop.first %}hidden{% endif %}>
-    <h3>{{ spec.emoji }} {{ spec.display_name }}</h3>
-    <p>{{ spec.description }}</p>
-    <div class="card-actions">
-      <form class="inline" method="post" action="/agents/{{ spec.key }}/run">
-        <input type="hidden" name="send" value="0" />
-        <button type="submit" class="primary">▶ Preview</button>
-      </form>
-      <form class="inline" method="post" action="/agents/{{ spec.key }}/run"
-            onsubmit="return confirm('Run {{ spec.display_name }} and deliver to Discord?');">
-        <input type="hidden" name="send" value="1" />
-        <button type="submit">Run &amp; send</button>
-      </form>
+  <div class="panel" id="panel-{{ spec.key }}" {% if not loop.first %}hidden{% endif %}>
+    <div class="featured">
+      <h3>{{ spec.emoji }} {{ spec.display_name }}</h3>
+      <p>{{ spec.description }}</p>
+      <div class="card-actions">
+        <form class="inline" method="post" action="/agents/{{ spec.key }}/run">
+          <input type="hidden" name="send" value="0" />
+          <button type="submit" class="primary">▶ Preview</button>
+        </form>
+        <form class="inline" method="post" action="/agents/{{ spec.key }}/run"
+              onsubmit="return confirm('Run {{ spec.display_name }} and deliver to Discord?');">
+          <input type="hidden" name="send" value="1" />
+          <button type="submit">Run &amp; send</button>
+        </form>
+      </div>
     </div>
+
+    {% if spec.key == "stock_digest" %}
+    {# ---------- Trading desk ---------- #}
+    <div class="desk">
+      <div class="desk-run">
+        <span class="muted">🤖 Paper Trader —</span>
+        <form class="inline" method="post" action="/agents/paper_trader/run">
+          <input type="hidden" name="send" value="0" />
+          <button type="submit">▶ Preview trades</button>
+        </form>
+        <form class="inline" method="post" action="/agents/paper_trader/run"
+              onsubmit="return confirm('Place PAPER trades and deliver to Discord?');">
+          <input type="hidden" name="send" value="1" />
+          <button type="submit" class="primary">Run trader</button>
+        </form>
+      </div>
+      <div class="chart-grid">
+        <div class="chart-card"><h3>paper portfolio</h3><div id="desk-portfolio" class="desk-loading">loading…</div></div>
+        <div class="chart-card"><h3>today's signals</h3><div id="desk-signals" class="desk-loading">loading…</div></div>
+      </div>
+      <div class="chart-grid">
+        <div class="chart-card"><h3>stock trend · 30d (base 100)</h3><div id="desk-trend" class="desk-loading">loading…</div></div>
+        <div class="chart-card"><h3>watchlist today</h3><div id="desk-watchlist" class="desk-loading">loading…</div></div>
+      </div>
+      <div class="chart-card"><h3>recent paper trades</h3><div id="desk-trades" class="desk-loading">loading…</div></div>
+    </div>
+    {% endif %}
   </div>
 {% endfor %}
-
-<h2>snapshot</h2>
-<div class="chart-grid">
-  <div class="chart-card">
-    <h3>application pipeline</h3>
-    <div id="chart-applications"></div>
-  </div>
-  <div class="chart-card">
-    <h3>watchlist today</h3>
-    <div id="chart-stocks"></div>
-  </div>
-</div>
 
 <h2>recent runs</h2>
 {% if recent %}
@@ -74,6 +93,6 @@
 {% endblock %}
 {% block scripts %}
 <script src="/static/apexcharts.min.js"></script>
-<script src="/static/charts.js" defer></script>
+<script src="/static/stocks.js" defer></script>
 <script src="/static/dashboard.js" defer></script>
 {% endblock %}

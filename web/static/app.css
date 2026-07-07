@@ -397,3 +397,21 @@ table.apps td { vertical-align: middle; }
   .hero-title { font-size: 3.2rem; letter-spacing: 1.1rem; text-indent: 1.1rem; }
   .hero { height: 380px; }
 }
+
+/* ---------- Featured block + per-tab panels ---------- */
+.featured { text-align: center; margin: 0.5rem 0 1.5rem; }
+.featured h3 { font-family: var(--serif); font-weight: 400; font-size: 1.9rem; letter-spacing: 1px; margin: 0 0 0.35rem; }
+.featured p { color: var(--muted); margin: 0 auto 1.1rem; max-width: 520px; }
+.featured .card-actions { justify-content: center; }
+
+/* ---------- Trading desk (stocks tab) ---------- */
+.desk { display: flex; flex-direction: column; gap: 1.1rem; margin-bottom: 1.5rem; }
+.desk-run { display: flex; align-items: center; justify-content: center; gap: 0.5rem; flex-wrap: wrap; }
+.desk-loading { color: var(--muted); font-style: italic; padding: 0.5rem 0; }
+.stat-row { display: flex; gap: 1.75rem; margin-bottom: 0.9rem; flex-wrap: wrap; }
+.stat-lg { font-family: var(--serif); font-size: 1.5rem; color: #fff; }
+.stat-lg.up, .up { color: var(--green); }
+.stat-lg.down, .down { color: var(--red); }
+table.mini { width: 100%; border-collapse: collapse; font-size: 0.9rem; }
+table.mini th { color: var(--muted); font-weight: 600; font-size: 0.72rem; text-transform: uppercase; letter-spacing: 0.6px; text-align: left; padding: 0.3rem 0.5rem; border-bottom: 1px solid var(--border-soft); }
+table.mini td { padding: 0.35rem 0.5rem; border-bottom: 1px solid var(--border-soft); }
