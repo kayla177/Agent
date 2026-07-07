@@ -22,6 +22,16 @@ def _is_us_tradable(symbol: str) -> bool:
 def decide(rows: list[dict], tech: dict, account: dict, positions: dict) -> list[dict]:
     portfolio = account.get("portfolio_value", 0.0) or 0.0
     cash = account.get("cash", 0.0) or 0.0
+
+    # Budget cap: treat the account as if it only had TRADER_BUDGET total capital
+    # (Alpaca paper hands out a fake $100k). Available cash = budget minus what's
+    # already deployed in positions, so total exposure never exceeds the budget.
+    budget = getattr(config, "TRADER_BUDGET", 0) or 0
+    if budget > 0:
+        deployed = sum(p.get("market_value", 0.0) for p in positions.values())
+        portfolio = budget
+        cash = max(0.0, budget - deployed)
+
     max_pos_value = portfolio * config.TRADER_MAX_POSITION_PCT / 100.0
     min_cash = portfolio * config.TRADER_MIN_CASH_PCT / 100.0
 

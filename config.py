@@ -171,3 +171,6 @@ TRADER_BUY_FRACTION_PCT = 20.0  # deploy this % of *cash* per new buy
 TRADER_MIN_CASH_PCT = 10.0     # never spend below this % cash buffer
 TRADER_MAX_TRADES_PER_RUN = 3  # safety cap on orders placed in one run
 TRADER_DRYRUN_CASH = 100.0     # assumed cash when no Alpaca keys (dry-run sizing)
+# Total capital the agent may deploy, regardless of the broker's balance (Alpaca
+# paper funds every account with a fake $100k). 0 = use the real account balance.
+TRADER_BUDGET = 100.0
