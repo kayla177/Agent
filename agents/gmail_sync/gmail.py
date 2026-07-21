@@ -23,10 +23,9 @@ from googleapiclient.errors import HttpError
 
 import config
 
-# The node only needs gmail read; the interactive auth requests the union so a
-# re-consent doesn't strip the calendar scope the briefing agent relies on.
-_LOAD_SCOPES = ["https://www.googleapis.com/auth/gmail.readonly"]
-_AUTH_SCOPES = [
+# Union of scopes the platform uses, so refreshing/reminting this SHARED token
+# never narrows it and break's the calendar node that reads the same file.
+_SCOPES = [
     "https://www.googleapis.com/auth/calendar.readonly",
     "https://www.googleapis.com/auth/gmail.readonly",
 ]
@@ -77,7 +76,7 @@ def _parse_from(value: str) -> tuple[str, str]:
 def fetch_job_emails(*, allow_interactive: bool = False, max_results: int = 40) -> list[dict] | None:
     """Return recent job-related emails as {from_name, from_email, subject,
     snippet}, or None if Gmail isn't authorized/usable (caller degrades)."""
-    creds = _load_credentials(allow_interactive=allow_interactive, scopes=_LOAD_SCOPES)
+    creds = _load_credentials(allow_interactive=allow_interactive, scopes=_SCOPES)
     if creds is None:
         return None
     try:
@@ -109,6 +108,10 @@ def fetch_job_emails(*, allow_interactive: bool = False, max_results: int = 40) 
 
 
 if __name__ == "__main__":
-    # One-time consent with the union scopes (preserves calendar access).
-    creds = _load_credentials(allow_interactive=True, scopes=_AUTH_SCOPES)
+    import sys
+
+    if "--auth" not in sys.argv:
+        print("Usage: python -m agents.gmail_sync.gmail --auth  (opens a browser to grant calendar+gmail read access)")
+        raise SystemExit(0)
+    creds = _load_credentials(allow_interactive=True, scopes=_SCOPES)
     print("Authorized." if creds else "Authorization failed.")
