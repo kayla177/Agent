@@ -10,6 +10,7 @@ Run:  uv run python scripts/migrate_json_to_sqlite.py
 from __future__ import annotations
 
 import json
+import sqlite3
 import sys
 from pathlib import Path
 
@@ -42,15 +43,29 @@ def migrate_applications() -> int:
         if key in seen:
             continue
         with store_db.connect() as conn:
-            conn.execute(
-                "INSERT INTO applications (id, company, role, url, status, "
-                "applied_date, updated_date, notes, auto_detected) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0)",
-                (a.get("id"), a.get("company", ""), a.get("role", ""),
-                 a.get("url", ""), a.get("status", "applied"),
-                 a.get("applied_date", ""), a.get("updated_date", ""),
-                 a.get("notes", "")),
-            )
+            try:
+                conn.execute(
+                    "INSERT INTO applications (id, company, role, url, status, "
+                    "applied_date, updated_date, notes, auto_detected) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0)",
+                    (a.get("id"), a.get("company", ""), a.get("role", ""),
+                     a.get("url", ""), a.get("status", "applied"),
+                     a.get("applied_date", ""), a.get("updated_date", ""),
+                     a.get("notes", "")),
+                )
+            except sqlite3.IntegrityError:
+                # id slot already taken by a different row — migrate without the
+                # explicit id, letting AUTOINCREMENT assign a fresh one.
+                conn.execute(
+                    "INSERT INTO applications (company, role, url, status, "
+                    "applied_date, updated_date, notes, auto_detected) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?, 0)",
+                    (a.get("company", ""), a.get("role", ""),
+                     a.get("url", ""), a.get("status", "applied"),
+                     a.get("applied_date", ""), a.get("updated_date", ""),
+                     a.get("notes", "")),
+                )
+        seen.add(key)
         added += 1
     return added
 
