@@ -34,3 +34,8 @@ data/
 
 # Superpowers brainstorming mockups (visual companion scratch)
 .superpowers/
+
+# Next.js app (web-next) build + deps
+web-next/node_modules/
+web-next/.next/
+web-next/.env
