@@ -44,6 +44,8 @@ def test_matching() -> None:
     check("apply no regress", matching.should_apply("offer", "interview") is False)
     check("apply rejection always", matching.should_apply("offer", "rejected") is True)
     check("apply rejection idempotent", matching.should_apply("rejected", "rejected") is False)
+    check("apply never revives rejected (offer)", matching.should_apply("rejected", "offer") is False)
+    check("apply never revives rejected (interview)", matching.should_apply("rejected", "interview") is False)
 
 
 def test_node_with_fake_gmail() -> None:
@@ -53,6 +55,7 @@ def test_node_with_fake_gmail() -> None:
     appstore.add_application("Stripe", "SWE Intern", status="applied")   # id 1
     appstore.add_application("Figma", "FE Intern", status="interview")   # id 2
     appstore.add_application("Notion", "PM Intern", status="applied")    # id 3
+    appstore.add_application("Databricks", "DE Intern", status="rejected")  # id 4
 
     fake_emails = [
         {"from_name": "Stripe Recruiting", "from_email": "jobs@greenhouse.io",
@@ -60,6 +63,8 @@ def test_node_with_fake_gmail() -> None:
         {"from_name": "Figma Talent", "from_email": "no-reply@figma.com",
          "subject": "Figma — update", "snippet": "Unfortunately we won't be moving forward."},
         # Notion: no email → unchanged
+        {"from_name": "Databricks Recruiting", "from_email": "x@databricks.com",
+         "subject": "Databricks — next steps", "snippet": "Let's schedule a call."},
     ]
     gnode.fetch_job_emails = lambda **_: fake_emails  # monkeypatch the name in node's namespace
 
@@ -70,6 +75,7 @@ def test_node_with_fake_gmail() -> None:
     check("Figma interview→rejected", apps["Figma"]["status"] == "rejected")
     check("Notion unchanged (no email)", apps["Notion"]["status"] == "applied")
     check("Notion not auto_detected", apps["Notion"]["auto_detected"] is False)
+    check("rejected app not revived by matching email", apps["Databricks"]["status"] == "rejected")
     check("message mentions 2 updates", "updated 2" in result["message"])
 
 
@@ -84,8 +90,23 @@ def test_node_not_authorized() -> None:
     check("no status change", appstore.load_all()[0]["status"] == "applied")
 
 
+def test_node_exception() -> None:
+    print("scan_gmail node (fetch raises → graceful)")
+    store_db.DB_PATH = Path(tempfile.mkdtemp()) / "test.db"
+    store_db.init_db()
+    appstore.add_application("Stripe", "SWE Intern", status="applied")
+
+    def _boom(**_):
+        raise RuntimeError("gmail down")
+
+    gnode.fetch_job_emails = _boom
+    result = gnode.scan_gmail_node({})
+    check("returns failure message", "failed" in result["message"].lower())
+    check("no status change on error", appstore.load_all()[0]["status"] == "applied")
+
+
 def main() -> int:
-    for fn in (test_matching, test_node_with_fake_gmail, test_node_not_authorized):
+    for fn in (test_matching, test_node_with_fake_gmail, test_node_not_authorized, test_node_exception):
         fn()
     print()
     if _failures:

@@ -68,9 +68,11 @@ def rank_status(status: str) -> int:
 
 def should_apply(current: str, detected: str) -> bool:
     """Apply a detected status only if it ADVANCES the pipeline or is a fresh
-    rejection — never regress (e.g. offer -> interview is rejected)."""
+    rejection — never regress, and never revive a rejected application."""
+    if current == "rejected":
+        return False  # terminal: Gmail never changes a rejected application
     if detected == "rejected":
-        return current != "rejected"
+        return True
     if detected in _PIPELINE_RANK and current in _PIPELINE_RANK:
         return _PIPELINE_RANK[detected] > _PIPELINE_RANK[current]
     return detected != current
