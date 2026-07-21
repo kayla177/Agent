@@ -31,6 +31,7 @@ app.include_router(prefs.router)
 def _startup() -> None:
     db.init_db()
     store_db.init_db()
+    db.mark_stale_running_as_error()
 
 
 @app.get("/healthz")

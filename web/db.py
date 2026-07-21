@@ -62,6 +62,20 @@ def finish_run(
         )
 
 
+def mark_stale_running_as_error() -> int:
+    """Mark any run still 'running' (left over from a process that died mid-run)
+    as errored, so SSE never waits forever on a dead run and the reuse throttle
+    won't hand out a stale run_id. Returns the number of rows fixed."""
+    with _connect() as conn:
+        cur = conn.execute(
+            "UPDATE runs SET status='error', finished_at=?, "
+            "error=COALESCE(error, 'interrupted — service restarted') "
+            "WHERE status='running'",
+            (_utcnow(),),
+        )
+        return cur.rowcount
+
+
 def get_run(run_id: int) -> Optional[dict]:
     with _connect() as conn:
         row = conn.execute("SELECT * FROM runs WHERE id = ?", (run_id,)).fetchone()

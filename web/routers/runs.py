@@ -72,7 +72,10 @@ async def run_events(run_id: int, request: Request):
                 last_seen = max(last_seen, ev["id"])
 
             run = db.get_run(run_id)
-            if run and run["status"] != "running":
+            if not run:
+                yield _sse("failed", {"error": f"run {run_id} not found"})
+                return
+            if run["status"] != "running":
                 yield _terminal_frame(run)
                 return
 
