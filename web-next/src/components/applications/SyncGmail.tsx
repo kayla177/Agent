@@ -12,27 +12,45 @@ export default function SyncGmail() {
     setBusy(true);
     setResultHtml(null);
     setError(null);
-    const res = await fetch("/agents/gmail_sync/run?send=0", { method: "POST" });
+    let res: Response;
+    try {
+      res = await fetch("/agents/gmail_sync/run?send=0", { method: "POST" });
+    } catch {
+      setBusy(false);
+      setError("Could not reach the agent service.");
+      return;
+    }
     if (!res.ok) {
       setBusy(false);
       setError("Could not start Gmail sync.");
       return;
     }
     const { run_id } = await res.json();
+    let done = false;
     const es = new EventSource(`/runs/${run_id}/events`);
+    const finish = () => {
+      es.close();
+      setBusy(false);
+    };
     es.addEventListener("done", (e) => {
+      done = true;
       const d = JSON.parse((e as MessageEvent).data);
       setResultHtml(d.html || "");
-      es.close();
-      setBusy(false);
-      router.refresh(); // reload the table so updated statuses + ✉ badges show
+      finish();
+      router.refresh();
     });
     es.addEventListener("failed", (e) => {
+      done = true;
       const d = JSON.parse((e as MessageEvent).data);
       setError(d.error || "Gmail sync failed.");
-      es.close();
-      setBusy(false);
+      finish();
     });
+    es.onerror = () => {
+      // Ignore transient reconnect blips; only surface a real, closed failure.
+      if (done || es.readyState !== EventSource.CLOSED) return;
+      setError("Lost connection to the agent service.");
+      finish();
+    };
   }
 
   return (
