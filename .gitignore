@@ -31,3 +31,6 @@ data/
 
 # Playwright MCP screenshot dumps
 .playwright-mcp/
+
+# Superpowers brainstorming mockups (visual companion scratch)
+.superpowers/
