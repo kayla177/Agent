@@ -112,6 +112,7 @@ table.apps button { background: var(--panel-2); border: 1px solid var(--border);
 table.apps button.danger { color: var(--red); border-color: transparent; }
 table.apps button:disabled { opacity: .5; cursor: default; }
 .banner.err { background: rgba(224,112,90,.12); border: 1px solid var(--red); color: var(--red); padding: .5rem .75rem; border-radius: 10px; margin-bottom: .5rem; }
+.banner.ok { background: rgba(127,192,138,.12); border: 1px solid var(--green); color: var(--green); padding: .5rem .75rem; border-radius: 10px; }
 
 /* ---------- Jobs view ---------- */
 .job-chips { display: flex; gap: .75rem; margin: .5rem 0 1rem; }
