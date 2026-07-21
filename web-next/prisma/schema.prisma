@@ -19,33 +19,6 @@ model applications {
   auto_detected Int    @default(0)
 }
 
-/// The underlying table does not contain a valid unique identifier and can therefore currently not be handled by Prisma Client.
-model jobs {
-  id           String? @id
-  company      String  @default("")
-  title        String  @default("")
-  location     String  @default("")
-  url          String  @default("")
-  status       String  @default("new")
-  ats          String  @default("")
-  posted_at    String?
-  remote       Int?
-  compensation String?
-  department   String?
-  description  String?
-  fit_score    Float?
-  fit_reason   String?
-  ghost        Int     @default(0)
-  also_on      String  @default("[]")
-  first_seen   String  @default("")
-  last_seen    String  @default("")
-  data         String  @default("{}")
-
-  @@index([company], map: "idx_jobs_company")
-  @@index([status], map: "idx_jobs_status")
-  @@ignore
-}
-
 model node_events {
   id      Int     @id @default(autoincrement())
   run_id  Int
@@ -71,4 +44,29 @@ model runs {
 
   @@index([started_at(sort: Desc)], map: "idx_runs_started")
   @@index([agent_key, started_at(sort: Desc)], map: "idx_runs_agent_started")
+}
+
+model jobs {
+  id           String  @id
+  company      String  @default("")
+  title        String  @default("")
+  location     String  @default("")
+  url          String  @default("")
+  status       String  @default("new")
+  ats          String  @default("")
+  posted_at    String?
+  remote       Int?
+  compensation String?
+  department   String?
+  description  String?
+  fit_score    Float?
+  fit_reason   String?
+  ghost        Int     @default(0)
+  also_on      String  @default("[]")
+  first_seen   String  @default("")
+  last_seen    String  @default("")
+  data         String  @default("{}")
+
+  @@index([company], map: "idx_jobs_company")
+  @@index([status], map: "idx_jobs_status")
 }
