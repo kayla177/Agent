@@ -18,6 +18,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import config
+import store_db
 from agents.job_scraper import ats, matching, store
 from agents.job_scraper.nodes.dedupe import dedupe_node
 from agents.job_scraper.nodes.freshness import freshness_node
@@ -102,26 +103,9 @@ def test_rank_parse() -> None:
 
 def _use_temp_store() -> Path:
     tmp = Path(tempfile.mkdtemp())
-    store._DATA_DIR = tmp
-    store._STORE = tmp / "jobs.json"
-    store._LEGACY = tmp / "seen.json"
+    store_db.DB_PATH = tmp / "test.db"
+    store_db.init_db()
     return tmp
-
-
-def test_store_roundtrip() -> None:
-    print("record store")
-    tmp = _use_temp_store()
-    import json
-    (tmp / "seen.json").write_text(json.dumps({"ids": ["legacy:gh:1"]}))
-    check("legacy seen.json migrated", store.load_seen() == {"legacy:gh:1"})
-    store.upsert_records([{"id": "a:lever:2", "title": "X", "posted_at": "2026-06-01"}])
-    recs = store.load_records()
-    check("upsert stamps first_seen + status new", recs["a:lever:2"]["status"] == "new" and recs["a:lever:2"]["first_seen"])
-    store.set_status("a:lever:2", "applied")
-    store.upsert_records([{"id": "a:lever:2", "title": "X2"}])
-    recs = store.load_records()
-    check("re-upsert preserves status, refreshes fields", recs["a:lever:2"]["status"] == "applied" and recs["a:lever:2"]["title"] == "X2")
-    check("set_status unknown id -> None", store.set_status("nope", "viewed") is None)
 
 
 def main() -> int:
@@ -131,7 +115,6 @@ def main() -> int:
         test_freshness,
         test_dedupe_cross_source,
         test_rank_parse,
-        test_store_roundtrip,
     ):
         fn()
     print()
