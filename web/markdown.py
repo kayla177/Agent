@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from markdown_it import MarkdownIt
 
-_md = MarkdownIt("commonmark", {"linkify": True, "breaks": True}).enable("linkify")
+_md = MarkdownIt("commonmark", {"html": False, "linkify": True, "breaks": True}).enable("linkify")
 
 
 def render_markdown(text: str | None) -> str:
