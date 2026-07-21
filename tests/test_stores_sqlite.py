@@ -89,6 +89,16 @@ def test_jobs_roundtrip() -> None:
     got2 = jobstore.load_records()["workday:stripe:123"]
     check("re-upsert preserves status", got2["status"] == "applied")
     check("re-upsert refreshes fields", got2["title"] == "Senior SWE")
+    # first_seen + status are preserved across upsert (seed a known PAST date via
+    # replace_record, then upsert the same id — a regression that re-stamped
+    # first_seen would turn it into today and fail this check).
+    jobstore.replace_record({"id": "seed:1", "title": "Old", "status": "viewed",
+                             "first_seen": "2026-01-15"})
+    jobstore.upsert_records([{"id": "seed:1", "title": "New"}])
+    seeded = jobstore.load_records()["seed:1"]
+    check("upsert preserves existing first_seen", seeded["first_seen"] == "2026-01-15")
+    check("upsert preserves existing status (seeded)", seeded["status"] == "viewed")
+    check("upsert refreshes fields on seeded row", seeded["title"] == "New")
 
 
 def test_replace_record() -> None:
