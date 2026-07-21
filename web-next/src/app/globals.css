@@ -212,3 +212,7 @@ code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: .
 .resume-actions button { background: var(--panel-2); border: 1px solid var(--border); color: var(--text); border-radius: 10px; padding: .5rem .9rem; font: inherit; cursor: pointer; }
 .resume-actions button.primary { background: var(--accent); color: #04122b; border: none; }
 .resume-actions button:disabled { opacity: .55; cursor: default; }
+
+/* ---------- Applications / Sync Gmail ---------- */
+.sync-gmail { margin: .5rem 0 1rem; }
+.sync-gmail .output { margin-top: .6rem; }

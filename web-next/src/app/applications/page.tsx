@@ -5,6 +5,7 @@ import PipelineBars from "@/components/applications/PipelineBars";
 import LogForm from "@/components/applications/LogForm";
 import ApplicationRow from "@/components/applications/ApplicationRow";
 import PlanetTheme from "@/components/applications/PlanetTheme";
+import SyncGmail from "@/components/applications/SyncGmail";
 
 export const dynamic = "force-dynamic";
 
@@ -16,6 +17,7 @@ export default async function ApplicationsPage() {
       <PlanetTheme planet="saturn" />
       <h1>applications</h1>
       <StatsRow stats={stats} />
+      <SyncGmail />
       <h2>pipeline</h2>
       <PipelineBars counts={stats.counts} />
       <h2>log a new application</h2>
