@@ -34,7 +34,7 @@ export const FIT_COLOR: Record<FitTier, string> = {
 
 export function ageDays(postedAt: string | null): number | null {
   if (!postedAt) return null;
-  const d = new Date(postedAt + "T00:00:00Z");
+  const d = new Date(postedAt.slice(0, 10) + "T00:00:00Z");
   if (isNaN(d.getTime())) return null;
   return Math.max(0, Math.floor((Date.now() - d.getTime()) / 86_400_000));
 }
