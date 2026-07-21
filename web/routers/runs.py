@@ -46,13 +46,27 @@ def _recent_active_run(agent_key: str) -> int | None:
 
 
 @router.post("/agents/{agent_key}/run")
-async def trigger_run(agent_key: str, send: str = "0", force: str = "0"):
+async def trigger_run(agent_key: str, request: Request, send: str = "0", force: str = "0"):
     do_send = send in ("1", "true", "on")
-    if force not in ("1", "true", "on"):
+
+    # Optional JSON body: {"input": {...}} seeds the graph's initial state (e.g.
+    # {"job_id": ...} for the per-job resume generator). Parsed defensively so
+    # the common bodyless callers (the scheduled-agent buttons) are unaffected.
+    agent_input: dict | None = None
+    try:
+        body = await request.json()
+        if isinstance(body, dict) and isinstance(body.get("input"), dict):
+            agent_input = body["input"]
+    except Exception:
+        agent_input = None
+
+    # Parameterized runs are always fresh — never collapse two distinct inputs
+    # (e.g. resumes for different jobs) onto one reused run.
+    if agent_input is None and force not in ("1", "true", "on"):
         reuse = _recent_active_run(agent_key)
         if reuse is not None:
             return JSONResponse({"run_id": reuse, "reused": True})
-    run_id = runner.start_run(agent_key, do_send)
+    run_id = runner.start_run(agent_key, do_send, agent_input)
     return JSONResponse({"run_id": run_id})
 
 

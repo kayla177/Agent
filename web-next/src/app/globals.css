@@ -213,6 +213,15 @@ code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: .
 .resume-actions button.primary { background: var(--accent); color: #04122b; border: none; }
 .resume-actions button:disabled { opacity: .55; cursor: default; }
 
+.generate-form { margin: .5rem 0 1rem; }
+.generate-row { display: flex; flex-wrap: wrap; align-items: center; gap: .6rem; }
+.generate-row select {
+  flex: 1; min-width: 240px; background: var(--panel); border: 1px solid var(--border);
+  color: var(--text); border-radius: 10px; padding: .5rem .6rem; font: inherit;
+}
+.gen-phase { font-variant-numeric: tabular-nums; }
+.gen-result { margin-top: .6rem; }
+
 /* ---------- Applications / Sync Gmail ---------- */
 .sync-gmail { margin: .5rem 0 1rem; }
 .sync-gmail .output { margin-top: .6rem; }

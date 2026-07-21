@@ -52,12 +52,16 @@ class RunManager:
 manager = RunManager()
 
 
-async def _drive(run_id: int, spec: AgentSpec, send: bool) -> None:
+async def _drive(
+    run_id: int, spec: AgentSpec, send: bool, agent_input: Optional[dict] = None
+) -> None:
     manager._active.add(run_id)
     final_state: dict[str, Any] = {}
     try:
         graph = spec.build_graph(send=send)
-        async for mode, data in graph.astream({}, stream_mode=["updates", "tasks"]):
+        async for mode, data in graph.astream(
+            agent_input or {}, stream_mode=["updates", "tasks"]
+        ):
             if mode == "tasks":
                 name = data.get("name", "?")
                 if "result" in data:  # task finished
@@ -96,9 +100,16 @@ async def _drive(run_id: int, spec: AgentSpec, send: bool) -> None:
         manager.publish(run_id, None)  # sentinel: tells subscribers to close
 
 
-def start_run(agent_key: str, send: bool) -> int:
-    """Create a run row and launch its driver task. Returns the run id."""
+def start_run(
+    agent_key: str, send: bool, agent_input: Optional[dict] = None
+) -> int:
+    """Create a run row and launch its driver task. Returns the run id.
+
+    ``agent_input`` seeds the graph's initial state (e.g. ``{"job_id": ...}`` for
+    the per-job resume generator). Omit it for the scheduled agents, which build
+    their own state from an empty input.
+    """
     spec = get_spec(agent_key)  # raises KeyError on unknown agent
     run_id = db.create_run(agent_key, send)
-    asyncio.create_task(_drive(run_id, spec, send))
+    asyncio.create_task(_drive(run_id, spec, send, agent_input))
     return run_id
