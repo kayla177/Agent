@@ -1,0 +1,72 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = "file:../../data/control_center.db"
+}
+
+model applications {
+  id            Int    @id @default(autoincrement())
+  company       String
+  role          String
+  url           String @default("")
+  status        String @default("applied")
+  applied_date  String
+  updated_date  String
+  notes         String @default("")
+  auto_detected Int    @default(0)
+}
+
+model node_events {
+  id      Int     @id @default(autoincrement())
+  run_id  Int
+  node    String
+  status  String
+  ts      String
+  payload String?
+  runs    runs    @relation(fields: [run_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+
+  @@index([run_id, id], map: "idx_node_events_run")
+}
+
+model runs {
+  id             Int           @id @default(autoincrement())
+  agent_key      String
+  status         String
+  send           Int           @default(0)
+  started_at     String
+  finished_at    String?
+  output_message String?
+  error          String?
+  node_events    node_events[]
+
+  @@index([started_at(sort: Desc)], map: "idx_runs_started")
+  @@index([agent_key, started_at(sort: Desc)], map: "idx_runs_agent_started")
+}
+
+model jobs {
+  id           String  @id
+  company      String  @default("")
+  title        String  @default("")
+  location     String  @default("")
+  url          String  @default("")
+  status       String  @default("new")
+  ats          String  @default("")
+  posted_at    String?
+  remote       Int?
+  compensation String?
+  department   String?
+  description  String?
+  fit_score    Float?
+  fit_reason   String?
+  ghost        Int     @default(0)
+  also_on      String  @default("[]")
+  first_seen   String  @default("")
+  last_seen    String  @default("")
+  data         String  @default("{}")
+
+  @@index([company], map: "idx_jobs_company")
+  @@index([status], map: "idx_jobs_status")
+}

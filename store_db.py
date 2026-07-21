@@ -34,7 +34,7 @@ CREATE TABLE IF NOT EXISTS applications (
 );
 
 CREATE TABLE IF NOT EXISTS jobs (
-    id           TEXT    PRIMARY KEY,
+    id           TEXT    NOT NULL PRIMARY KEY,
     company      TEXT    NOT NULL DEFAULT '',
     title        TEXT    NOT NULL DEFAULT '',
     location     TEXT    NOT NULL DEFAULT '',
