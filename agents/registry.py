@@ -55,6 +55,12 @@ def _tracker_builder():
     return build_tracker_graph
 
 
+def _resume_builder():
+    from agents.resume_generator.graph import build_resume_generator_graph
+
+    return build_resume_generator_graph
+
+
 REGISTRY: dict[str, AgentSpec] = {
     "morning_briefing": AgentSpec(
         key="morning_briefing",
@@ -87,6 +93,14 @@ REGISTRY: dict[str, AgentSpec] = {
         emoji="📋",
         _builder=_tracker_builder,
         node_order=("summary", "followups", "synthesize", "deliver"),
+    ),
+    "resume_generator": AgentSpec(
+        key="resume_generator",
+        display_name="Resume Generator",
+        description="Draft an ATS-tailored resume for a scraped job (per-job, not scheduled).",
+        emoji="📝",
+        _builder=_resume_builder,
+        node_order=("gather", "research", "keywords", "draft", "save"),
     ),
 }
 

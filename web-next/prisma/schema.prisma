@@ -70,3 +70,26 @@ model jobs {
   @@index([company], map: "idx_jobs_company")
   @@index([status], map: "idx_jobs_status")
 }
+
+// Resume generator (feature/resume-generator). Tables are created by the Python
+// agent's store (agents/resume_generator/store.py); these models mirror that
+// shape so the client can read/write them — the same result a `prisma db pull`
+// would produce.
+model experience_docs {
+  id       Int    @id @default(autoincrement())
+  filename String @default("")
+  kind     String @default("resume") // resume | project
+  text     String @default("")
+  added_at String @default("")
+}
+
+model resumes {
+  job_id     String @id
+  company    String @default("")
+  role       String @default("")
+  markdown   String @default("")
+  keywords   String @default("[]") // JSON array of strings
+  status     String @default("draft") // draft | final
+  created_at String @default("")
+  updated_at String @default("")
+}
