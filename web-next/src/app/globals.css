@@ -149,3 +149,36 @@ table.apps button:disabled { opacity: .5; cursor: default; }
 .job-desc { color: var(--text); font-size: .9rem; }
 .job-desc a { margin-left: .4rem; white-space: nowrap; }
 .job-facts { color: var(--muted); font-size: .82rem; margin-top: .5rem; display: flex; flex-wrap: wrap; gap: .75rem; }
+
+/* ---------- Resume view ---------- */
+code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: .85em; color: var(--accent-soft); }
+
+.pool-add-head { display: flex; gap: .6rem; margin-bottom: .6rem; flex-wrap: wrap; }
+.pool-add-head select, .pool-add-head input {
+  background: var(--panel); border: 1px solid var(--border); color: var(--text);
+  border-radius: 10px; padding: .5rem .6rem; font: inherit;
+}
+.pool-add-head input { flex: 1; min-width: 180px; }
+.file-btn {
+  display: inline-flex; align-items: center; cursor: pointer; white-space: nowrap;
+  background: var(--panel-2); border: 1px solid var(--border); color: var(--text);
+  border-radius: 10px; padding: .5rem .8rem;
+}
+.pool-text, .resume-md {
+  width: 100%; background: var(--panel); border: 1px solid var(--border); color: var(--text);
+  border-radius: 12px; padding: .7rem .8rem; font: inherit; resize: vertical; margin-bottom: .6rem;
+}
+.resume-md { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: .85rem; line-height: 1.55; }
+
+.resume-list { display: flex; flex-direction: column; gap: .75rem; }
+.resume-card { background: var(--panel); border: 1px solid var(--border-soft); border-radius: var(--radius); padding: .5rem 1rem; }
+.resume-card summary { display: flex; align-items: center; gap: .75rem; cursor: pointer; list-style: none; padding: .5rem 0; }
+.resume-card summary::-webkit-details-marker { display: none; }
+.resume-title { font-family: var(--serif); font-size: 1.1rem; color: #fff; }
+.resume-updated { margin-left: auto; font-size: .8rem; }
+.kw-row { display: flex; flex-wrap: wrap; gap: .35rem; margin: .5rem 0 .75rem; }
+.kw-chip { font-size: .75rem; color: var(--accent-soft); border: 1px solid var(--border); background: var(--panel-2); border-radius: 999px; padding: 2px 9px; }
+.resume-actions { display: flex; align-items: center; gap: .6rem; margin-bottom: .5rem; }
+.resume-actions button { background: var(--panel-2); border: 1px solid var(--border); color: var(--text); border-radius: 10px; padding: .5rem .9rem; font: inherit; cursor: pointer; }
+.resume-actions button.primary { background: var(--accent); color: #04122b; border: none; }
+.resume-actions button:disabled { opacity: .55; cursor: default; }
