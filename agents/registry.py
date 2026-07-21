@@ -61,6 +61,12 @@ def _resume_builder():
     return build_resume_generator_graph
 
 
+def _gmail_sync_builder():
+    from agents.gmail_sync.graph import build_gmail_sync_graph
+
+    return build_gmail_sync_graph
+
+
 REGISTRY: dict[str, AgentSpec] = {
     "morning_briefing": AgentSpec(
         key="morning_briefing",
@@ -101,6 +107,14 @@ REGISTRY: dict[str, AgentSpec] = {
         emoji="📝",
         _builder=_resume_builder,
         node_order=("gather", "research", "keywords", "draft", "save"),
+    ),
+    "gmail_sync": AgentSpec(
+        key="gmail_sync",
+        display_name="Gmail Sync",
+        description="Scan recent emails and auto-update application statuses.",
+        emoji="✉️",
+        _builder=_gmail_sync_builder,
+        node_order=("scan_gmail",),
     ),
 }
 
