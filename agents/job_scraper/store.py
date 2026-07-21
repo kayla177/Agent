@@ -1,31 +1,20 @@
-"""JSON record-store for job postings (the dedupe memory + web-view source).
+"""SQLite record-store for job postings (dedupe memory + web view source).
 
-Stored at agents/job_scraper/data/jobs.json as a JSON object keyed by posting id:
-
-    {"jobs": {"<global id>": {<enriched posting>, "first_seen": ISO,
-                              "last_seen": ISO, "status": str}, ...}}
-
-`status` is one of new | viewed | applied | dismissed. The record store is the
-single source of truth for both dedupe ("have we seen this id?") and the web
-jobs view. The dir/file are created lazily and reads degrade gracefully (a
-missing or corrupt file is treated as "nothing seen yet") so a bad file never
-crashes a run.
-
-Back-compat: `load_seen()` / `add_seen()` keep their old signatures (used by the
-notify node and any external caller) but now read/write the record store. A
-legacy `seen.json` (ids-only) is migrated in on first read as status "viewed".
+Backed by the `jobs` table in data/control_center.db (see store_db). Each row
+keeps a `data` JSON blob with the FULL enriched posting (so the scraper pipeline
+round-trips every field it depends on) plus mirrored columns (status, company,
+fit_score, ...) that let the web UI filter/sort in SQL. The public API matches
+the previous JSON version. Reads degrade gracefully (missing table -> "nothing
+seen yet"). `status` is one of new | viewed | applied | dismissed.
 """
 
 from __future__ import annotations
 
 import datetime as dt
 import json
-from pathlib import Path
+import sqlite3
 
-# .../agents/job_scraper/data/  (relative to this file, not cwd)
-_DATA_DIR = Path(__file__).resolve().parent / "data"
-_STORE = _DATA_DIR / "jobs.json"
-_LEGACY = _DATA_DIR / "seen.json"
+import store_db
 
 STATUSES = ("new", "viewed", "applied", "dismissed")
 
@@ -34,90 +23,144 @@ def _today() -> str:
     return dt.date.today().isoformat()
 
 
-def _read_raw() -> dict:
-    """Read the record store, migrating a legacy seen.json if present."""
-    try:
-        with _STORE.open("r", encoding="utf-8") as fh:
-            data = json.load(fh)
-        jobs = data.get("jobs")
-        if isinstance(jobs, dict):
-            return jobs
-    except (FileNotFoundError, json.JSONDecodeError, OSError):
-        pass
-    # No record store yet — migrate legacy ids-only seen.json if it exists.
-    try:
-        with _LEGACY.open("r", encoding="utf-8") as fh:
-            legacy = json.load(fh)
-        return {
-            pid: {"id": pid, "status": "viewed", "first_seen": "", "last_seen": ""}
-            for pid in legacy.get("ids", [])
-        }
-    except (FileNotFoundError, json.JSONDecodeError, OSError):
-        return {}
+def _mirror(rec: dict) -> dict:
+    """Values for the mirrored (queryable) columns, derived from a full record."""
+    remote = rec.get("remote")
+    return {
+        "company": rec.get("company", ""),
+        "title": rec.get("title", ""),
+        "location": rec.get("location", ""),
+        "url": rec.get("url", ""),
+        "status": rec.get("status", "new"),
+        "ats": rec.get("ats", ""),
+        "posted_at": rec.get("posted_at"),
+        "remote": None if remote is None else (1 if remote else 0),
+        "compensation": rec.get("compensation"),
+        "department": rec.get("department"),
+        "description": rec.get("description"),
+        "fit_score": rec.get("fit_score"),
+        "fit_reason": rec.get("fit_reason"),
+        "ghost": 1 if rec.get("ghost") else 0,
+        "also_on": json.dumps(rec.get("also_on", [])),
+        "first_seen": rec.get("first_seen", ""),
+        "last_seen": rec.get("last_seen", ""),
+    }
 
 
-def _write_raw(jobs: dict) -> None:
-    _DATA_DIR.mkdir(parents=True, exist_ok=True)
-    tmp = _STORE.with_suffix(".json.tmp")
-    with tmp.open("w", encoding="utf-8") as fh:
-        json.dump({"jobs": jobs}, fh, indent=2, ensure_ascii=False)
-    tmp.replace(_STORE)  # atomic-ish swap so an interrupted write can't corrupt
+_INSERT = (
+    "INSERT INTO jobs (id, company, title, location, url, status, ats, posted_at, "
+    "remote, compensation, department, description, fit_score, fit_reason, ghost, "
+    "also_on, first_seen, last_seen, data) VALUES (:id, :company, :title, :location, "
+    ":url, :status, :ats, :posted_at, :remote, :compensation, :department, "
+    ":description, :fit_score, :fit_reason, :ghost, :also_on, :first_seen, "
+    ":last_seen, :data) ON CONFLICT(id) DO UPDATE SET "
+    "company=excluded.company, title=excluded.title, location=excluded.location, "
+    "url=excluded.url, status=excluded.status, ats=excluded.ats, "
+    "posted_at=excluded.posted_at, remote=excluded.remote, "
+    "compensation=excluded.compensation, department=excluded.department, "
+    "description=excluded.description, fit_score=excluded.fit_score, "
+    "fit_reason=excluded.fit_reason, ghost=excluded.ghost, also_on=excluded.also_on, "
+    "first_seen=excluded.first_seen, last_seen=excluded.last_seen, data=excluded.data"
+)
+
+
+def _write(conn: sqlite3.Connection, record: dict) -> None:
+    conn.execute(
+        _INSERT,
+        {"id": record["id"], **_mirror(record),
+         "data": json.dumps(record, ensure_ascii=False)},
+    )
 
 
 def load_records() -> dict[str, dict]:
-    """Return the full {id: record} map (empty if none / unreadable)."""
-    return _read_raw()
+    """Return the full {id: record} map (empty if none / table missing)."""
+    try:
+        with store_db.connect() as conn:
+            rows = conn.execute("SELECT id, data FROM jobs").fetchall()
+    except sqlite3.OperationalError:
+        return {}
+    out: dict[str, dict] = {}
+    for r in rows:
+        try:
+            rec = json.loads(r["data"]) if r["data"] else {}
+        except json.JSONDecodeError:
+            rec = {}
+        rec["id"] = r["id"]
+        out[r["id"]] = rec
+    return out
 
 
 def upsert_records(postings: list[dict], *, status: str = "new") -> None:
-    """Merge postings into the store, stamping first_seen/last_seen.
-
-    Existing records keep their `status` and `first_seen`; new ones get `status`
-    (default "new"). Enrichment fields are refreshed on every pass.
-    """
+    """Merge postings; new rows get `status`, existing keep status + first_seen."""
     if not postings:
         return
-    jobs = _read_raw()
+    store_db.init_db()
     today = _today()
-    for p in postings:
-        pid = p.get("id")
-        if not pid:
-            continue
-        existing = jobs.get(pid, {})
-        record = {**existing, **p}
-        record["first_seen"] = existing.get("first_seen") or today
-        record["last_seen"] = today
-        record["status"] = existing.get("status") or status
-        jobs[pid] = record
-    _write_raw(jobs)
+    with store_db.connect() as conn:
+        for p in postings:
+            pid = p.get("id")
+            if not pid:
+                continue
+            row = conn.execute("SELECT data FROM jobs WHERE id = ?", (pid,)).fetchone()
+            existing = {}
+            if row and row["data"]:
+                try:
+                    existing = json.loads(row["data"])
+                except json.JSONDecodeError:
+                    existing = {}
+            record = {**existing, **p}
+            record["id"] = pid
+            record["first_seen"] = existing.get("first_seen") or today
+            record["last_seen"] = today
+            record["status"] = existing.get("status") or status
+            _write(conn, record)
 
 
 def set_status(pid: str, status: str) -> dict | None:
     """Update one record's status; returns the record or None if absent."""
     if status not in STATUSES:
         raise ValueError(f"status must be one of {STATUSES}")
-    jobs = _read_raw()
-    record = jobs.get(pid)
-    if record is None:
-        return None
-    record["status"] = status
-    record["last_seen"] = _today()
-    jobs[pid] = record
-    _write_raw(jobs)
+    store_db.init_db()
+    with store_db.connect() as conn:
+        row = conn.execute("SELECT data FROM jobs WHERE id = ?", (pid,)).fetchone()
+        if row is None:
+            return None
+        try:
+            record = json.loads(row["data"]) if row["data"] else {}
+        except json.JSONDecodeError:
+            record = {}
+        record["id"] = pid
+        record["status"] = status
+        record["last_seen"] = _today()
+        _write(conn, record)
     return record
 
 
-# --- Back-compat shims (ids-only view over the record store) -----------------
+def replace_record(rec: dict) -> None:
+    """Insert/replace one record verbatim (status + timestamps taken as-is).
+
+    Unlike upsert_records (which forces new rows to 'new' and stamps first_seen
+    today), this preserves the record's own status/first_seen — used by the
+    JSON->SQLite migration so historical state survives the move.
+    """
+    pid = rec.get("id")
+    if not pid:
+        return
+    store_db.init_db()
+    with store_db.connect() as conn:
+        _write(conn, {**rec, "id": pid})
 
 
 def load_seen() -> set[str]:
     """Return the set of posting ids recorded on previous runs."""
-    return set(_read_raw().keys())
+    try:
+        with store_db.connect() as conn:
+            rows = conn.execute("SELECT id FROM jobs").fetchall()
+        return {r["id"] for r in rows}
+    except sqlite3.OperationalError:
+        return set()
 
 
 def add_seen(ids: list[str]) -> None:
-    """Record bare ids as seen (kept for callers that only have ids).
-
-    Prefer `upsert_records` when full posting dicts are available.
-    """
+    """Record bare ids as seen (prefer upsert_records with full dicts)."""
     upsert_records([{"id": pid} for pid in ids])
