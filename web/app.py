@@ -23,6 +23,7 @@ from fastapi.staticfiles import StaticFiles  # noqa: E402
 
 from web import db  # noqa: E402
 from web.routers import applications, charts, jobs, pages, runs, settings  # noqa: E402
+import store_db  # noqa: E402
 
 app = FastAPI(title="daily-agents control center")
 
@@ -40,6 +41,7 @@ app.include_router(charts.router)
 @app.on_event("startup")
 def _startup() -> None:
     db.init_db()
+    store_db.init_db()
 
 
 @app.get("/healthz")
