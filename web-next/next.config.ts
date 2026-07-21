@@ -8,6 +8,7 @@ const nextConfig: NextConfig = {
       { source: "/agents/:path*", destination: "http://127.0.0.1:8001/agents/:path*" },
       { source: "/runs/:path*", destination: "http://127.0.0.1:8001/runs/:path*" },
       { source: "/prefs", destination: "http://127.0.0.1:8001/prefs" },
+      { source: "/experience/:path*", destination: "http://127.0.0.1:8001/experience/:path*" },
     ];
   },
 };

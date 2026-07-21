@@ -19,12 +19,13 @@ from fastapi import FastAPI  # noqa: E402
 
 import store_db  # noqa: E402
 from web import db  # noqa: E402
-from web.routers import prefs, runs  # noqa: E402
+from web.routers import prefs, resume, runs  # noqa: E402
 
 app = FastAPI(title="daily-agents agent service")
 
 app.include_router(runs.router)
 app.include_router(prefs.router)
+app.include_router(resume.router)
 
 
 @app.on_event("startup")
