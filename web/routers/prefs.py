@@ -1,18 +1,17 @@
-"""Settings route: accept the prefs form, validate, save, refresh config.
+"""JSON settings API — read effective prefs + secret presence; save the overlay.
 
-Multi-line fields (news topics, watchlist, headline topics) are one item per
-line. Job sources are one ``company, ats, token`` per line. Secrets are never
-posted here — they stay in .env.
+POST reuses web.prefs.save_prefs (validation + config.refresh() in-process), so
+a saved change is reflected on the next run with no restart. The multiline
+string fields mirror the old settings form (one item per line; job sources as
+'company, ats, token').
 """
 
 from __future__ import annotations
 
-import urllib.parse
-
 from fastapi import APIRouter, Request
-from fastapi.responses import RedirectResponse
+from fastapi.responses import JSONResponse
 
-from web import prefs
+from web import prefs as prefstore
 
 router = APIRouter()
 
@@ -26,19 +25,22 @@ def _parse_sources(text: str) -> list[dict]:
     for ln in _lines(text):
         parts = [p.strip() for p in ln.split(",")]
         if len(parts) < 3:
-            raise ValueError(
-                f"job source line '{ln}' must be 'company, ats, token'"
-            )
+            raise ValueError(f"job source line '{ln}' must be 'company, ats, token'")
         out.append({"company": parts[0], "ats": parts[1], "token": parts[2]})
     return out
 
 
-@router.post("/settings")
-async def save_settings(request: Request):
-    form = await request.form()
+@router.get("/prefs")
+def get_prefs():
+    return JSONResponse({"prefs": prefstore.current(), "secrets": prefstore.secret_status()})
+
+
+@router.post("/prefs")
+async def post_prefs(request: Request):
+    body = await request.json()
 
     def g(key: str) -> str:
-        return str(form.get(key, "")).strip()
+        return str(body.get(key, "")).strip()
 
     payload = {
         "WEATHER_LATITUDE": g("WEATHER_LATITUDE"),
@@ -54,9 +56,7 @@ async def save_settings(request: Request):
     }
     try:
         payload["JOB_SOURCES"] = _parse_sources(g("JOB_SOURCES"))
-        prefs.save_prefs(payload)
+        clean = prefstore.save_prefs(payload)
     except ValueError as exc:
-        msg = urllib.parse.quote(str(exc))
-        return RedirectResponse(url=f"/settings?error={msg}", status_code=303)
-
-    return RedirectResponse(url="/settings?saved=1", status_code=303)
+        return JSONResponse({"error": str(exc)}, status_code=400)
+    return JSONResponse({"saved": clean})

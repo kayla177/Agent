@@ -1,5 +1,0 @@
-{%- set icons = {"start": "◐", "finish": "✓", "error": "✗", "update": "·"} -%}
-<div class="node-line {{ status }}" data-node="{{ node }}">
-  <span class="ico">{% if status == "start" %}<span class="spinner">◐</span>{% else %}{{ icons.get(status, "·") }}{% endif %}</span>
-  <span class="name">{{ node }}</span>
-</div>
