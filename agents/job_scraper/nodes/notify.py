@@ -5,9 +5,10 @@ when built with send=True (via the `send` closure passed into the node). The
 message is always assembled and written to state so a print-only dev run can
 show it. Delivery failure is caught and surfaced, never raised.
 
-Full enriched records are persisted here (after the message is built) so that a
-role is only marked "seen" once it has actually been reported in this run. The
-same record store powers the web jobs view.
+Full enriched records are persisted here on every run (the same store powers the
+web jobs view + the dedupe "seen" memory). Discord delivery is the only side
+effect gated on send=True — so the web "run scraper" button (send=0) still fills
+the jobs board.
 """
 
 from __future__ import annotations
@@ -79,21 +80,21 @@ def make_notify_node(*, send: bool):
         warnings = state.get("warnings", [])
         message = _format_message(new, warnings)
 
-        # Only a real (send=True) run has side effects: deliver, then persist the
-        # roles. A print-only dry run previews roles without consuming them.
+        # Persist the scraped roles on EVERY run — this is the data the web jobs
+        # view + dedupe memory read, and the web "run scraper" button runs with
+        # send=0. Persistence is a data operation; Discord delivery is the only
+        # send-gated side effect.
+        try:
+            upsert_records(new)
+        except Exception as exc:
+            print(f"⚠️ Could not persist job records: {exc}")
+
         if send:
             try:
                 send_message(message)
             except Exception as exc:
                 # Don't crash the run on a delivery failure — surface it.
                 print(f"⚠️ Discord delivery failed: {exc}")
-
-            # Persist full records only after a delivery attempt, so dry runs
-            # never advance the dedupe memory or the web jobs view.
-            try:
-                upsert_records(new)
-            except Exception as exc:
-                print(f"⚠️ Could not persist job records: {exc}")
 
         return {"message": message}
 
