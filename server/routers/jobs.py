@@ -21,7 +21,7 @@ class JobRef(BaseModel):
     id: str = ""
 
 
-@router.post("/jobs/apply")
+@router.post("/data/jobs/apply")
 def apply_to_job(body: JobRef):
     jid = body.id.strip()
     if not jid:
@@ -35,7 +35,7 @@ def apply_to_job(body: JobRef):
     return {"ok": True}
 
 
-@router.post("/jobs/dismiss")
+@router.post("/data/jobs/dismiss")
 def dismiss_job(body: JobRef):
     jid = body.id.strip()
     if not jid:

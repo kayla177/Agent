@@ -12,7 +12,7 @@ export default function ApplicationRow({ app }: { app: Application }) {
   async function setNewStatus() {
     if (status === app.status) return;
     setBusy(true);
-    const res = await fetch(`/api/applications/${app.id}/status`, {
+    const res = await fetch(`/data/applications/${app.id}/status`, {
       method: "PATCH",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ status }),
@@ -24,7 +24,7 @@ export default function ApplicationRow({ app }: { app: Application }) {
   async function remove() {
     if (!confirm("Delete this application?")) return;
     setBusy(true);
-    const res = await fetch(`/api/applications/${app.id}`, { method: "DELETE" });
+    const res = await fetch(`/data/applications/${app.id}`, { method: "DELETE" });
     setBusy(false);
     if (res.ok) router.refresh();
   }

@@ -30,7 +30,7 @@ class NewApplication(BaseModel):
     status: str = "applied"
 
 
-@router.post("/applications")
+@router.post("/data/applications")
 def create_application(body: NewApplication):
     company, role = body.company.strip(), body.role.strip()
     if not company or not role:
@@ -47,7 +47,7 @@ class StatusUpdate(BaseModel):
     auto_detected: bool = False
 
 
-@router.patch("/applications/{app_id}/status")
+@router.patch("/data/applications/{app_id}/status")
 def update_application_status(app_id: int, body: StatusUpdate):
     status = body.status.strip()
     if status not in appstore.STATUSES:
@@ -58,7 +58,7 @@ def update_application_status(app_id: int, body: StatusUpdate):
     return {"application": _out(app)}
 
 
-@router.delete("/applications/{app_id}")
+@router.delete("/data/applications/{app_id}")
 def delete_application(app_id: int):
     if not appstore.delete_application(app_id):
         return JSONResponse({"error": f"No application with id {app_id}."}, status_code=404)

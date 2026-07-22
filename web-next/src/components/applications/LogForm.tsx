@@ -14,7 +14,7 @@ export default function LogForm() {
     const form = e.currentTarget;
     const data = Object.fromEntries(new FormData(form));
     setPending(true);
-    const res = await fetch("/api/applications", {
+    const res = await fetch("/data/applications", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(data),

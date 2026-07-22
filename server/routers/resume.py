@@ -60,7 +60,7 @@ class NewDoc(BaseModel):
     text: str = ""
 
 
-@router.post("/resume/docs")
+@router.post("/data/resume/docs")
 def add_doc(body: NewDoc):
     """Add one experience doc from pasted text (binary files use /experience/upload)."""
     filename = body.filename.strip() or "pasted.md"
@@ -73,7 +73,7 @@ def add_doc(body: NewDoc):
     return JSONResponse({"id": doc_id}, status_code=201)
 
 
-@router.delete("/resume/docs/{doc_id}")
+@router.delete("/data/resume/docs/{doc_id}")
 def delete_doc(doc_id: int):
     if not resume_store.delete_experience_doc(doc_id):
         return JSONResponse({"error": f"No experience doc with id {doc_id}."}, status_code=404)
@@ -89,7 +89,7 @@ class ResumeEdit(BaseModel):
     status: str | None = None
 
 
-@router.patch("/resumes")
+@router.patch("/data/resumes")
 def edit_resume(body: ResumeEdit):
     job_id = body.jobId.strip()
     if not job_id:

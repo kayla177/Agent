@@ -38,7 +38,7 @@ export default function JobsBoard({ jobs }: { jobs: Job[] }) {
 
   async function mutate(kind: "apply" | "dismiss", id: string) {
     setBusyId(id);
-    const res = await fetch(`/api/jobs/${kind}`, {
+    const res = await fetch(`/data/jobs/${kind}`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ id }),
