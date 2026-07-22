@@ -19,7 +19,7 @@ import traceback
 from typing import Any, Optional
 
 from agents.registry import AgentSpec, get_spec
-from web import db
+from server import db
 
 
 class RunManager:

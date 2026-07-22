@@ -12,7 +12,6 @@ dependencies = [
     "google-auth-httplib2>=0.4.0",
     "google-auth-oauthlib>=1.4.0",
     "httpx>=0.28.1",
-    "jinja2>=3.1",
     "langgraph>=1.2.7",
     "linkify-it-py>=2.0",
     "litellm>=1.90.1",

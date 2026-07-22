@@ -5,7 +5,7 @@ the prefs overlay. The web UI is the Next.js app (web-next) — this service has
 no Jinja, no static files, no page routes. The Next.js dev server proxies
 /agents/*, /runs/*, and /prefs here (same-origin, so no CORS needed).
 
-Launch::  uv run python -m web    # 127.0.0.1:8001
+Launch::  uv run python -m server    # 127.0.0.1:8001
 """
 
 from __future__ import annotations
@@ -18,8 +18,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from fastapi import FastAPI  # noqa: E402
 
 import store_db  # noqa: E402
-from web import db  # noqa: E402
-from web.routers import prefs, resume, runs  # noqa: E402
+from server import db  # noqa: E402
+from server.routers import prefs, resume, runs  # noqa: E402
 
 app = FastAPI(title="daily-agents agent service")
 
