@@ -17,7 +17,6 @@ export default async function DashboardPage() {
 
   return (
     <>
-      <h1>dashboard</h1>
       {featured.length === 0 ? (
         <p className="muted">Agent service offline — start it with <code>python -m server</code> (port 8001).</p>
       ) : (

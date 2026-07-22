@@ -19,7 +19,7 @@ from fastapi import FastAPI  # noqa: E402
 
 import store_db  # noqa: E402
 from server import db  # noqa: E402
-from server.routers import applications, jobs, prefs, resume, runs  # noqa: E402
+from server.routers import applications, jobs, prefs, resume, runs, stocks  # noqa: E402
 
 app = FastAPI(title="daily-agents agent service")
 
@@ -28,6 +28,7 @@ app.include_router(prefs.router)
 app.include_router(resume.router)
 app.include_router(applications.router)
 app.include_router(jobs.router)
+app.include_router(stocks.router)
 
 
 @app.on_event("startup")
