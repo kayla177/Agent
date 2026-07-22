@@ -1,87 +1,97 @@
 # daily-agents
 
-A personal multi-agent platform that runs on a **hybrid** model setup — a local
-LLM (Ollama) for cheap/private steps, with a hosted API available for hard
-reasoning later. Built on **LangGraph**: each agent is a graph that plugs into a
-shared shell (model router + Discord delivery + scheduler).
+A personal, single-user platform that runs a loop of **LangGraph agents** for a
+job/career + markets workflow, with a **Next.js** control center to trigger them,
+watch runs live, and browse the data they produce. Hybrid model setup: a local
+LLM (Ollama) for cheap/private steps, a hosted API for hard reasoning.
 
-**Phase 1 agent:** Morning Briefing — weather, commute/traffic, calendar, and a
-news catch-up, delivered to Discord on a 7am schedule.
+## Agents
 
-## Layout
+| Key | What it does |
+|---|---|
+| `morning_briefing` | Weather, commute/traffic, calendar, and a news catch-up. |
+| `stock_digest` | Watchlist quotes, technical indicators, news sentiment (info only). |
+| `job_scraper` | New co-op/intern/new-grad roles from official ATS boards, ranked by fit. |
+| `application_tracker` | Application pipeline, follow-up reminders, interviews. |
+| `gmail_sync` | Scans recent email and auto-advances application statuses. |
+| `resume_generator` | ATS-tailored résumé drafts per scraped job. |
+
+## Architecture (two processes, one SQLite file)
 
 ```
-shell/            reusable platform
-  model_router.py   LiteLLM wrapper; roles: local / reasoner / smart
-  discord_client.py REST delivery to a Discord channel
-agents/morning_briefing/
-  graph.py          LangGraph: parallel fan-out -> synthesize -> deliver
-  state.py          shared TypedDict
-  nodes/            weather, commute, calendar, news, synthesize, deliver
-scripts/run_briefing.py   run once (--send to deliver)
-ops/*.plist               launchd job (7am)
-config.py                 preferences + secret loading (.env)
-agents/registry.py        uniform descriptor over all agents (used by the web UI)
-web/                       FastAPI control center (dashboard, live runs, settings)
-  app.py                    app factory; launch with `uv run python -m web`
-  runner.py                 drives graph.astream -> SSE + SQLite persistence
-  db.py / schema.sql        run history (runs + node_events)
-  prefs.py                  read/write data/prefs.json (editable preferences)
-  routers/ templates/ static/
-data/                      local-only runtime state (gitignored): prefs.json, SQLite
+server/        Python FastAPI agent service — :8001
+  __main__.py    launch: python -m server
+  app.py         app factory (agent-only: run triggers, SSE, prefs, uploads)
+  runner.py      drives graph.astream -> SSE + SQLite persistence
+  db.py          run history (runs + node_events)
+  schema.sql     run-history DDL
+  prefs.py       read/write data/prefs.json
+  routers/       runs, prefs, resume
+web-next/      Next.js frontend — :3000  (owns all UI; reads SQLite via Prisma)
+agents/        the six LangGraph agents; registry.py = uniform descriptor
+shell/         reusable platform: model_router (LiteLLM), discord_client
+scripts/run.py generic CLI runner: python scripts/run.py <agent_key> [--send]
+ops/*.plist    launchd schedules
+config.py      preferences (env -> data/prefs.json -> defaults) + .env secrets
+data/          local-only runtime state (gitignored): control_center.db, prefs.json
+docs/          design specs & plans (see docs/superpowers/specs)
 ```
 
-## Web control center
+See **[ARCHITECTURE.md](ARCHITECTURE.md)** for the request-routing and data-ownership
+details (and the in-progress restructure toward a single-writer data layer).
 
-A local, single-user web UI to trigger any agent, watch it run node-by-node in
-real time, read the rendered output, browse run history, and edit preferences.
+## Run it (two terminals)
 
 ```bash
-uv run python -m web        # http://127.0.0.1:8000  (or: uv run uvicorn web.app:app)
+# 1) agent service (FastAPI) on :8001
+python -m server            # (venv active; or .venv/bin/python -m server)
+
+# 2) frontend (Next.js) on :3000
+cd web-next && npm run dev
 ```
 
-- **Dashboard** — run any agent in *Preview* (no Discord) or *Run & send* mode.
-- **Run detail** — live node execution via SSE + the rendered briefing.
-- **History** — every run, filterable by agent (stored in `data/control_center.db`).
-- **Settings** — edit preferences (location, addresses, news topics, watchlist,
-  job sources) without touching code. Saved to `data/prefs.json`, which
-  `config.py` overlays on top of its defaults; **secrets stay in `.env`** (the
-  page shows only whether each is set). Edits apply on the next run — no restart.
+Open **http://localhost:3000**. The frontend reads/writes the SQLite DB and calls the
+agent service on :8001 to run agents and stream results. Agents that use the local LLM
+also need **Ollama** running (`ollama serve`).
+
+> `uv` works too (`uv run python -m server`) if installed, but is not required — a plain
+> venv is enough.
+
+## Run one agent from the CLI
+
+```bash
+python scripts/run.py morning_briefing          # build + print only
+python scripts/run.py job_scraper --send        # + deliver to Discord
+# résumé generator has its own richer CLI:
+python scripts/run_resume_generator.py --list
+```
 
 ## Models (Ollama)
 
-- `llama3.1:8b`  -> role **local** (fast instruct: summarize/format)
-- `deepseek-r1:8b` -> role **reasoner** (slow reasoning; deliberate use)
+- `llama3.1:8b`  → role **local** (fast instruct: summarize/format)
+- `deepseek-r1:8b` → role **reasoner** (slow reasoning; deliberate use)
+- hosted (e.g. `anthropic/claude-sonnet-5`) → role **smart**
 
-Switch any role to a hosted model in `config.py` (`MODEL_ROLES`).
+Switch any role in `config.py` (`MODEL_ROLES`).
 
 ## Setup
 
-1. `cp .env.example .env` and fill in values (see below).
-2. Edit personal prefs in `config.py`: `WEATHER_LATITUDE/LONGITUDE/TIMEZONE`,
-   `COMMUTE_ORIGIN/DESTINATION`, `NEWS_TOPICS`.
-3. **Discord:** create a bot, invite it to your server, put `DISCORD_BOT_TOKEN`
-   and `DISCORD_CHANNEL_ID` in `.env`.
-4. **Google Maps:** enable Routes API, create an API key -> `GOOGLE_MAPS_API_KEY`.
-5. **Google Calendar:** create a Desktop OAuth client, download the JSON to
-   `google_oauth_client.json`, then run the one-time consent:
-   `uv run python -m agents.morning_briefing.nodes.calendar --auth`
+1. `cp .env.example .env` and fill in values.
+2. Edit personal prefs in `config.py` (or via the Settings tab once running):
+   `WEATHER_LATITUDE/LONGITUDE/TIMEZONE`, `COMMUTE_ORIGIN/DESTINATION`, `NEWS_TOPICS`,
+   `STOCK_WATCHLIST`, job sources.
+3. **Discord:** create a bot, invite it, set `DISCORD_BOT_TOKEN` + `DISCORD_CHANNEL_ID`.
+4. **Google Maps:** enable the Routes API → `GOOGLE_MAPS_API_KEY`.
+5. **Google (Calendar + Gmail):** create a Desktop OAuth client, download the JSON, then
+   one-time consent: `python -m agents.morning_briefing.nodes.calendar --auth`
+   (Gmail sync reuses the same token).
 
-## Run
-
-```bash
-uv run python scripts/run_briefing.py          # print only
-uv run python scripts/run_briefing.py --send    # + deliver to Discord
-```
-
-## Schedule (7am)
+## Schedule (launchd)
 
 ```bash
 cp ops/com.kayla.daily-agents.briefing.plist ~/Library/LaunchAgents/
 launchctl load ~/Library/LaunchAgents/com.kayla.daily-agents.briefing.plist
 ```
 
-The Mac must be awake at 7am. To auto-wake daily:
-`sudo pmset repeat wake MTWRFSU 06:58:00`
-
-Logs: `briefing.log` / `briefing.error.log` in the project root.
+The plists call `scripts/run.py <agent_key> --send`. The Mac must be awake at the
+scheduled time (`sudo pmset repeat wake MTWRFSU 06:58:00`). Logs land in the project root.
