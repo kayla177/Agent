@@ -3,16 +3,21 @@
 Two processes share one SQLite file (`data/control_center.db`, WAL mode).
 
 ```
-Browser ──► Next.js (web-next, :3000) ──► SQLite  (reads, via Prisma)
+Browser ──► Next.js (web-next, :3000) ──► SQLite  (READS only, via Prisma)
                      │
                      └─ same-origin proxy (next.config.ts rewrites) ──► FastAPI (server, :8001)
                                                                           │
                                                                           ├─ runs agents (LangGraph)
                                                                           ├─ streams run events (SSE)
+                                                                          ├─ ALL DB writes (/data/*)
+                                                                          ├─ agent metadata (/agents)
                                                                           └─ prefs + file uploads
 Agents (LangGraph nodes) ──► SQLite  (domain writes, via the Python stores)
 launchd ──► scripts/run.py <agent_key> --send
 ```
+
+**The backend is the single DB writer.** Next.js only *reads* (Prisma); every
+mutation is proxied to FastAPI, which writes through the Python stores.
 
 ## Who serves what
 
@@ -21,44 +26,41 @@ launchd ──► scripts/run.py <agent_key> --send
 - `GET /runs/{id}/events` — SSE; replays persisted `node_events`, then live queue
 - `GET|POST /prefs` — read/write `data/prefs.json` (via `server/prefs.py` → `config.refresh()`)
 - `POST /experience/upload` — PDF/DOCX parse into the résumé experience pool
+- `POST|PATCH|DELETE /data/*` — all DB mutations (applications, jobs apply/dismiss,
+  résumés, experience docs), wrapping the Python stores
+- `GET /agents` — UI metadata for every agent (sourced from `agents/registry.py`)
 - `GET /healthz`
 
 **Next.js (`web-next/`, `:3000`)** — owns all UI. Server components read the DB directly
-via Prisma. A few paths are proxied to :8001 by `next.config.ts` rewrites
-(`/agents/*`, `/runs/*`, `/prefs`, `/experience/*`).
+via Prisma. Mutations and agent actions are proxied to :8001 by `next.config.ts` rewrites
+(`/agents/*`, `/runs/*`, `/prefs`, `/experience/*`, `/data/*`).
 
-### Request routing — current state
+### Request routing
 - **Reads + list/detail:** Next.js server components + Prisma (`web-next/src/lib/*`).
-- **Agent runs / SSE / prefs / uploads:** proxied to FastAPI :8001.
-- **Domain mutations (today):** handled locally by Next.js API routes writing Prisma
-  (`web-next/src/app/api/**`) — applications, jobs apply/dismiss, résumés, experience docs.
-
-> **In progress (restructure Phase 2 — see `docs/superpowers/specs/2026-07-21-restructure-design.md`):**
-> mutations move to FastAPI so the **backend owns all writes** and Next.js only reads via
-> Prisma + calls the API to mutate. This removes the dual-writer described below.
+- **All mutations:** proxied to FastAPI `/data/*` (single writer). There are no
+  Prisma writes from Next.js.
+- **Agent runs / SSE / prefs / uploads / agent metadata:** proxied to FastAPI :8001.
 
 ## Data model & schema ownership
 
-Six tables in `data/control_center.db`:
+Six tables in `data/control_center.db`. **`schema.sql` (repo root) is the single source of
+truth** — `store_db.init_db()` applies it, and `server/db.py` + the agent stores delegate
+there. `web-next/prisma/schema.prisma` mirrors it and is verified by `npm run db:check`
+(builds a temp DB from `schema.sql`, diffs against the Prisma datamodel; fails on drift).
 
-| Table | Written by | Read by |
+| Table | Written by (single writer) | Read by |
 |---|---|---|
-| `applications` | `agents/application_tracker/store.py`; Next API | both sides |
-| `jobs` | `agents/job_scraper/store.py`; `web-next/src/lib/jobs-server.ts` | both sides |
+| `applications` | `agents/application_tracker/store.py` (via `/data/applications`) | both sides |
+| `jobs` | `agents/job_scraper/store.py` (via `/data/jobs/*`) | both sides |
 | `runs` | `server/db.py` | Python; Next (history) |
 | `node_events` | `server/db.py` | Python; Next (via `runs` relation) |
-| `experience_docs` | `agents/resume_generator/store.py`; Next API | both sides |
-| `resumes` | `agents/resume_generator/store.py`; Next API | both sides |
-
-**Schema ownership today is split** (a known issue targeted by Phase 2): DDL lives in
-`store_db.py` (applications, jobs), `server/schema.sql` (runs, node_events), and
-`agents/resume_generator/store.py` (experience_docs, resumes); `web-next/prisma/schema.prisma`
-**re-declares all six** as a hand-kept mirror (equivalent to `prisma db pull`). No migration
-framework — tables are created with `CREATE TABLE IF NOT EXISTS` by whichever side runs first.
+| `experience_docs` | `agents/resume_generator/store.py` (via `/data/resume/docs`) | both sides |
+| `resumes` | `agents/resume_generator/store.py` (via `/data/resumes`) | both sides |
 
 The `jobs` row carries both **mirrored columns** and a full-record **`data` JSON blob**;
-these are kept in sync by two writers (`job_scraper/store.py` and `jobs-server.ts`) — the
-dual-writer fragility Phase 2 removes by routing all writes through the Python store.
+`job_scraper/store.py:set_status` updates both together, so the single writer keeps them in
+sync (the former Next-side dual-writer is gone). No migration framework — `CREATE TABLE IF
+NOT EXISTS` from `schema.sql`; the drift-check guards the Prisma mirror.
 
 ## Agent execution flow
 

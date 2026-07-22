@@ -9,7 +9,7 @@ const STATUS_COLOR: Record<string, string> = {
 };
 
 // View / edit / finalize one generated resume. The textarea holds the raw
-// Markdown; saving writes it back via PATCH /api/resumes.
+// Markdown; saving writes it back via PATCH /data/resumes.
 export default function ResumeCard({ resume }: { resume: Resume }) {
   const router = useRouter();
   const [markdown, setMarkdown] = useState(resume.markdown);
@@ -21,7 +21,7 @@ export default function ResumeCard({ resume }: { resume: Resume }) {
   async function patch(payload: Record<string, unknown>) {
     setBusy(true);
     setSaved(false);
-    const res = await fetch("/api/resumes", {
+    const res = await fetch("/data/resumes", {
       method: "PATCH",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ jobId: resume.job_id, ...payload }),

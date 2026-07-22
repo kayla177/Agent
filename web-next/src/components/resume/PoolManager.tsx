@@ -51,7 +51,7 @@ export default function PoolManager({ docs }: { docs: PoolDoc[] }) {
       return;
     }
     setPending(true);
-    const res = await fetch("/api/resume/docs", {
+    const res = await fetch("/data/resume/docs", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ filename: filename || "pasted.md", kind, text }),
@@ -69,7 +69,7 @@ export default function PoolManager({ docs }: { docs: PoolDoc[] }) {
 
   async function remove(id: number) {
     if (!confirm("Remove this document from the pool?")) return;
-    const res = await fetch(`/api/resume/docs/${id}`, { method: "DELETE" });
+    const res = await fetch(`/data/resume/docs/${id}`, { method: "DELETE" });
     if (res.ok) router.refresh();
   }
 
