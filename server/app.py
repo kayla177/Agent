@@ -40,3 +40,12 @@ def _startup() -> None:
 @app.get("/healthz")
 def healthz() -> dict:
     return {"ok": True}
+
+
+@app.get("/agents")
+def agents() -> dict:
+    """UI metadata for every agent — the single source (registry) consumed by the
+    frontend, replacing the hand-maintained web-next agents list."""
+    from agents.registry import list_specs
+
+    return {"agents": [spec.to_meta() for spec in list_specs()]}

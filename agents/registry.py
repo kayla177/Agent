@@ -25,10 +25,24 @@ class AgentSpec:
     _builder: Callable[[], Callable[..., Any]]  # returns the build_*_graph fn
     output_key: str = "message"
     node_order: tuple[str, ...] = field(default_factory=tuple)  # for UI display
+    planet: str = "earth"  # UI theme (earth | jupiter | mars | saturn)
+    label: str = ""        # short UI label; falls back to key
 
     def build_graph(self, *, send: bool = False):
         """Compile and return this agent's graph. ``send`` toggles delivery."""
         return self._builder()(send=send)
+
+    def to_meta(self) -> dict:
+        """UI-facing metadata (the single source consumed via GET /agents)."""
+        return {
+            "key": self.key,
+            "name": self.display_name,
+            "description": self.description,
+            "emoji": self.emoji,
+            "planet": self.planet,
+            "label": self.label or self.key,
+            "node_order": list(self.node_order),
+        }
 
 
 def _briefing_builder():
@@ -75,6 +89,7 @@ REGISTRY: dict[str, AgentSpec] = {
         emoji="🌅",
         _builder=_briefing_builder,
         node_order=("weather", "commute", "calendar", "news", "synthesize", "deliver"),
+        planet="earth", label="briefing",
     ),
     "stock_digest": AgentSpec(
         key="stock_digest",
@@ -83,6 +98,7 @@ REGISTRY: dict[str, AgentSpec] = {
         emoji="📈",
         _builder=_stock_builder,
         node_order=("market_data", "technical", "news_sentiment", "synthesize", "deliver"),
+        planet="jupiter", label="stocks",
     ),
     "job_scraper": AgentSpec(
         key="job_scraper",
@@ -91,6 +107,7 @@ REGISTRY: dict[str, AgentSpec] = {
         emoji="🧑‍💻",
         _builder=_job_builder,
         node_order=("fetch", "filter", "dedupe", "freshness", "rank", "notify"),
+        planet="mars", label="jobs",
     ),
     "application_tracker": AgentSpec(
         key="application_tracker",
@@ -99,6 +116,7 @@ REGISTRY: dict[str, AgentSpec] = {
         emoji="📋",
         _builder=_tracker_builder,
         node_order=("summary", "followups", "synthesize", "deliver"),
+        planet="saturn", label="tracker",
     ),
     "resume_generator": AgentSpec(
         key="resume_generator",
@@ -107,6 +125,7 @@ REGISTRY: dict[str, AgentSpec] = {
         emoji="📝",
         _builder=_resume_builder,
         node_order=("gather", "research", "keywords", "draft", "save"),
+        planet="jupiter", label="resume",
     ),
     "gmail_sync": AgentSpec(
         key="gmail_sync",
@@ -115,6 +134,7 @@ REGISTRY: dict[str, AgentSpec] = {
         emoji="✉️",
         _builder=_gmail_sync_builder,
         node_order=("scan_gmail",),
+        planet="earth", label="gmail",
     ),
 }
 
