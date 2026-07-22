@@ -1,5 +1,5 @@
 import type { Job } from "@/lib/jobs";
-import { fitTier, FIT_COLOR, ageDays, parseAlsoOn } from "@/lib/jobs";
+import { fitTier, FIT_COLOR, JOB_STATUS_META, ageDays, parseAlsoOn } from "@/lib/jobs";
 
 type Props = {
   job: Job;
@@ -15,8 +15,11 @@ export default function JobRow({ job, expanded, busy, onToggle, onApply, onDismi
   const color = FIT_COLOR[tier];
   const age = ageDays(job.posted_at);
   const applied = job.status === "applied";
-  const dim = applied || job.ghost === 1;
+  const dismissed = job.status === "dismissed";
+  const dim = applied || dismissed || job.ghost === 1;
   const alsoOn = parseAlsoOn(job.also_on);
+  const st = JOB_STATUS_META[job.status] ?? { label: job.status, color: "#8b93a6" };
+  const actionable = !applied && !dismissed;
 
   return (
     <div className={`job-row${dim ? " dim" : ""}`}>
@@ -30,20 +33,21 @@ export default function JobRow({ job, expanded, busy, onToggle, onApply, onDismi
             {job.company}{job.location ? ` · ${job.location}` : ""}
           </div>
           <div className="job-badges">
+            <span className="status-pill" style={{ color: st.color, borderColor: st.color, background: `${st.color}1f` }}>{st.label}</span>
             {age !== null ? <span className="job-badge">🕒 {age}d ago</span> : null}
             {job.compensation ? <span className="job-badge">{job.compensation}</span> : null}
+            {job.ats ? <span className="job-badge src">{job.ats}</span> : null}
+            {alsoOn.length ? <span className="job-badge">also on {alsoOn.length}</span> : null}
             {job.ghost === 1 ? <span className="job-badge stale">⚠ stale{age !== null ? ` ${age}d` : ""}</span> : null}
           </div>
         </div>
         <div className="job-actions">
-          {applied ? (
-            <span className="status-pill" style={{ color: "#7fc08a", borderColor: "#7fc08a", background: "#7fc08a1f" }}>applied</span>
-          ) : (
+          {actionable ? (
             <>
               <button className="apply" disabled={busy} onClick={() => onApply(job.id)}>Apply</button>
               <button disabled={busy} onClick={() => onDismiss(job.id)}>Dismiss</button>
             </>
-          )}
+          ) : null}
           <button className="job-caret" aria-label="Toggle details" onClick={() => onToggle(job.id)}>
             {expanded ? "▾" : "▸"}
           </button>

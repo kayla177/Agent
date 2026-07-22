@@ -3,7 +3,7 @@ import { useEffect, useState } from "react";
 
 type NodeState = { node: string; status: string };
 
-export default function RunStream({ runId }: { runId: number }) {
+export default function RunStream({ runId, onDone }: { runId: number; onDone?: () => void }) {
   const [nodes, setNodes] = useState<NodeState[]>([]);
   const [outputHtml, setOutputHtml] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -22,14 +22,16 @@ export default function RunStream({ runId }: { runId: number }) {
       const d = JSON.parse((e as MessageEvent).data);
       setOutputHtml(d.html || "");
       es.close();
+      onDone?.();
     });
     es.addEventListener("failed", (e) => {
       const d = JSON.parse((e as MessageEvent).data);
       setError(d.error || "run failed");
       es.close();
+      onDone?.();
     });
     return () => es.close();
-  }, [runId]);
+  }, [runId, onDone]);
 
   const icon = (s: string) => (s === "finish" ? "✓" : s === "error" ? "✗" : s === "start" ? "◐" : "·");
 

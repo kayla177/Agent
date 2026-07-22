@@ -1,5 +1,13 @@
 export const JOB_STATUSES = ["new", "viewed", "applied", "dismissed"] as const;
 
+// Per-status pill tint (the status word is always shown, so color is decorative).
+export const JOB_STATUS_META: Record<string, { label: string; color: string }> = {
+  new: { label: "new", color: "#7fb0ff" },
+  viewed: { label: "viewed", color: "#8b93a6" },
+  applied: { label: "applied", color: "#7fc08a" },
+  dismissed: { label: "dismissed", color: "#e0705a" },
+};
+
 export type Job = {
   id: string;
   company: string;
