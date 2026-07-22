@@ -22,6 +22,9 @@ from dotenv import load_dotenv
 PROJECT_ROOT = Path(__file__).resolve().parent
 load_dotenv(PROJECT_ROOT / ".env")
 
+# The one and only SQLite location — every store and the server layer use this.
+DB_PATH = PROJECT_ROOT / "data" / "control_center.db"
+
 
 # --------------------------------------------------------------------------
 # Preferences overlay (data/prefs.json), written by the web settings page.
