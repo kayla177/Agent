@@ -1,28 +1,45 @@
 import { prisma } from "@/lib/db";
 import { AGENTS } from "@/lib/agents";
 import type { Run } from "@/lib/runs";
-import AgentCard from "@/components/dashboard/AgentCard";
+import { STATUSES, STATUS_META, computeStats } from "@/lib/applications";
+import DashboardHero from "@/components/dashboard/DashboardHero";
+import PipelineDonut, { type DonutSegment } from "@/components/dashboard/PipelineDonut";
 
 export const dynamic = "force-dynamic";
 
 export default async function DashboardPage() {
-  const recent = (await prisma.runs.findMany({ orderBy: { id: "desc" }, take: 8 })) as Run[];
-  const lastByAgent = new Map<string, Run>();
-  for (const r of recent) if (!lastByAgent.has(r.agent_key)) lastByAgent.set(r.agent_key, r);
+  const [recent, apps] = await Promise.all([
+    prisma.runs.findMany({ orderBy: { id: "desc" }, take: 8 }) as Promise<Run[]>,
+    prisma.applications.findMany({ select: { status: true } }),
+  ]);
+
+  const { counts } = computeStats(apps);
+  const pipeline: DonutSegment[] = STATUSES.map((s) => ({
+    label: STATUS_META[s].label,
+    value: counts[s],
+    color: STATUS_META[s].color,
+  }));
 
   return (
     <>
-      <h1>dashboard</h1>
-      <div className="agent-grid">
-        {AGENTS.map((a) => {
-          const l = lastByAgent.get(a.key);
-          return <AgentCard key={a.key} agent={a} last={l ? { status: l.status, started_at: l.started_at } : null} />;
-        })}
+      <DashboardHero agents={AGENTS} />
+
+      <h2>snapshot</h2>
+      <div className="chart-grid">
+        <div className="chart-card">
+          <h3>application pipeline</h3>
+          <PipelineDonut data={pipeline} />
+        </div>
+        <div className="chart-card">
+          <h3>watchlist today</h3>
+          {/* No persisted quotes in the data layer yet — run Stock Digest to populate. */}
+          <p className="chart-empty">No quotes yet — run the Stock Digest agent above.</p>
+        </div>
       </div>
 
       <h2>recent runs</h2>
       {recent.length === 0 ? (
-        <p className="muted">No runs yet — run an agent above.</p>
+        <p className="muted">No runs yet — pick a planet and preview an agent above.</p>
       ) : (
         <table className="apps">
           <thead><tr><th>Agent</th><th>Status</th><th>Started (UTC)</th></tr></thead>

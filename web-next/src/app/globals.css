@@ -225,3 +225,110 @@ code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: .
 /* ---------- Applications / Sync Gmail ---------- */
 .sync-gmail { margin: .5rem 0 1rem; }
 .sync-gmail .output { margin-top: .6rem; }
+
+/* ---------- Dashboard space hero (ported from the Jinja "planets show") ---------- */
+/* per-planet surface palettes for the rising planet */
+body[data-planet="earth"]   .planet, body[data-planet="earth"] .planet-far   { --p-light:#8fb7ff; --p-mid:#2f56b0; --p-dark:#050b1e; }
+body[data-planet="jupiter"] .planet, body[data-planet="jupiter"] .planet-far { --p-light:#f0d3a0; --p-mid:#b07f45; --p-dark:#241408; }
+body[data-planet="mars"]    .planet, body[data-planet="mars"] .planet-far    { --p-light:#f0a072; --p-mid:#a54320; --p-dark:#1c0a05; }
+body[data-planet="saturn"]  .planet, body[data-planet="saturn"] .planet-far  { --p-light:#efe2c0; --p-mid:#b79d6d; --p-dark:#241d10; }
+
+.hero {
+  position: relative;
+  height: 460px;
+  margin: 0.5rem 0 1rem;
+  overflow: hidden;
+  border-radius: 22px;
+  border: 1px solid var(--border-soft);
+  background: radial-gradient(120% 90% at 50% 120%, var(--glow), transparent 60%), #000;
+  isolation: isolate;
+}
+.hero-title {
+  position: absolute; top: 26px; left: 0; right: 0; text-align: center;
+  font-family: var(--serif); font-size: 5.5rem; line-height: 1;
+  letter-spacing: 2.2rem; text-indent: 2.2rem;
+  background: linear-gradient(to bottom, #ffffff 20%, #ffffff 45%, var(--accent-soft) 92%);
+  -webkit-background-clip: text; background-clip: text; color: transparent;
+  z-index: 3; pointer-events: none;
+}
+.hero-sub {
+  position: absolute; bottom: 92px; left: 0; right: 0; text-align: center;
+  font-family: var(--serif); font-size: 1.4rem; letter-spacing: 1rem; text-indent: 1rem;
+  background: linear-gradient(to bottom, #fff, var(--accent-soft));
+  -webkit-background-clip: text; background-clip: text; color: transparent;
+  z-index: 3; pointer-events: none;
+}
+.planet {
+  position: absolute; left: 50%; bottom: -62%; width: 760px; height: 760px;
+  transform: translateX(-50%); border-radius: 50%; z-index: 2;
+  background: radial-gradient(circle at 50% 32%, var(--p-light), var(--p-mid) 46%, var(--p-dark) 82%);
+  box-shadow: 0 0 140px 6px var(--glow), inset -46px -30px 150px rgba(0,0,0,.65), inset 24px 18px 90px rgba(255,255,255,.06);
+}
+.planet-far {
+  position: absolute; left: 50%; top: 40px; width: 120px; height: 120px;
+  transform: translateX(-50%); border-radius: 50%; z-index: 1; opacity: .8;
+  background: radial-gradient(circle at 45% 35%, var(--p-light), var(--p-dark) 80%);
+  box-shadow: 0 0 40px 2px var(--glow), inset -12px -8px 40px rgba(0,0,0,.6);
+}
+body[data-planet="jupiter"] .planet {
+  background:
+    repeating-linear-gradient(0deg, rgba(0,0,0,.10) 0 10px, rgba(255,255,255,.05) 10px 22px),
+    radial-gradient(circle at 50% 32%, var(--p-light), var(--p-mid) 46%, var(--p-dark) 82%);
+}
+body[data-planet="saturn"] .planet::after {
+  content: ""; position: absolute; left: 50%; top: 46%; width: 165%; height: 40%;
+  transform: translate(-50%, -50%) rotate(-16deg); border-radius: 50%;
+  border: 10px solid rgba(221,202,156,.28); box-shadow: 0 0 0 6px rgba(221,202,156,.10); z-index: 3;
+}
+.pill-nav {
+  position: absolute; left: 50%; bottom: 20px; transform: translateX(-50%); z-index: 4;
+  display: flex; gap: .3rem; padding: .5rem; border-radius: 30px;
+  background: rgba(255,255,255,.14); backdrop-filter: blur(10px); -webkit-backdrop-filter: blur(10px);
+  border: 1px solid rgba(255,255,255,.18);
+}
+.pill-nav button {
+  font-family: var(--serif); font-size: 1.25rem; letter-spacing: 1px; text-transform: lowercase;
+  color: #f4f4f4; background: transparent; border: none; border-radius: 22px;
+  padding: .35rem 1.1rem; cursor: pointer;
+  text-decoration: underline; text-decoration-color: rgba(245,245,245,.45); text-underline-offset: 4px;
+  transition: color .2s ease, background .2s ease;
+}
+.pill-nav button:hover { color: #fff; }
+.pill-nav button.on { background: rgba(0,0,0,.9); color: #fff; text-decoration-color: rgba(255,255,255,.5); }
+
+.featured { text-align: center; margin: .5rem 0 1.5rem; }
+.featured h3 { font-family: var(--serif); font-size: 1.9rem; letter-spacing: 1px; margin: 0 0 .35rem; font-weight: 400; color: #fff; }
+.featured p { color: var(--muted); margin: 0 auto 1.1rem; max-width: 520px; }
+.featured .card-actions { display: flex; gap: .5rem; justify-content: center; }
+.featured .card-actions button {
+  font: inherit; cursor: pointer; border: 1px solid var(--border);
+  background: rgba(255,255,255,.05); color: var(--text);
+  padding: .5rem 1.05rem; border-radius: 999px; transition: border-color .15s ease, background .15s ease, color .15s ease;
+}
+.featured .card-actions button:hover { border-color: var(--accent); color: #fff; }
+.featured .card-actions button.primary { background: var(--accent); border-color: var(--accent); color: #04060d; font-weight: 600; }
+.featured .card-actions button:disabled { opacity: .6; cursor: default; }
+.featured .run-stream { text-align: left; max-width: 640px; margin: 1rem auto 0; }
+
+/* ---------- Dashboard snapshot charts ---------- */
+.chart-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 1.1rem; }
+.chart-card {
+  background: var(--panel); border: 1px solid var(--border); border-radius: var(--radius);
+  padding: 1.1rem 1.3rem;
+}
+.chart-card h3 { font-family: var(--serif); font-weight: 400; margin: 0 0 .8rem; font-size: 1.05rem; letter-spacing: 2px; text-transform: lowercase; color: var(--muted); }
+.chart-empty { color: var(--muted); font-style: italic; padding: 1.5rem 0; text-align: center; }
+
+.donut-wrap { display: flex; align-items: center; gap: 1.25rem; }
+.donut-total { font-family: var(--serif); font-size: 1.6rem; fill: #fff; }
+.donut-total-label { fill: var(--muted); font-size: .72rem; letter-spacing: 1px; text-transform: uppercase; }
+.donut-legend { display: flex; flex-direction: column; gap: .35rem; font-size: .85rem; }
+.donut-legend span { display: inline-flex; align-items: center; gap: .5rem; color: var(--text); }
+.donut-legend .dot { width: 10px; height: 10px; border-radius: 50%; flex: none; }
+.donut-legend .lg-count { color: var(--muted); margin-left: auto; font-variant-numeric: tabular-nums; }
+
+@media (max-width: 820px) {
+  .chart-grid { grid-template-columns: 1fr; }
+  .hero-title { font-size: 3.2rem; letter-spacing: 1.1rem; text-indent: 1.1rem; }
+  .hero { height: 380px; }
+}
