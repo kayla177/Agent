@@ -12,7 +12,8 @@
         <string>/Users/kayla.li/.local/bin/uv</string>
         <string>run</string>
         <string>python</string>
-        <string>scripts/run_stock_digest.py</string>
+        <string>scripts/run.py</string>
+        <string>stock_digest</string>
         <string>--send</string>
     </array>
 

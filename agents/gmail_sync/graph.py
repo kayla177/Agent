@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from langgraph.graph import END, START, StateGraph
 
-from agents.gmail_sync.node import scan_gmail_node
+from agents.gmail_sync.nodes.scan_gmail import scan_gmail_node
 from agents.gmail_sync.state import GmailSyncState
 
 

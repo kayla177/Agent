@@ -12,7 +12,8 @@
         <string>/Users/kayla.li/.local/bin/uv</string>
         <string>run</string>
         <string>python</string>
-        <string>scripts/run_briefing.py</string>
+        <string>scripts/run.py</string>
+        <string>morning_briefing</string>
         <string>--send</string>
     </array>
 

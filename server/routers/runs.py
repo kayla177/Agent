@@ -14,8 +14,8 @@ import json
 from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse, StreamingResponse
 
-from web import db, runner
-from web.markdown import render_markdown
+from server import db, runner
+from server.markdown import render_markdown
 
 router = APIRouter()
 

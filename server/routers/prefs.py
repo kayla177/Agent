@@ -1,6 +1,6 @@
 """JSON settings API — read effective prefs + secret presence; save the overlay.
 
-POST reuses web.prefs.save_prefs (validation + config.refresh() in-process), so
+POST reuses server.prefs.save_prefs (validation + config.refresh() in-process), so
 a saved change is reflected on the next run with no restart. The multiline
 string fields mirror the old settings form (one item per line; job sources as
 'company, ats, token').
@@ -11,7 +11,7 @@ from __future__ import annotations
 from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
 
-from web import prefs as prefstore
+from server import prefs as prefstore
 
 router = APIRouter()
 
