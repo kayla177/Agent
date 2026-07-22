@@ -225,3 +225,96 @@ code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: .
 /* ---------- Applications / Sync Gmail ---------- */
 .sync-gmail { margin: .5rem 0 1rem; }
 .sync-gmail .output { margin-top: .6rem; }
+
+/* ---------- Hub shell: persistent planet hero + pill-nav (Option C) ---------- */
+body[data-planet="earth"]   .planet, body[data-planet="earth"] .planet-far   { --p-light:#8fb7ff; --p-mid:#2f56b0; --p-dark:#050b1e; }
+body[data-planet="jupiter"] .planet, body[data-planet="jupiter"] .planet-far { --p-light:#f0d3a0; --p-mid:#b07f45; --p-dark:#241408; }
+body[data-planet="mars"]    .planet, body[data-planet="mars"] .planet-far    { --p-light:#f0a072; --p-mid:#a54320; --p-dark:#1c0a05; }
+body[data-planet="saturn"]  .planet, body[data-planet="saturn"] .planet-far  { --p-light:#efe2c0; --p-mid:#b79d6d; --p-dark:#241d10; }
+
+/* Compact persistent hero (shorter than the old full-screen one so content shows). */
+.hero {
+  position: relative; height: 300px; margin: 0 0 1.5rem; overflow: hidden;
+  border-radius: 22px; border: 1px solid var(--border-soft);
+  background: radial-gradient(120% 90% at 50% 120%, var(--glow), transparent 60%), #000;
+  isolation: isolate;
+}
+.hero-title {
+  position: absolute; top: 20px; left: 0; right: 0; text-align: center;
+  font-family: var(--serif); font-size: 3.6rem; line-height: 1;
+  letter-spacing: 1.6rem; text-indent: 1.6rem;
+  background: linear-gradient(to bottom, #fff 30%, var(--accent-soft) 95%);
+  -webkit-background-clip: text; background-clip: text; color: transparent;
+  z-index: 3; pointer-events: none;
+}
+.hero-sub {
+  position: absolute; bottom: 74px; left: 0; right: 0; text-align: center;
+  font-family: var(--serif); font-size: 1.1rem; letter-spacing: .8rem; text-indent: .8rem;
+  background: linear-gradient(to bottom, #fff, var(--accent-soft));
+  -webkit-background-clip: text; background-clip: text; color: transparent;
+  z-index: 3; pointer-events: none;
+}
+.planet {
+  position: absolute; left: 50%; bottom: -78%; width: 520px; height: 520px;
+  transform: translateX(-50%); border-radius: 50%; z-index: 2;
+  background: radial-gradient(circle at 50% 32%, var(--p-light), var(--p-mid) 46%, var(--p-dark) 82%);
+  box-shadow: 0 0 120px 6px var(--glow), inset -40px -26px 120px rgba(0,0,0,.65), inset 20px 16px 80px rgba(255,255,255,.06);
+}
+.planet-far {
+  position: absolute; left: 50%; top: 26px; width: 84px; height: 84px;
+  transform: translateX(-50%); border-radius: 50%; z-index: 1; opacity: .8;
+  background: radial-gradient(circle at 45% 35%, var(--p-light), var(--p-dark) 80%);
+  box-shadow: 0 0 32px 2px var(--glow), inset -10px -6px 32px rgba(0,0,0,.6);
+}
+body[data-planet="jupiter"] .planet {
+  background:
+    repeating-linear-gradient(0deg, rgba(0,0,0,.10) 0 8px, rgba(255,255,255,.05) 8px 18px),
+    radial-gradient(circle at 50% 32%, var(--p-light), var(--p-mid) 46%, var(--p-dark) 82%);
+}
+body[data-planet="saturn"] .planet::after {
+  content: ""; position: absolute; left: 50%; top: 46%; width: 165%; height: 40%;
+  transform: translate(-50%, -50%) rotate(-16deg); border-radius: 50%;
+  border: 8px solid rgba(221,202,156,.28); box-shadow: 0 0 0 5px rgba(221,202,156,.10); z-index: 3;
+}
+.pill-nav {
+  position: absolute; left: 50%; bottom: 16px; transform: translateX(-50%); z-index: 4;
+  display: flex; gap: .3rem; padding: .45rem; border-radius: 30px;
+  background: rgba(255,255,255,.14); backdrop-filter: blur(10px); -webkit-backdrop-filter: blur(10px);
+  border: 1px solid rgba(255,255,255,.18);
+}
+.pill-nav a {
+  font-family: var(--serif); font-size: 1.15rem; letter-spacing: 1px; text-transform: lowercase;
+  color: #f4f4f4; border-radius: 22px; padding: .3rem 1.05rem; cursor: pointer;
+  text-decoration: underline; text-decoration-color: rgba(245,245,245,.45); text-underline-offset: 4px;
+  transition: color .2s ease, background .2s ease;
+}
+.pill-nav a:hover { color: #fff; }
+.pill-nav a.on { background: rgba(0,0,0,.9); color: #fff; text-decoration-color: rgba(255,255,255,.5); }
+
+/* ---------- Snapshot charts (donut + bar) ---------- */
+.chart-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 1.1rem; }
+.chart-card { background: var(--panel); border: 1px solid var(--border); border-radius: var(--radius); padding: 1.1rem 1.3rem; }
+.chart-card h3 { font-family: var(--serif); font-weight: 400; margin: 0 0 .8rem; font-size: 1.05rem; letter-spacing: 2px; text-transform: lowercase; color: var(--muted); }
+.chart-empty { color: var(--muted); font-style: italic; padding: 1.5rem 0; text-align: center; }
+.donut-wrap { display: flex; align-items: center; gap: 1.25rem; }
+.donut-total { font-family: var(--serif); font-size: 1.6rem; fill: #fff; }
+.donut-total-label { fill: var(--muted); font-size: .72rem; letter-spacing: 1px; text-transform: uppercase; }
+.donut-legend { display: flex; flex-direction: column; gap: .35rem; font-size: .85rem; }
+.donut-legend span { display: inline-flex; align-items: center; gap: .5rem; color: var(--text); }
+.donut-legend .dot { width: 10px; height: 10px; border-radius: 50%; flex: none; }
+.donut-legend .lg-count { color: var(--muted); margin-left: auto; font-variant-numeric: tabular-nums; }
+
+/* watchlist bar chart */
+.bar-chart { display: flex; align-items: flex-end; gap: 14px; height: 160px; padding: 1rem 0 1.4rem; }
+.bar-col { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: flex-end; height: 100%; }
+.bar-col .bar { width: 70%; min-width: 24px; border-radius: 6px 6px 0 0; }
+.bar-col .bar.up { background: linear-gradient(var(--green), rgba(127,192,138,.25)); }
+.bar-col .bar.down { background: linear-gradient(var(--red), rgba(224,112,90,.25)); }
+.bar-col .bar-pct { font-size: .72rem; color: var(--muted); margin-bottom: .3rem; }
+.bar-col .bar-sym { font-size: .74rem; color: var(--text); margin-top: .35rem; }
+
+@media (max-width: 820px) {
+  .chart-grid { grid-template-columns: 1fr; }
+  .hero-title { font-size: 2.4rem; letter-spacing: .8rem; text-indent: .8rem; }
+  .hero { height: 250px; }
+}
