@@ -89,7 +89,7 @@ CREATE TABLE IF NOT EXISTS experience_docs (
 );
 
 CREATE TABLE IF NOT EXISTS resumes (
-    job_id      TEXT PRIMARY KEY,
+    job_id      TEXT NOT NULL PRIMARY KEY,
     company     TEXT NOT NULL DEFAULT '',
     role        TEXT NOT NULL DEFAULT '',
     markdown    TEXT NOT NULL DEFAULT '',
