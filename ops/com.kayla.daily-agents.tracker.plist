@@ -11,7 +11,8 @@
         <string>/Users/kayla.li/.local/bin/uv</string>
         <string>run</string>
         <string>python</string>
-        <string>scripts/run_application_tracker.py</string>
+        <string>scripts/run.py</string>
+        <string>application_tracker</string>
         <string>--send</string>
     </array>
 
