@@ -17,7 +17,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 import store_db
 from agents.application_tracker import store as appstore
 from agents.gmail_sync import matching
-from agents.gmail_sync import node as gnode
+from agents.gmail_sync.nodes import scan_gmail as gnode
 
 _failures: list[str] = []
 
