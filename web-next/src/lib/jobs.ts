@@ -68,9 +68,30 @@ export function byDateDesc(a: Job, b: Job): number {
   return (b.posted_at ?? "").localeCompare(a.posted_at ?? "");
 }
 
-// highest-fit role among status === "new" with a non-null score; null if none
+// Recency bucket: fresher = lower number = higher priority. Undated (unknown age)
+// sinks to the bottom alongside the oldest roles.
+export function ageBucket(j: Job): number {
+  const a = ageDays(j.posted_at);
+  if (a === null) return 3;
+  if (a <= 2) return 0;   // last ~48h
+  if (a <= 7) return 1;   // this week
+  if (a <= 30) return 2;  // this month
+  return 3;               // older
+}
+
+// Default ordering: freshest bucket first, then best fit within the bucket — so
+// a 24h role always outranks a 300d one, but fit still breaks ties.
+export function byPriority(a: Job, b: Job): number {
+  const d = ageBucket(a) - ageBucket(b);
+  return d !== 0 ? d : byFitDesc(a, b);
+}
+
+// Highest-fit role among status === "new" with a non-null score, preferring
+// reasonably fresh roles (≤30d) so the hero never highlights a stale posting.
 export function bestMatch(jobs: Job[]): Job | null {
   const scored = jobs.filter((j) => j.status === "new" && j.fit_score !== null);
   if (!scored.length) return null;
-  return scored.reduce((best, j) => (j.fit_score! > best.fit_score! ? j : best));
+  const fresh = scored.filter((j) => ageBucket(j) <= 2);
+  const pool = fresh.length ? fresh : scored;
+  return pool.reduce((best, j) => (j.fit_score! > best.fit_score! ? j : best));
 }

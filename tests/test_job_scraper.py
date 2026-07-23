@@ -57,6 +57,40 @@ def test_matching() -> None:
     check("canonical dash -> ''", matching.canonical_location("—") == "")
 
 
+def test_relevance() -> None:
+    print("relevance filter (undergrad)")
+    from agents.job_scraper.matching import is_excluded, is_target_role
+    from agents.job_scraper.nodes.filter import filter_node
+
+    check("intern is target", is_target_role("Software Engineer Intern"))
+    check("new grad is target", is_target_role("New Grad Software Engineer"))
+    check("senior excluded", is_excluded("Senior Software Engineer Intern"))
+    check("phd excluded", is_excluded("Machine Learning Intern, PhD"))
+    check("master's excluded", is_excluded("Data Science Intern (Master's)"))
+    check("staff excluded", is_excluded("Staff Engineer, New Grad"))
+    check("plain intern not excluded", not is_excluded("Software Engineer Intern"))
+    check("new grad not excluded", not is_excluded("New Grad SWE"))
+
+    out = filter_node({"raw": [
+        {"title": "Software Engineer Intern"},          # keep
+        {"title": "Senior Software Engineer"},          # drop (not early-career)
+        {"title": "ML Research Intern — PhD required"},  # drop (excluded: phd)
+        {"title": "New Grad Software Engineer"},        # keep
+        {"title": "Staff Data Scientist"},              # drop (not early-career)
+    ]})["filtered"]
+    titles = {p["title"] for p in out}
+    check("filter keeps only undergrad-eligible early-career", titles == {"Software Engineer Intern", "New Grad Software Engineer"})
+
+
+def test_rank_eligibility() -> None:
+    print("rank parse (eligibility)")
+    parsed = _parse('[{"i":0,"eligible":false,"score":80,"reason":"phd"},{"i":1,"eligible":true,"score":70}]', 2)
+    check("eligible=false parsed", parsed[0]["eligible"] is False)
+    check("eligible=true parsed", parsed[1]["eligible"] is True)
+    check("missing eligible defaults true", _parse('[{"i":0,"score":50}]', 1)[0]["eligible"] is True)
+    check("null score -> None", _parse('[{"i":0,"eligible":true,"score":null}]', 1)[0]["score"] is None)
+
+
 def test_freshness() -> None:
     print("freshness node")
     old = (dt.date.today() - dt.timedelta(days=config.JOB_MAX_AGE_DAYS + 10)).isoformat()
@@ -112,6 +146,8 @@ def main() -> int:
     for fn in (
         test_ats_helpers,
         test_matching,
+        test_relevance,
+        test_rank_eligibility,
         test_freshness,
         test_dedupe_cross_source,
         test_rank_parse,
