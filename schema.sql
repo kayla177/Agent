@@ -120,3 +120,23 @@ CREATE TABLE IF NOT EXISTS resume_versions (
     created_at  TEXT NOT NULL DEFAULT ''
 );
 CREATE INDEX IF NOT EXISTS idx_resume_versions_job ON resume_versions(job_id);
+
+-- ---------------------------------------------------------------------------
+-- Stock digest — persisted analysis snapshots (one row per symbol per run, plus
+-- a single '__market__' row holding the overview). Lets the /stocks desk serve
+-- the last LLM-written analysis without re-running the model on every page load.
+-- `data` holds the full beginner report (summary, explained signals, risks,
+-- catalysts, learn note) or, for '__market__', {overview, read}.
+-- ---------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS stock_analysis (
+    symbol   TEXT    NOT NULL,
+    run_at   TEXT    NOT NULL,               -- ISO8601 UTC; all rows of one run share this
+    verdict  TEXT    NOT NULL DEFAULT '',    -- bullish | neutral | bearish
+    score    INTEGER,                         -- -2..+2 (bearish..bullish)
+    signal   TEXT    NOT NULL DEFAULT '',    -- buy | sell | hold (transparent heuristic)
+    price    REAL,
+    pct      REAL,
+    data     TEXT    NOT NULL DEFAULT '{}',  -- full report JSON
+    PRIMARY KEY (run_at, symbol)
+);
+CREATE INDEX IF NOT EXISTS idx_stock_analysis_run ON stock_analysis(run_at DESC);
