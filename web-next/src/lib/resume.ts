@@ -45,6 +45,22 @@ export type Resume = {
   updated_at: string;
 };
 
+// The single canonical résumé tailored drafts start from.
+export type MasterResume = {
+  markdown: string;
+  keywords: string; // JSON array as stored (Prisma read); use parseKeywords()
+  updated_at: string;
+};
+
+// A past snapshot of a tailored résumé (from GET /data/resumes/{job_id}/versions).
+export type ResumeVersion = {
+  id: number;
+  job_id: string;
+  markdown: string;
+  status: string;
+  created_at: string;
+};
+
 export function parseKeywords(raw: string | null | undefined): string[] {
   if (!raw) return [];
   try {

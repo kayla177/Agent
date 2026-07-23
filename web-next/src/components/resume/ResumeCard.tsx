@@ -1,7 +1,8 @@
 "use client";
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
-import { parseKeywords, type Resume } from "@/lib/resume";
+import { parseKeywords, type Resume, type ResumeVersion } from "@/lib/resume";
+import { printResume } from "@/lib/printResume";
 
 const STATUS_COLOR: Record<string, string> = {
   draft: "var(--amber)",
@@ -9,14 +10,24 @@ const STATUS_COLOR: Record<string, string> = {
 };
 
 // View / edit / finalize one generated resume. The textarea holds the raw
-// Markdown; saving writes it back via PATCH /data/resumes.
-export default function ResumeCard({ resume }: { resume: Resume }) {
+// Markdown; saving writes it back via PATCH /data/resumes. Also exposes past
+// versions (GET /data/resumes/{job_id}/versions) and a print-to-PDF export.
+// `defaultOpen` (set from the tracker's ?job= deep link) expands + scrolls to it.
+export default function ResumeCard({ resume, defaultOpen = false }: { resume: Resume; defaultOpen?: boolean }) {
   const router = useRouter();
+  const cardRef = useRef<HTMLDetailsElement>(null);
+
+  useEffect(() => {
+    if (defaultOpen) cardRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
+  }, [defaultOpen]);
   const [markdown, setMarkdown] = useState(resume.markdown);
   const [busy, setBusy] = useState(false);
   const [saved, setSaved] = useState(false);
+  const [versions, setVersions] = useState<ResumeVersion[] | null>(null);
+  const [loadingVersions, setLoadingVersions] = useState(false);
   const keywords = parseKeywords(resume.keywords);
   const dirty = markdown !== resume.markdown;
+  const title = `${resume.role || "resume"} — ${resume.company || ""}`.trim();
 
   async function patch(payload: Record<string, unknown>) {
     setBusy(true);
@@ -33,8 +44,15 @@ export default function ResumeCard({ resume }: { resume: Resume }) {
     }
   }
 
+  async function loadVersions() {
+    setLoadingVersions(true);
+    const res = await fetch(`/data/resumes/${encodeURIComponent(resume.job_id)}/versions`);
+    setLoadingVersions(false);
+    if (res.ok) setVersions((await res.json()).versions ?? []);
+  }
+
   return (
-    <details className="resume-card">
+    <details className="resume-card" ref={cardRef} id={`resume-${resume.job_id}`} open={defaultOpen}>
       <summary>
         <span className="resume-title">
           {resume.role || "(untitled)"} <span className="muted">@ {resume.company || "?"}</span>
@@ -75,8 +93,35 @@ export default function ResumeCard({ resume }: { resume: Resume }) {
             Revert to draft
           </button>
         )}
+        <button disabled={busy} onClick={() => printResume(markdown, title)}>
+          Download PDF
+        </button>
         {dirty ? <span className="muted">unsaved edits</span> : null}
       </div>
+
+      <details className="version-block" onToggle={(e) => { if ((e.target as HTMLDetailsElement).open && versions === null) loadVersions(); }}>
+        <summary className="muted">version history</summary>
+        {loadingVersions ? (
+          <p className="muted">loading…</p>
+        ) : versions && versions.length > 0 ? (
+          <div className="version-list">
+            {versions.map((v) => (
+              <div key={v.id} className="version-item">
+                <div className="version-head">
+                  <span className="version-when">{v.created_at}</span>
+                  <span className="status-pill" style={{ color: STATUS_COLOR[v.status] ?? "var(--muted)", borderColor: STATUS_COLOR[v.status] ?? "var(--border)" }}>{v.status}</span>
+                  <button className="restore" onClick={() => setMarkdown(v.markdown)}>
+                    Load into editor
+                  </button>
+                </div>
+                <textarea className="version-md" value={v.markdown} readOnly rows={4} />
+              </div>
+            ))}
+          </div>
+        ) : (
+          <p className="muted">No earlier versions — this is the first draft.</p>
+        )}
+      </details>
     </details>
   );
 }

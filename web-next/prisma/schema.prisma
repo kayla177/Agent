@@ -8,15 +8,16 @@ datasource db {
 }
 
 model applications {
-  id            Int    @id @default(autoincrement())
+  id            Int     @id @default(autoincrement())
   company       String
   role          String
-  url           String @default("")
-  status        String @default("applied")
+  url           String  @default("")
+  status        String  @default("applied")
   applied_date  String
   updated_date  String
-  notes         String @default("")
-  auto_detected Int    @default(0)
+  notes         String  @default("")
+  auto_detected Int     @default(0)
+  resume_job_id String?
 }
 
 model node_events {
@@ -92,4 +93,22 @@ model resumes {
   status     String @default("draft") // draft | final
   created_at String @default("")
   updated_at String @default("")
+}
+
+model master_resume {
+  id         Int    @id @default(autoincrement())
+  markdown   String @default("")
+  keywords   String @default("[]") // JSON array of strings
+  updated_at String @default("")
+}
+
+model resume_versions {
+  id         Int    @id @default(autoincrement())
+  job_id     String
+  markdown   String @default("")
+  keywords   String @default("[]") // JSON array of strings
+  status     String @default("draft")
+  created_at String @default("")
+
+  @@index([job_id], map: "idx_resume_versions_job")
 }

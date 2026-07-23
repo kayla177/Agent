@@ -13,11 +13,10 @@ const nextConfig: NextConfig = {
       { source: "/data/:path*", destination: "http://127.0.0.1:8001/data/:path*" },
     ];
   },
-  // The hub merged applications + resume into /tracker; keep old links working.
+  // Résumés now live at /resume (their own tab); tracker is applications-only.
   async redirects() {
     return [
       { source: "/applications", destination: "/tracker", permanent: false },
-      { source: "/resume", destination: "/tracker", permanent: false },
     ];
   },
 };

@@ -21,7 +21,8 @@ CREATE TABLE IF NOT EXISTS applications (
     applied_date  TEXT    NOT NULL,
     updated_date  TEXT    NOT NULL,
     notes         TEXT    NOT NULL DEFAULT '',
-    auto_detected INTEGER NOT NULL DEFAULT 0
+    auto_detected INTEGER NOT NULL DEFAULT 0,
+    resume_job_id TEXT             -- which generated resume was used to apply (-> resumes.job_id); NULL if none
 );
 
 -- ---------------------------------------------------------------------------
@@ -98,3 +99,24 @@ CREATE TABLE IF NOT EXISTS resumes (
     created_at  TEXT NOT NULL DEFAULT '',
     updated_at  TEXT NOT NULL DEFAULT ''
 );
+
+-- The one canonical "master" resume the tailored drafts start from. Single row
+-- (id is always 1, enforced by the store). Kept as editable Markdown.
+CREATE TABLE IF NOT EXISTS master_resume (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    markdown    TEXT NOT NULL DEFAULT '',
+    keywords    TEXT NOT NULL DEFAULT '[]',      -- JSON array of strings
+    updated_at  TEXT NOT NULL DEFAULT ''
+);
+
+-- Version history: a snapshot of a resume's Markdown is appended here before it
+-- is overwritten (on regenerate or manual save), so past drafts are never lost.
+CREATE TABLE IF NOT EXISTS resume_versions (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    job_id      TEXT NOT NULL,
+    markdown    TEXT NOT NULL DEFAULT '',
+    keywords    TEXT NOT NULL DEFAULT '[]',      -- JSON array of strings
+    status      TEXT NOT NULL DEFAULT 'draft',   -- status at snapshot time
+    created_at  TEXT NOT NULL DEFAULT ''
+);
+CREATE INDEX IF NOT EXISTS idx_resume_versions_job ON resume_versions(job_id);

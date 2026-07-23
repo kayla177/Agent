@@ -34,3 +34,17 @@ def init_db() -> None:
     Safe to call repeatedly (CREATE TABLE IF NOT EXISTS)."""
     with connect() as conn:
         conn.executescript(SCHEMA_FILE.read_text(encoding="utf-8"))
+        _migrate(conn)
+
+
+def _migrate(conn: sqlite3.Connection) -> None:
+    """Additive column migrations for pre-existing DBs.
+
+    `CREATE TABLE IF NOT EXISTS` in schema.sql covers fresh databases and new
+    tables, but never adds a column to a table that already exists. Each guard
+    here is idempotent (checked against PRAGMA table_info), so this is safe to
+    run on every init. Keep in sync with schema.sql; the drift check builds a
+    fresh DB from schema.sql alone, so these ALTERs must match its columns."""
+    cols = {r[1] for r in conn.execute("PRAGMA table_info(applications)")}
+    if "resume_job_id" not in cols:
+        conn.execute("ALTER TABLE applications ADD COLUMN resume_job_id TEXT")
