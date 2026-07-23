@@ -58,6 +58,19 @@ def update_application_status(app_id: int, body: StatusUpdate):
     return {"application": _out(app)}
 
 
+class ResumeLink(BaseModel):
+    resume_job_id: str | None = None  # resumes.job_id, or null/"" to clear
+
+
+@router.patch("/data/applications/{app_id}/resume")
+def set_application_resume(app_id: int, body: ResumeLink):
+    """Record which generated résumé was used to apply (or clear the link)."""
+    app = appstore.set_resume_link(app_id, body.resume_job_id)
+    if app is None:
+        return JSONResponse({"error": f"No application with id {app_id}."}, status_code=404)
+    return {"application": _out(app)}
+
+
 @router.delete("/data/applications/{app_id}")
 def delete_application(app_id: int):
     if not appstore.delete_application(app_id):

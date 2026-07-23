@@ -83,6 +83,23 @@ def delete_application(app_id: int) -> bool:
     return cur.rowcount > 0
 
 
+def set_resume_link(app_id: int, resume_job_id: str | None) -> dict | None:
+    """Record which generated resume was used to apply (or clear it with None).
+
+    `resume_job_id` points at resumes.job_id so interview prep can recall the
+    exact resume sent. Returns the updated record, or None if the id is absent.
+    """
+    store_db.init_db()
+    link = (resume_job_id or "").strip() or None
+    with store_db.connect() as conn:
+        cur = conn.execute(
+            "UPDATE applications SET resume_job_id = ? WHERE id = ? RETURNING *",
+            (link, int(app_id)),
+        )
+        row = cur.fetchone()
+    return _row(row) if row else None
+
+
 def days_since(date_str: str) -> int:
     """Whole days between `date_str` (ISO) and today; 0 if unparseable."""
     try:

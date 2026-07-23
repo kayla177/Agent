@@ -17,6 +17,7 @@ from pydantic import BaseModel
 
 from agents.resume_generator import parse_upload
 from agents.resume_generator import store as resume_store
+from server.markdown import render_markdown
 
 router = APIRouter()
 
@@ -49,6 +50,30 @@ async def upload_experience(file: UploadFile = File(...), kind: str = Form("resu
 
     doc_id = resume_store.add_experience_doc(filename, text, kind=kind)
     return JSONResponse({"id": doc_id, "chars": len(text)}, status_code=201)
+
+
+@router.post("/experience/parse")
+async def parse_experience(file: UploadFile = File(...)):
+    """Extract text from an uploaded file WITHOUT storing it — used to seed the
+    master résumé editor from an existing PDF/DOCX/TXT/MD."""
+    filename = file.filename or "upload"
+    suffix = Path(filename).suffix.lower()
+    if suffix not in parse_upload.SUPPORTED:
+        return JSONResponse(
+            {"error": f"unsupported file type '{suffix}' (supported: {', '.join(parse_upload.SUPPORTED)})"},
+            status_code=400,
+        )
+    data = await file.read()
+    with tempfile.NamedTemporaryFile(suffix=suffix, delete=True) as tmp:
+        tmp.write(data)
+        tmp.flush()
+        try:
+            text = parse_upload.extract_text(tmp.name)
+        except (ValueError, OSError) as exc:
+            return JSONResponse({"error": f"could not parse file: {exc}"}, status_code=400)
+    if not text.strip():
+        return JSONResponse({"error": "no text could be extracted from that file"}, status_code=400)
+    return {"text": text}
 
 
 # --------------------------------------------------------------------------
@@ -112,3 +137,39 @@ def edit_resume(body: ResumeEdit):
         status=body.status.strip() if body.status is not None else existing["status"],
     )
     return {"resume": resume}
+
+
+@router.get("/data/resumes/{job_id}/versions")
+def resume_versions(job_id: str):
+    """Past snapshots for a resume (newest first)."""
+    return {"versions": resume_store.list_resume_versions(job_id)}
+
+
+class RenderBody(BaseModel):
+    markdown: str = ""
+
+
+@router.post("/data/render")
+def render(body: RenderBody):
+    """Markdown → HTML, reusing the same renderer as agent output. Used by the
+    résumé tab for previews and the print-to-PDF view (no client md dependency)."""
+    return {"html": render_markdown(body.markdown)}
+
+
+# --------------------------------------------------------------------------
+# Master resume — the single canonical résumé tailored drafts start from
+# --------------------------------------------------------------------------
+class MasterEdit(BaseModel):
+    markdown: str = ""
+    keywords: list[str] | None = None
+
+
+@router.get("/data/resume/master")
+def get_master():
+    return {"master": resume_store.get_master_resume()}
+
+
+@router.put("/data/resume/master")
+def put_master(body: MasterEdit):
+    master = resume_store.upsert_master_resume(body.markdown, keywords=body.keywords)
+    return {"master": master}
