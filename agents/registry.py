@@ -94,10 +94,11 @@ REGISTRY: dict[str, AgentSpec] = {
     "stock_digest": AgentSpec(
         key="stock_digest",
         display_name="Stock Digest",
-        description="Quotes, technical indicators, and news sentiment (info only, not advice).",
+        description="Plain-English verdicts, explained signals, news & market overview (info only, not advice).",
         emoji="📈",
         _builder=_stock_builder,
-        node_order=("market_data", "technical", "news_sentiment", "synthesize", "deliver"),
+        node_order=("market_data", "technical", "market_overview", "news_sentiment",
+                    "analyst", "synthesize", "persist", "deliver"),
         planet="jupiter", label="stocks",
     ),
     "job_scraper": AgentSpec(
