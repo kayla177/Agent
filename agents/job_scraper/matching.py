@@ -37,6 +37,24 @@ _EXCLUDE_RE = re.compile(
     re.IGNORECASE | re.VERBOSE,
 )
 
+# Field / domain gate — SWE / SDE / ML / MLE / CS / AI / data roles only. Scraping
+# whole company boards surfaces every intern (e.g. "Box Office Internship"); this
+# keeps only software/ML/data/CS-adjacent titles. Positive allow-list (precision
+# over recall — a student would rather see clearly-technical roles).
+_FIELD_RE = re.compile(
+    r"""(
+        software | \bdeveloper\b | \bdev\b | \bSWE\b | \bSDE\b | programmer
+        | full[\s\-]?stack | back[\s\-]?end | front[\s\-]?end | web\ develop
+        | machine\ learning | deep\ learning | \bML\b | \bMLE\b | \bAI\b
+        | artificial\ intelligence | data\ scien | data\ engineer | \bML/AI\b
+        | computer\ scien | computer\ vision | \bNLP\b | \bLLM\b
+        | devops | \bSRE\b | site\ reliability | platform\ engineer
+        | distributed\ systems | embedded | firmware | robotics
+        | security\ engineer | cloud\ engineer | \biOS\b | android\ (engineer|developer)
+    )""",
+    re.IGNORECASE | re.VERBOSE,
+)
+
 # Locations the user prefers (soft filter — does NOT exclude by default).
 _PREFERRED_LOCATION_RE = re.compile(
     r"\b(canada|waterloo|toronto|ontario|remote)\b",
@@ -47,6 +65,11 @@ _PREFERRED_LOCATION_RE = re.compile(
 def is_target_role(title: str) -> bool:
     """True if the title looks like a co-op / intern / new-grad role."""
     return bool(_ROLE_RE.search(title or ""))
+
+
+def is_tech_role(title: str) -> bool:
+    """True if the title is a software/ML/data/CS/AI role (vs a generic intern)."""
+    return bool(_FIELD_RE.search(title or ""))
 
 
 def is_excluded(title: str) -> bool:
