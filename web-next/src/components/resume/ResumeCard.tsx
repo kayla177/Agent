@@ -3,6 +3,7 @@ import { useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { parseKeywords, type Resume, type ResumeVersion } from "@/lib/resume";
 import { printResume } from "@/lib/printResume";
+import { downloadPdfFromTex } from "@/lib/resumePdf";
 
 const STATUS_COLOR: Record<string, string> = {
   draft: "var(--amber)",
@@ -51,6 +52,22 @@ export default function ResumeCard({ resume, defaultOpen = false }: { resume: Re
     if (res.ok) setVersions((await res.json()).versions ?? []);
   }
 
+  const hasTex = Boolean(resume.latex && resume.latex.trim());
+
+  // Prefer a real LaTeX PDF (their template); fall back to browser print when
+  // there's no tailored .tex yet or it fails to compile.
+  async function downloadPdf() {
+    setBusy(true);
+    if (hasTex) {
+      const r = await downloadPdfFromTex(resume.latex, `${resume.role || "resume"}.pdf`);
+      setBusy(false);
+      if (!r.ok) printResume(markdown, title);
+    } else {
+      setBusy(false);
+      printResume(markdown, title);
+    }
+  }
+
   return (
     <details className="resume-card" ref={cardRef} id={`resume-${resume.job_id}`} open={defaultOpen}>
       <summary>
@@ -93,8 +110,8 @@ export default function ResumeCard({ resume, defaultOpen = false }: { resume: Re
             Revert to draft
           </button>
         )}
-        <button disabled={busy} onClick={() => printResume(markdown, title)}>
-          Download PDF
+        <button disabled={busy} onClick={downloadPdf} title={hasTex ? "Compiled from your LaTeX template" : "Browser print (no tailored .tex yet)"}>
+          Download PDF{hasTex ? " (LaTeX)" : ""}
         </button>
         {dirty ? <span className="muted">unsaved edits</span> : null}
       </div>

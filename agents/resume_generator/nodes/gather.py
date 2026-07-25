@@ -31,11 +31,14 @@ def gather_node(state: ResumeState) -> ResumeState:
             "message": f"No scraped job found for id '{job_id}'.",
         }
 
-    # Grounding text = the master resume (if set) + every experience-pool doc.
-    # Either source alone is enough to draft from; we only fail if both are empty.
-    parts: list[str] = []
+    # Grounding text = the master résumé (LaTeX or legacy Markdown) + every
+    # experience-pool doc. Either source alone is enough; fail only if all empty.
     master = resume_store.get_master_resume()
-    if master.get("markdown", "").strip():
+    master_latex = master.get("latex", "").strip()
+    parts: list[str] = []
+    if master_latex:
+        parts.append(f"### MASTER RESUME (LaTeX source)\n{master_latex}")
+    elif master.get("markdown", "").strip():
         parts.append(f"### MASTER RESUME\n{master['markdown'].strip()}")
     pool = resume_store.load_experience_text()
     if pool:
@@ -52,4 +55,4 @@ def gather_node(state: ResumeState) -> ResumeState:
             ),
         }
 
-    return {"job": job, "experience": experience}
+    return {"job": job, "experience": experience, "master_latex": master_latex}

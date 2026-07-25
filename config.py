@@ -25,6 +25,11 @@ load_dotenv(PROJECT_ROOT / ".env")
 # The one and only SQLite location — every store and the server layer use this.
 DB_PATH = PROJECT_ROOT / "data" / "control_center.db"
 
+# Tectonic LaTeX engine for résumé PDF export. The vendored binary in tools/ is
+# gitignored (~20 MB); fall back to whatever `tectonic` is on PATH.
+_TECTONIC_LOCAL = PROJECT_ROOT / "tools" / "tectonic"
+TECTONIC_BIN = str(_TECTONIC_LOCAL) if _TECTONIC_LOCAL.exists() else os.getenv("TECTONIC_BIN", "tectonic")
+
 
 # --------------------------------------------------------------------------
 # Preferences overlay (data/prefs.json), written by the web settings page.

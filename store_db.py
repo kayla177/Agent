@@ -48,3 +48,11 @@ def _migrate(conn: sqlite3.Connection) -> None:
     cols = {r[1] for r in conn.execute("PRAGMA table_info(applications)")}
     if "resume_job_id" not in cols:
         conn.execute("ALTER TABLE applications ADD COLUMN resume_job_id TEXT")
+
+    # LaTeX résumé export: their .tex template on the master, tailored .tex per job.
+    master_cols = {r[1] for r in conn.execute("PRAGMA table_info(master_resume)")}
+    if master_cols and "latex" not in master_cols:
+        conn.execute("ALTER TABLE master_resume ADD COLUMN latex TEXT NOT NULL DEFAULT ''")
+    resume_cols = {r[1] for r in conn.execute("PRAGMA table_info(resumes)")}
+    if resume_cols and "latex" not in resume_cols:
+        conn.execute("ALTER TABLE resumes ADD COLUMN latex TEXT NOT NULL DEFAULT ''")

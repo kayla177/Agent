@@ -89,6 +89,7 @@ model resumes {
   company    String @default("")
   role       String @default("")
   markdown   String @default("")
+  latex      String @default("")
   keywords   String @default("[]") // JSON array of strings
   status     String @default("draft") // draft | final
   created_at String @default("")
@@ -98,6 +99,7 @@ model resumes {
 model master_resume {
   id         Int    @id @default(autoincrement())
   markdown   String @default("")
+  latex      String @default("")
   keywords   String @default("[]") // JSON array of strings
   updated_at String @default("")
 }

@@ -11,12 +11,13 @@ from __future__ import annotations
 import tempfile
 from pathlib import Path
 
-from fastapi import APIRouter, File, Form, UploadFile
+from fastapi import APIRouter, File, Form, Response, UploadFile
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
 from agents.resume_generator import parse_upload
 from agents.resume_generator import store as resume_store
+from agents.resume_generator.latex import CompileError, compile_tex
 from server.markdown import render_markdown
 
 router = APIRouter()
@@ -111,6 +112,7 @@ def delete_doc(doc_id: int):
 class ResumeEdit(BaseModel):
     jobId: str = ""
     markdown: str | None = None
+    latex: str | None = None
     status: str | None = None
 
 
@@ -119,7 +121,7 @@ def edit_resume(body: ResumeEdit):
     job_id = body.jobId.strip()
     if not job_id:
         return JSONResponse({"error": "jobId is required."}, status_code=400)
-    if body.markdown is None and body.status is None:
+    if body.markdown is None and body.latex is None and body.status is None:
         return JSONResponse({"error": "Nothing to update."}, status_code=400)
     if body.status is not None and body.status.strip() not in resume_store.STATUSES:
         return JSONResponse({"error": "status must be draft or final."}, status_code=400)
@@ -133,6 +135,7 @@ def edit_resume(body: ResumeEdit):
         company=existing["company"],
         role=existing["role"],
         markdown=body.markdown if body.markdown is not None else existing["markdown"],
+        latex=body.latex,  # None keeps the existing tailored .tex
         keywords=existing["keywords"],
         status=body.status.strip() if body.status is not None else existing["status"],
     )
@@ -156,11 +159,36 @@ def render(body: RenderBody):
     return {"html": render_markdown(body.markdown)}
 
 
+class TexBody(BaseModel):
+    tex: str = ""
+    filename: str = "resume.pdf"
+
+
+@router.post("/data/resume/pdf")
+def compile_pdf(body: TexBody):
+    """Compile a full LaTeX document to a real PDF (Tectonic). Returns the PDF
+    bytes on success; on a LaTeX error returns 422 with the engine log so the
+    UI can fall back to handing the user the raw .tex."""
+    try:
+        pdf = compile_tex(body.tex)
+    except CompileError as exc:
+        return JSONResponse({"error": str(exc), "log": exc.log}, status_code=422)
+    name = (body.filename or "resume.pdf").strip() or "resume.pdf"
+    if not name.endswith(".pdf"):
+        name += ".pdf"
+    return Response(
+        content=pdf,
+        media_type="application/pdf",
+        headers={"Content-Disposition": f'attachment; filename="{name}"'},
+    )
+
+
 # --------------------------------------------------------------------------
 # Master resume — the single canonical résumé tailored drafts start from
 # --------------------------------------------------------------------------
 class MasterEdit(BaseModel):
-    markdown: str = ""
+    markdown: str | None = None
+    latex: str | None = None
     keywords: list[str] | None = None
 
 
@@ -171,5 +199,9 @@ def get_master():
 
 @router.put("/data/resume/master")
 def put_master(body: MasterEdit):
-    master = resume_store.upsert_master_resume(body.markdown, keywords=body.keywords)
+    if body.markdown is None and body.latex is None and body.keywords is None:
+        return JSONResponse({"error": "Nothing to update."}, status_code=400)
+    master = resume_store.upsert_master_resume(
+        body.markdown, latex=body.latex, keywords=body.keywords
+    )
     return {"master": master}

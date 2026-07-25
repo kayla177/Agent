@@ -103,6 +103,7 @@ def upsert_resume(
     company: str,
     role: str,
     markdown: str,
+    latex: str | None = None,
     keywords: list[str] | None = None,
     status: str = "draft",
 ) -> dict:
@@ -110,7 +111,8 @@ def upsert_resume(
 
     Before overwriting an existing resume, the current row is snapshotted into
     `resume_versions` so past drafts are never lost (see version history in the
-    résumé tab).
+    résumé tab). `latex` is the tailored .tex; pass None to leave any existing
+    value untouched (so a markdown-only edit doesn't wipe the compiled résumé).
     """
     if status not in STATUSES:
         raise ValueError(f"status must be one of {STATUSES}")
@@ -120,7 +122,7 @@ def upsert_resume(
     with store_db.connect() as conn:
         # Snapshot the outgoing version (if any) before we overwrite it.
         prev = conn.execute(
-            "SELECT markdown, keywords, status FROM resumes WHERE job_id = ?", (job_id,)
+            "SELECT markdown, keywords, status, latex FROM resumes WHERE job_id = ?", (job_id,)
         ).fetchone()
         if prev is not None:
             conn.execute(
@@ -128,14 +130,16 @@ def upsert_resume(
                 "VALUES (?, ?, ?, ?, ?)",
                 (job_id, prev["markdown"], prev["keywords"], prev["status"], now),
             )
+        # None -> keep the previous latex (or '' for a brand-new row).
+        tex = latex if latex is not None else (prev["latex"] if prev is not None else "")
         conn.execute(
-            "INSERT INTO resumes (job_id, company, role, markdown, keywords, "
-            "status, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?) "
+            "INSERT INTO resumes (job_id, company, role, markdown, latex, keywords, "
+            "status, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) "
             "ON CONFLICT(job_id) DO UPDATE SET company=excluded.company, "
-            "role=excluded.role, markdown=excluded.markdown, "
+            "role=excluded.role, markdown=excluded.markdown, latex=excluded.latex, "
             "keywords=excluded.keywords, status=excluded.status, "
             "updated_at=excluded.updated_at",
-            (job_id, company, role, markdown, kw, status, now, now),
+            (job_id, company, role, markdown, tex, kw, status, now, now),
         )
     return get_resume(job_id) or {}
 
@@ -203,12 +207,12 @@ _MASTER_ID = 1
 
 
 def get_master_resume() -> dict:
-    """Return the master resume ({markdown, keywords, updated_at}); empty if unset."""
-    empty = {"markdown": "", "keywords": [], "updated_at": ""}
+    """Return the master resume ({markdown, latex, keywords, updated_at}); empty if unset."""
+    empty = {"markdown": "", "latex": "", "keywords": [], "updated_at": ""}
     try:
         with store_db.connect() as conn:
             row = conn.execute(
-                "SELECT markdown, keywords, updated_at FROM master_resume WHERE id = ?",
+                "SELECT markdown, latex, keywords, updated_at FROM master_resume WHERE id = ?",
                 (_MASTER_ID,),
             ).fetchone()
     except sqlite3.OperationalError:
@@ -223,16 +227,28 @@ def get_master_resume() -> dict:
     return rec
 
 
-def upsert_master_resume(markdown: str, *, keywords: list[str] | None = None) -> dict:
-    """Create or replace the single master resume row; returns the record."""
+def upsert_master_resume(
+    markdown: str | None = None,
+    *,
+    latex: str | None = None,
+    keywords: list[str] | None = None,
+) -> dict:
+    """Create or update the single master resume row; returns the record.
+
+    Only the fields you pass are changed — None leaves markdown/latex as they
+    were, so editing the .tex never wipes the legacy markdown and vice-versa.
+    """
     _ensure()
-    kw = json.dumps(keywords or [], ensure_ascii=False)
+    prev = get_master_resume()
+    md = prev["markdown"] if markdown is None else markdown
+    tex = prev["latex"] if latex is None else latex
+    kw = json.dumps(keywords if keywords is not None else prev["keywords"], ensure_ascii=False)
     with store_db.connect() as conn:
         conn.execute(
-            "INSERT INTO master_resume (id, markdown, keywords, updated_at) "
-            "VALUES (?, ?, ?, ?) ON CONFLICT(id) DO UPDATE SET "
-            "markdown=excluded.markdown, keywords=excluded.keywords, "
+            "INSERT INTO master_resume (id, markdown, latex, keywords, updated_at) "
+            "VALUES (?, ?, ?, ?, ?) ON CONFLICT(id) DO UPDATE SET "
+            "markdown=excluded.markdown, latex=excluded.latex, keywords=excluded.keywords, "
             "updated_at=excluded.updated_at",
-            (_MASTER_ID, markdown, kw, _now()),
+            (_MASTER_ID, md, tex, kw, _now()),
         )
     return get_master_resume()

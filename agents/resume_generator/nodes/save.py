@@ -20,12 +20,14 @@ def save_node(state: ResumeState) -> ResumeState:
     job_id = state.get("job_id", "")
     markdown = state.get("markdown", "")
     keywords = state.get("keywords", [])
+    latex = state.get("latex")  # None when no master template -> keep any existing .tex
 
     resume_store.upsert_resume(
         job_id,
         company=job.get("company", ""),
         role=job.get("title", ""),
         markdown=markdown,
+        latex=latex,
         keywords=keywords,
         status="draft",
     )

@@ -39,3 +39,6 @@ data/
 web-next/node_modules/
 web-next/.next/
 web-next/.env
+
+# Local dev tools (Tectonic LaTeX binary) — not committed
+/tools/
