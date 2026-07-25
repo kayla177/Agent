@@ -1,7 +1,7 @@
 import { prisma } from "@/lib/db";
 import type { Job } from "@/lib/jobs";
 import JobsBoard from "@/components/jobs/JobsBoard";
-import PlanetTheme from "@/components/applications/PlanetTheme";
+import RunScraperButton from "@/components/jobs/RunScraperButton";
 
 export const dynamic = "force-dynamic";
 
@@ -16,10 +16,12 @@ export default async function JobsPage() {
   const jobs = (await prisma.jobs.findMany({ select: JOB_SELECT })) as Job[];
   return (
     <>
-      <PlanetTheme planet="mars" />
-      <h1>jobs</h1>
+      <div className="jobs-header">
+        <h1>jobs</h1>
+        <RunScraperButton />
+      </div>
       {jobs.length === 0 ? (
-        <p className="muted">No jobs yet — run the Job Scraper from the dashboard.</p>
+        <p className="muted">No jobs yet — run the scraper above to pull fresh roles.</p>
       ) : (
         <JobsBoard jobs={jobs} />
       )}

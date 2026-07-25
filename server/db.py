@@ -11,13 +11,12 @@ from __future__ import annotations
 import datetime as dt
 import json
 import sqlite3
-from pathlib import Path
 from typing import Any, Optional
 
 import config
+import store_db
 
-DB_PATH = config.PROJECT_ROOT / "data" / "control_center.db"
-_SCHEMA = Path(__file__).resolve().parent / "schema.sql"
+DB_PATH = config.DB_PATH
 
 
 def _utcnow() -> str:
@@ -33,9 +32,9 @@ def _connect() -> sqlite3.Connection:
 
 
 def init_db() -> None:
-    """Create tables/indexes if absent. Safe to call on every startup."""
-    with _connect() as conn:
-        conn.executescript(_SCHEMA.read_text(encoding="utf-8"))
+    """Create tables/indexes if absent. Delegates to the canonical schema in
+    store_db (single source of truth). Safe to call on every startup."""
+    store_db.init_db()
 
 
 # --------------------------------------------------------------------------

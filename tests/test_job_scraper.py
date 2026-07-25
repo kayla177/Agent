@@ -57,23 +57,72 @@ def test_matching() -> None:
     check("canonical dash -> ''", matching.canonical_location("—") == "")
 
 
+def test_relevance() -> None:
+    print("relevance filter (undergrad + field)")
+    from agents.job_scraper.matching import is_excluded, is_target_role, is_tech_role
+    from agents.job_scraper.nodes.filter import filter_node
+
+    check("intern is target", is_target_role("Software Engineer Intern"))
+    check("new grad is target", is_target_role("New Grad Software Engineer"))
+    check("senior excluded", is_excluded("Senior Software Engineer Intern"))
+    check("phd excluded", is_excluded("Machine Learning Intern, PhD"))
+    check("master's excluded", is_excluded("Data Science Intern (Master's)"))
+    check("staff excluded", is_excluded("Staff Engineer, New Grad"))
+    check("plain intern not excluded", not is_excluded("Software Engineer Intern"))
+    # field gate: SWE/ML/CS/AI only
+    check("software is tech", is_tech_role("Software Engineer Intern"))
+    check("ML is tech", is_tech_role("ML Intern"))
+    check("data science is tech", is_tech_role("Data Scientist Intern"))
+    check("box office NOT tech", not is_tech_role("2026 Internship, Fall - Box Office"))
+    check("marketing NOT tech", not is_tech_role("Marketing Intern"))
+    check("product manager NOT tech", not is_tech_role("Associate Product Manager, New Grad"))
+
+    out = filter_node({"raw": [
+        {"title": "Software Engineer Intern"},          # keep
+        {"title": "Senior Software Engineer"},          # drop (not early-career)
+        {"title": "ML Research Intern — PhD required"},  # drop (excluded: phd)
+        {"title": "New Grad Software Engineer"},        # keep
+        {"title": "Box Office Internship"},             # drop (not a tech field)
+        {"title": "Marketing Intern"},                  # drop (not a tech field)
+    ]})["filtered"]
+    titles = {p["title"] for p in out}
+    check("filter keeps only early-career tech roles", titles == {"Software Engineer Intern", "New Grad Software Engineer"})
+
+
+def test_rank_eligibility() -> None:
+    print("rank parse (eligibility)")
+    parsed = _parse('[{"i":0,"eligible":false,"score":80,"reason":"phd"},{"i":1,"eligible":true,"score":70}]', 2)
+    check("eligible=false parsed", parsed[0]["eligible"] is False)
+    check("eligible=true parsed", parsed[1]["eligible"] is True)
+    check("missing eligible defaults true", _parse('[{"i":0,"score":50}]', 1)[0]["eligible"] is True)
+    check("null score -> None", _parse('[{"i":0,"eligible":true,"score":null}]', 1)[0]["score"] is None)
+
+
 def test_freshness() -> None:
     print("freshness node")
     old = (dt.date.today() - dt.timedelta(days=config.JOB_MAX_AGE_DAYS + 10)).isoformat()
     fresh = (dt.date.today() - dt.timedelta(days=3)).isoformat()
     past = (dt.date.today() - dt.timedelta(days=1)).isoformat()
-    out = freshness_node({"new": [
+    roles = [
         {"id": "1", "posted_at": old},
         {"id": "2", "posted_at": fresh},
         {"id": "3", "posted_at": fresh, "deadline": past},
         {"id": "4", "posted_at": fresh, "listed": False},
-    ]})["new"]
-    by = {p["id"]: p for p in out}
+    ]
+    # Tagging behaviour: temporarily disable the hard drop so flags are inspectable.
+    saved = config.JOB_DROP_GHOSTS
+    config.JOB_DROP_GHOSTS = False
+    by = {p["id"]: p for p in freshness_node({"new": roles})["new"]}
     check("stale flagged ghost", by["1"]["ghost"] is True and "stale" in by["1"]["ghost_reason"])
     check("fresh not ghost", by["2"]["ghost"] is False)
     check("past deadline flagged", by["3"]["ghost"] is True and "deadline" in by["3"]["ghost_reason"])
     check("delisted flagged", by["4"]["ghost"] is True and "delist" in by["4"]["ghost_reason"])
     check("age_days attached", by["2"]["age_days"] == 3)
+    # Hard-cap behaviour: with drop ON, stale/expired/delisted roles are removed.
+    config.JOB_DROP_GHOSTS = True
+    kept = {p["id"] for p in freshness_node({"new": roles})["new"]}
+    check("drop>maxage removes stale/expired/delisted", kept == {"2"})
+    config.JOB_DROP_GHOSTS = saved
 
 
 def test_dedupe_cross_source() -> None:
@@ -112,6 +161,8 @@ def main() -> int:
     for fn in (
         test_ats_helpers,
         test_matching,
+        test_relevance,
+        test_rank_eligibility,
         test_freshness,
         test_dedupe_cross_source,
         test_rank_parse,

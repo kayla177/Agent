@@ -9,11 +9,9 @@ in store_db):
   resumes          one generated resume per job (keyed by the job id), as Markdown
                    plus the ATS keywords it targeted. status is draft | final.
 
-The DDL lives here (not in the shared store_db.SCHEMA) on purpose: this feature
-ships on its own branch while a parallel effort migrates the app to Next.js +
-Prisma. The column shapes below are chosen to match the Prisma models that effort
-will add, so a later `prisma db pull` can adopt these tables verbatim — no data
-migration. Reads degrade gracefully when the tables are missing.
+These two tables (like all others) are defined in the canonical schema.sql and
+created via store_db.init_db(). Reads degrade gracefully when the tables are
+missing.
 """
 
 from __future__ import annotations
@@ -27,37 +25,14 @@ import store_db
 STATUSES = ("draft", "final")
 KINDS = ("resume", "project")
 
-_SCHEMA = """
-CREATE TABLE IF NOT EXISTS experience_docs (
-    id        INTEGER PRIMARY KEY AUTOINCREMENT,
-    filename  TEXT NOT NULL DEFAULT '',
-    kind      TEXT NOT NULL DEFAULT 'resume',   -- resume | project
-    text      TEXT NOT NULL DEFAULT '',
-    added_at  TEXT NOT NULL DEFAULT ''
-);
-
-CREATE TABLE IF NOT EXISTS resumes (
-    job_id      TEXT PRIMARY KEY,
-    company     TEXT NOT NULL DEFAULT '',
-    role        TEXT NOT NULL DEFAULT '',
-    markdown    TEXT NOT NULL DEFAULT '',
-    keywords    TEXT NOT NULL DEFAULT '[]',      -- JSON array of strings
-    status      TEXT NOT NULL DEFAULT 'draft',   -- draft | final
-    created_at  TEXT NOT NULL DEFAULT '',
-    updated_at  TEXT NOT NULL DEFAULT ''
-);
-"""
-
 
 def _now() -> str:
     return dt.datetime.now().isoformat(timespec="seconds")
 
 
 def _ensure() -> None:
-    """Create this feature's tables if absent. Safe to call repeatedly."""
-    store_db.DB_PATH.parent.mkdir(parents=True, exist_ok=True)
-    with store_db.connect() as conn:
-        conn.executescript(_SCHEMA)
+    """Create the tables if absent (via the canonical schema). Safe repeatedly."""
+    store_db.init_db()
 
 
 # --------------------------------------------------------------------------

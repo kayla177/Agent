@@ -39,7 +39,12 @@ they are placeholders/examples. Swap them for your real targets.
 
 from __future__ import annotations
 
+import json
+from pathlib import Path
+
 import config
+
+_SEED_FILE = Path(__file__).resolve().parent / "sources_seed.json"
 
 # Module defaults (REAL, working public boards verified at build time). The web
 # settings page can override these via the prefs overlay (config.JOB_SOURCES);
@@ -71,12 +76,41 @@ _DEFAULT_SOURCES: list[dict] = [
     # from the careers URL. Amazon/Google use bespoke systems still not covered.
 ]
 
-# company display name, ATS provider, and the board token.
-# Snapshot constant (used by CLI/launchd; computed once at import).
-SOURCES: list[dict] = config.JOB_SOURCES or _DEFAULT_SOURCES
+# Harvested companies (agents/job_scraper/sources_seed.json), built by
+# scripts/harvest_sources.py from the zapplyjobs job-list repos. Committed so we
+# own the list even if upstream changes; regenerate any time by re-running it.
+def _load_seed() -> list[dict]:
+    try:
+        data = json.loads(_SEED_FILE.read_text(encoding="utf-8"))
+    except (FileNotFoundError, json.JSONDecodeError, OSError):
+        return []
+    return [s for s in data if isinstance(s, dict) and s.get("ats") and s.get("token")]
+
+
+def _merge(*groups: list[dict]) -> list[dict]:
+    """Dedupe sources by (ats, token); the first group to name a board wins."""
+    seen: set[tuple[str, str]] = set()
+    out: list[dict] = []
+    for group in groups:
+        for s in group:
+            key = (s.get("ats", ""), s.get("token", ""))
+            if not key[0] or not key[1] or key in seen:
+                continue
+            seen.add(key)
+            out.append({"company": s.get("company", ""), "ats": key[0], "token": key[1]})
+    return out
+
+
+_SEED_SOURCES = _load_seed()
 
 
 def get_sources() -> list[dict]:
-    """Live source list — read config at CALL time so a web settings save
+    """Live source list: curated defaults + the harvested seed + any user
+    JOB_SOURCES from settings — ADDITIVE and deduped (a custom list adds to, not
+    replaces, the curated companies). Read at call time so a settings save
     (followed by config.refresh()) is reflected on the next run."""
-    return config.JOB_SOURCES or _DEFAULT_SOURCES
+    return _merge(_DEFAULT_SOURCES, _SEED_SOURCES, config.JOB_SOURCES or [])
+
+
+# Snapshot constant (used by CLI/launchd; computed once at import).
+SOURCES: list[dict] = get_sources()

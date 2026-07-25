@@ -1,13 +1,15 @@
 "use client";
 import { useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
-import { type Job, JOB_STATUSES, byFitDesc, byDateDesc, bestMatch } from "@/lib/jobs";
+import { type Job, JOB_STATUSES, byPriority, byFitDesc, byDateDesc, bestMatch } from "@/lib/jobs";
 import BestMatchHero from "./BestMatchHero";
 import JobRow from "./JobRow";
 
+type SortKey = "priority" | "fit" | "date";
+
 export default function JobsBoard({ jobs }: { jobs: Job[] }) {
   const router = useRouter();
-  const [sort, setSort] = useState<"fit" | "date">("fit");
+  const [sort, setSort] = useState<SortKey>("priority");
   const [statusFilter, setStatusFilter] = useState("");
   const [companyFilter, setCompanyFilter] = useState("");
   const [hideGhost, setHideGhost] = useState(false);
@@ -32,13 +34,13 @@ export default function JobsBoard({ jobs }: { jobs: Job[] }) {
     l = statusFilter ? l.filter((j) => j.status === statusFilter) : l.filter((j) => j.status !== "dismissed");
     if (companyFilter) l = l.filter((j) => j.company === companyFilter);
     if (hideGhost) l = l.filter((j) => j.ghost !== 1);
-    l.sort(sort === "date" ? byDateDesc : byFitDesc);
+    l.sort(sort === "date" ? byDateDesc : sort === "fit" ? byFitDesc : byPriority);
     return l;
   }, [jobs, statusFilter, companyFilter, hideGhost, sort]);
 
   async function mutate(kind: "apply" | "dismiss", id: string) {
     setBusyId(id);
-    const res = await fetch(`/api/jobs/${kind}`, {
+    const res = await fetch(`/data/jobs/${kind}`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ id }),
@@ -58,7 +60,8 @@ export default function JobsBoard({ jobs }: { jobs: Job[] }) {
       {best ? <BestMatchHero job={best} onApply={(id) => mutate("apply", id)} /> : null}
 
       <div className="job-filters">
-        <select value={sort} onChange={(e) => setSort(e.target.value as "fit" | "date")}>
+        <select value={sort} onChange={(e) => setSort(e.target.value as SortKey)}>
+          <option value="priority">sort: freshest</option>
           <option value="fit">sort: fit</option>
           <option value="date">sort: date</option>
         </select>

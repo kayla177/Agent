@@ -19,13 +19,16 @@ from fastapi import FastAPI  # noqa: E402
 
 import store_db  # noqa: E402
 from server import db  # noqa: E402
-from server.routers import prefs, resume, runs  # noqa: E402
+from server.routers import applications, jobs, prefs, resume, runs, stocks  # noqa: E402
 
 app = FastAPI(title="daily-agents agent service")
 
 app.include_router(runs.router)
 app.include_router(prefs.router)
 app.include_router(resume.router)
+app.include_router(applications.router)
+app.include_router(jobs.router)
+app.include_router(stocks.router)
 
 
 @app.on_event("startup")
@@ -38,3 +41,12 @@ def _startup() -> None:
 @app.get("/healthz")
 def healthz() -> dict:
     return {"ok": True}
+
+
+@app.get("/agents")
+def agents() -> dict:
+    """UI metadata for every agent — the single source (registry) consumed by the
+    frontend, replacing the hand-maintained web-next agents list."""
+    from agents.registry import list_specs
+
+    return {"agents": [spec.to_meta() for spec in list_specs()]}

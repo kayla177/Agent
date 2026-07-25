@@ -3,11 +3,9 @@
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 
+// The primary domains live in the hub's planet pill-nav (briefing/stocks/jobs/
+// tracker). The top bar carries only the utility routes.
 const TABS = [
-  { href: "/", label: "dashboard" },
-  { href: "/jobs", label: "jobs" },
-  { href: "/applications", label: "applications" },
-  { href: "/resume", label: "resume" },
   { href: "/history", label: "history" },
   { href: "/settings", label: "settings" },
 ];

@@ -1,14 +1,23 @@
 import type { NextConfig } from "next";
 
 const nextConfig: NextConfig = {
-  // Proxy agent-run + SSE endpoints to the (future) slim FastAPI on :8001.
-  // Inert until Plan 5 moves FastAPI to :8001; harmless before then.
+  // Proxy the agent service (FastAPI, :8001) same-origin. Agent runs + SSE, prefs,
+  // file uploads, and all DB mutations (/data/*) — the backend is the single writer;
+  // Next.js only reads (via Prisma). Read paths never go through here.
   async rewrites() {
     return [
       { source: "/agents/:path*", destination: "http://127.0.0.1:8001/agents/:path*" },
       { source: "/runs/:path*", destination: "http://127.0.0.1:8001/runs/:path*" },
       { source: "/prefs", destination: "http://127.0.0.1:8001/prefs" },
       { source: "/experience/:path*", destination: "http://127.0.0.1:8001/experience/:path*" },
+      { source: "/data/:path*", destination: "http://127.0.0.1:8001/data/:path*" },
+    ];
+  },
+  // The hub merged applications + resume into /tracker; keep old links working.
+  async redirects() {
+    return [
+      { source: "/applications", destination: "/tracker", permanent: false },
+      { source: "/resume", destination: "/tracker", permanent: false },
     ];
   },
 };
