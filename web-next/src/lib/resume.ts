@@ -39,15 +39,18 @@ export type Resume = {
   company: string;
   role: string;
   markdown: string;
+  latex: string; // tailored .tex (their template); "" until generated
   keywords: string; // JSON array as stored; use parseKeywords() to decode
   status: string;
   created_at: string;
   updated_at: string;
 };
 
-// The single canonical résumé tailored drafts start from.
+// The single canonical résumé tailored drafts start from. `latex` is the user's
+// real .tex (their template) — the source of truth for format + PDF export.
 export type MasterResume = {
   markdown: string;
+  latex: string;
   keywords: string; // JSON array as stored (Prisma read); use parseKeywords()
   updated_at: string;
 };

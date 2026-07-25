@@ -29,7 +29,7 @@ export default async function ResumePage({
     id: d.id, filename: d.filename, kind: d.kind, chars: d.text.length, added_at: d.added_at,
   }));
   const jobs = jobsRaw.sort((a, b) => (b.fit_score ?? -1) - (a.fit_score ?? -1));
-  const poolReady = docs.length > 0 || Boolean(master?.markdown?.trim());
+  const poolReady = docs.length > 0 || Boolean(master?.latex?.trim() || master?.markdown?.trim());
 
   return (
     <>
@@ -45,7 +45,7 @@ export default async function ResumePage({
             <h2>master résumé</h2>
             <span className="panel-sub">your canonical résumé — tailored drafts start from this</span>
           </div>
-          <MasterResume markdown={master?.markdown ?? ""} updatedAt={master?.updated_at ?? ""} />
+          <MasterResume latex={master?.latex ?? ""} updatedAt={master?.updated_at ?? ""} />
         </section>
 
         <section className="panel">

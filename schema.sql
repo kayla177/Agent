@@ -94,6 +94,7 @@ CREATE TABLE IF NOT EXISTS resumes (
     company     TEXT NOT NULL DEFAULT '',
     role        TEXT NOT NULL DEFAULT '',
     markdown    TEXT NOT NULL DEFAULT '',
+    latex       TEXT NOT NULL DEFAULT '',        -- tailored LaTeX (their template); '' until generated
     keywords    TEXT NOT NULL DEFAULT '[]',      -- JSON array of strings
     status      TEXT NOT NULL DEFAULT 'draft',   -- draft | final
     created_at  TEXT NOT NULL DEFAULT '',
@@ -101,10 +102,13 @@ CREATE TABLE IF NOT EXISTS resumes (
 );
 
 -- The one canonical "master" resume the tailored drafts start from. Single row
--- (id is always 1, enforced by the store). Kept as editable Markdown.
+-- (id is always 1, enforced by the store). `latex` holds the user's real .tex
+-- résumé (their template) — the source of truth for format + content; `markdown`
+-- is legacy/optional grounding text.
 CREATE TABLE IF NOT EXISTS master_resume (
     id          INTEGER PRIMARY KEY AUTOINCREMENT,
     markdown    TEXT NOT NULL DEFAULT '',
+    latex       TEXT NOT NULL DEFAULT '',        -- the user's .tex résumé (template + content)
     keywords    TEXT NOT NULL DEFAULT '[]',      -- JSON array of strings
     updated_at  TEXT NOT NULL DEFAULT ''
 );

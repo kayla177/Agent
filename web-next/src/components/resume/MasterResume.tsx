@@ -1,23 +1,24 @@
 "use client";
 import { useState } from "react";
 import { useRouter } from "next/navigation";
+import { downloadPdfFromTex } from "@/lib/resumePdf";
 
-// The one canonical résumé the tailored drafts start from. Edited as Markdown
-// (PUT /data/resume/master); can be seeded from an uploaded file, which the
-// Python service parses to text (/experience/parse, no pool row created).
+// The master résumé is the user's real LaTeX (.tex) — their template and the
+// source of truth for format + content. Edited here as raw LaTeX; saved via
+// PUT /data/resume/master; "Download PDF" compiles it with Tectonic on :8001.
 export default function MasterResume({
-  markdown,
+  latex,
   updatedAt,
 }: {
-  markdown: string;
+  latex: string;
   updatedAt: string;
 }) {
   const router = useRouter();
-  const [text, setText] = useState(markdown);
+  const [tex, setTex] = useState(latex);
   const [busy, setBusy] = useState(false);
   const [saved, setSaved] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const dirty = text !== markdown;
+  const dirty = tex !== latex;
 
   async function save() {
     setBusy(true);
@@ -26,7 +27,7 @@ export default function MasterResume({
     const res = await fetch("/data/resume/master", {
       method: "PUT",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ markdown: text }),
+      body: JSON.stringify({ latex: tex }),
     });
     setBusy(false);
     if (res.ok) {
@@ -37,63 +38,50 @@ export default function MasterResume({
     }
   }
 
-  async function onFile(e: React.ChangeEvent<HTMLInputElement>) {
+  async function downloadPdf() {
+    setBusy(true);
+    setError(null);
+    const r = await downloadPdfFromTex(tex, "master-resume.pdf");
+    setBusy(false);
+    if (!r.ok) setError(r.error + (r.log ? `\n\n${r.log}` : ""));
+  }
+
+  // .tex is plain text — read it in the browser, no server parse needed.
+  function onFile(e: React.ChangeEvent<HTMLInputElement>) {
     const input = e.target;
     const file = input.files?.[0];
     if (!file) return;
-    setBusy(true);
-    setError(null);
-    const fd = new FormData();
-    fd.append("file", file);
-    let res: Response;
-    try {
-      res = await fetch("/experience/parse", { method: "POST", body: fd });
-    } catch {
-      setBusy(false);
-      setError("Could not reach the agent service (is FastAPI on :8001 running?).");
-      return;
-    }
-    setBusy(false);
+    const reader = new FileReader();
+    reader.onload = () => setTex(String(reader.result ?? ""));
+    reader.readAsText(file);
     input.value = "";
-    if (!res.ok) {
-      const j = await res.json().catch(() => ({}));
-      setError(j.error ?? "Could not read that file.");
-      return;
-    }
-    const { text: parsed } = await res.json();
-    setText(parsed);
   }
 
   return (
     <div>
-      {error ? <div className="banner err">{error}</div> : null}
-      {!markdown && !dirty ? (
+      {error ? <div className="banner err" style={{ whiteSpace: "pre-wrap" }}>{error}</div> : null}
+      {!latex && !dirty ? (
         <p className="master-empty">
-          No master résumé yet — paste it below or upload an existing one, then save.
-          Tailored drafts will start from this.
+          Paste your résumé’s LaTeX source below (or upload the <code>.tex</code>), then save.
+          Tailored drafts start from this, and Download PDF compiles it in your exact format.
         </p>
       ) : null}
       <textarea
         className="resume-md"
-        value={text}
-        onChange={(e) => setText(e.target.value)}
-        rows={16}
+        value={tex}
+        onChange={(e) => setTex(e.target.value)}
+        rows={18}
         spellCheck={false}
-        placeholder="# Your Name&#10;&#10;Paste your résumé as Markdown…"
+        placeholder="\documentclass[letterpaper,11pt]{article}&#10;…your résumé .tex…"
       />
       <div className="master-actions">
         <button className="primary" onClick={save} disabled={busy || !dirty}>
-          {busy ? "Saving…" : dirty ? "Save master résumé" : saved ? "Saved ✓" : "Saved"}
+          {busy ? "Working…" : dirty ? "Save master résumé" : saved ? "Saved ✓" : "Saved"}
         </button>
+        <button onClick={downloadPdf} disabled={busy || !tex.trim()}>Download PDF</button>
         <label className="file-btn">
-          {busy ? "Reading…" : "Upload PDF/DOCX/TXT/MD"}
-          <input
-            type="file"
-            accept=".pdf,.docx,.txt,.md,.markdown"
-            onChange={onFile}
-            disabled={busy}
-            hidden
-          />
+          Upload .tex
+          <input type="file" accept=".tex,.txt" onChange={onFile} hidden />
         </label>
         {updatedAt ? <span className="muted">updated {updatedAt}</span> : null}
         {dirty ? <span className="muted">unsaved edits</span> : null}
