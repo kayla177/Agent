@@ -514,9 +514,16 @@ def test_no_keywords_gives_neutral_score_and_marked_reason():
 
 
 def test_word_boundary_no_false_positive():
-    """'r' must not match inside 'research'; 'go' must not match 'going'."""
-    score, _ = score_baseline(["go", "r"], {"title": "Research Intern", "description": "Going deep."})
-    assert score == score_baseline(["go", "r"], {"title": "Nothing", "description": "Nothing."})[0]
+    """'r' must not match inside 'Research'; 'go' must not match 'Going'.
+
+    Both postings share the SAME title so the target-role title bonus is held
+    constant and only the description varies — otherwise this compares 35 to 25
+    and fails for a reason that has nothing to do with word boundaries.
+    """
+    kws = ["go", "r"]
+    tricky = score_baseline(kws, {"title": "Research Intern", "description": "Going deep."})[0]
+    clean = score_baseline(kws, {"title": "Research Intern", "description": "Nothing here."})[0]
+    assert tricky == clean
 
 
 def test_target_role_title_bonus():
@@ -572,9 +579,17 @@ _MATCH_PREFIX = "matched: "
 
 # Score shape: a floor so an unmatched posting is still comparable, most of the
 # range driven by overlap, and a small bonus for an explicitly early-career title.
+#
+# Overlap SATURATES at _SATURATE matches rather than dividing by the keyword
+# count. A real profile carries non-skill tokens ("waterloo", "us", "canada",
+# "co", "op"), so hits/len(keywords) punishes a descriptive profile: measured on
+# a realistic 13-keyword profile, a posting matching Python+React+SQL scored 49
+# — mid-tier for what is plainly a strong match. Saturating puts that at 71 and a
+# five-skill match at 95, which lands correctly across the hi/mid/lo tiers.
 _FLOOR = 25
 _OVERLAP_RANGE = 60
 _TITLE_BONUS = 10
+_SATURATE = 5
 
 
 def extract_keywords(profile: str) -> list[str]:
@@ -582,7 +597,9 @@ def extract_keywords(profile: str) -> list[str]:
     seen: list[str] = []
     for raw in _TOKEN_RE.findall(profile or ""):
         term = raw.lower().strip(".")
-        if len(term) < 2 or term in _STOPWORDS or term.isdigit():
+        # Skip anything starting with a digit: "3rd-year" tokenizes to "3rd",
+        # which is ordinal noise, not a skill. `term.isdigit()` alone misses it.
+        if len(term) < 2 or term in _STOPWORDS or term[0].isdigit():
             continue
         if term not in seen:
             seen.append(term)
@@ -611,7 +628,7 @@ def score_baseline(keywords: list[str], posting: dict) -> tuple[int, str]:
     haystack = f"{title}\n{posting.get('description') or ''}"
     hits = _matches(keywords, haystack)
 
-    score = _FLOOR + round(_OVERLAP_RANGE * len(hits) / len(keywords))
+    score = _FLOOR + round(_OVERLAP_RANGE * min(1.0, len(hits) / _SATURATE))
     if is_target_role(title):
         score += _TITLE_BONUS
     score = max(0, min(100, score))
