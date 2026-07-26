@@ -1,6 +1,6 @@
 """Offline tests for the job-scraper pipeline (no network, no pytest needed).
 
-Run with:  uv run python tests/test_job_scraper.py
+Run with:  .venv/bin/python -m pytest tests/test_job_scraper.py
 
 Covers the pure logic that the pipeline depends on: adapter field helpers,
 title/location matching, freshness/ghost flagging, cross-source dedup, LLM-reply
@@ -12,13 +12,11 @@ from __future__ import annotations
 
 import datetime as dt
 import sys
-import tempfile
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import config
-import store_db
 from agents.job_scraper import ats, matching, store
 from agents.job_scraper.nodes.dedupe import dedupe_node
 from agents.job_scraper.nodes.freshness import freshness_node
@@ -110,19 +108,16 @@ def test_freshness() -> None:
     check("age_days attached", by["2"]["age_days"] == 3)
 
 
-def test_dedupe_cross_source() -> None:
-    print("dedupe node (cross-source)")
-    # Same role on two boards + a distinct role. store is empty (temp) below.
-    _use_temp_store()
+def test_dedupe_cross_source(temp_db) -> None:
     filtered = [
         {"id": "Acme:greenhouse:1", "company": "Acme", "title": "SWE Intern", "location": "NYC", "ats": "greenhouse"},
         {"id": "Acme:lever:9", "company": "Acme", "title": "SWE  Intern", "location": "Manhattan", "ats": "lever"},
         {"id": "Acme:greenhouse:2", "company": "Acme", "title": "ML Intern", "location": "Remote", "ats": "greenhouse"},
     ]
     new = dedupe_node({"filtered": filtered})["new"]
-    check("collapses same role across boards", len(new) == 2)
+    assert len(new) == 2
     survivor = next(p for p in new if p["title"].startswith("SWE"))
-    check("survivor notes also_on", "lever" in survivor.get("also_on", []))
+    assert "lever" in survivor.get("also_on", [])
 
 
 def test_rank_parse() -> None:
@@ -133,13 +128,6 @@ def test_rank_parse() -> None:
     check("clamps score to 100", parsed[1]["score"] == 100)
     check("bad json -> {}", _parse("no json here", 3) == {})
     check("drops out-of-range index", 5 not in _parse('[{"i":5,"score":10}]', 2))
-
-
-def _use_temp_store() -> Path:
-    tmp = Path(tempfile.mkdtemp())
-    store_db.DB_PATH = tmp / "test.db"
-    store_db.init_db()
-    return tmp
 
 
 def main() -> int:

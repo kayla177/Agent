@@ -1,6 +1,6 @@
 """Offline tests for the gmail-sync agent (no network, no pytest).
 
-Run:  uv run python tests/test_gmail_sync.py
+Run:  .venv/bin/python -m pytest tests/test_gmail_sync.py
 
 Covers the pure matching/inference heuristics and the node's behavior against a
 canned email list + a temp SQLite store (fetch_job_emails is monkeypatched).
