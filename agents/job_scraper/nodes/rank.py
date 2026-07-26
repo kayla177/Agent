@@ -1,21 +1,25 @@
-"""Rank node — undergrad-eligibility screen + optional fit score (LLM).
+"""Rank node — undergrad-eligibility screen + baseline/refined fit score.
 
 Uses the platform's local model (via ``shell/model_router.llm``) to, for every
 posting, judge:
   - ``eligible``: can an UNDERGRAD (bachelor's, ~0-1 yrs exp) realistically apply?
     False only when the role clearly requires a Master's/PhD or senior experience
     (read from the title + a slice of the JD). Roles judged ineligible are dropped.
-  - ``fit_score`` (0–100) + ``fit_reason`` against ``config.JOB_PROFILE`` — only
-    when a profile is set; otherwise the score stays ``None``.
+  - ``fit_score`` (0–100) + ``fit_reason`` against the candidate profile.
 
 Design choices that keep this safe and cheap:
   - Batched: several postings per model call so one prompt handles many roles.
   - Runs even with no profile — eligibility is independent of the profile.
-  - Graceful degradation: on any model / JSON-parse failure a posting keeps
-    ``eligible=True`` (never over-drop) and ``fit_score=None``; the deterministic
-    title-exclusion in filter.py is the safety net.
-  - Optional ``config.JOB_MIN_FIT`` drops roles scoring below it (0 = keep all,
-    unscored roles are always kept).
+  - A deterministic keyword baseline (scoring.py) is applied to EVERY posting
+    FIRST, so a score always exists; the LLM then overrides it only when it
+    returns a usable integer. Measured 2026-07-25: llama3.1:8b returns a null
+    score for ~60% of postings even with a profile set, so treating the model
+    as the sole source left most rows unscored — and null sinks to the bottom
+    of sort-by-fit, hiding good roles. The LLM still has sole authority over
+    the ``eligible`` drop decision.
+  - Optional ``config.JOB_MIN_FIT`` drops roles scoring below it (0 = keep
+    all). Since every posting now always has a score, there is no "unscored
+    roles are always kept" carve-out anymore.
 """
 
 from __future__ import annotations
@@ -24,10 +28,12 @@ import json
 import re
 
 import config
+import profile_store
+from agents.job_scraper.scoring import extract_keywords, score_baseline
 from agents.job_scraper.state import JobScraperState
 from shell.model_router import llm
 
-_BATCH = 5
+_BATCH = 3
 _DESC_SLICE = 500
 _JSON_RE = re.compile(r"\[.*\]", re.DOTALL)
 
@@ -86,22 +92,39 @@ def _parse(reply: str, size: int) -> dict[int, dict]:
     return out
 
 
-def _score_batch(profile: str, batch: list[dict]) -> None:
-    """Attach eligible / fit_score / fit_reason to a batch in place (best-effort)."""
+def _score_batch(profile: str, keywords: list[str], batch: list[dict]) -> None:
+    """Attach eligible / fit_score / fit_reason to a batch in place.
+
+    The deterministic baseline is applied FIRST so every posting always has a
+    score, then the LLM overrides it only when it returns a usable integer.
+    Measured 2026-07-25: llama3.1:8b returns a null score for ~60% of postings
+    even with a profile set, so treating the model as the sole source would
+    leave most rows unscored — and null sinks to the bottom of sort-by-fit,
+    hiding good roles.
+    """
+    for p in batch:
+        base_score, base_reason = score_baseline(keywords, p)
+        p["fit_score"] = base_score
+        p["fit_reason"] = base_reason
+        p["eligible"] = True
+
     try:
         reply = llm("local", _prompt(profile, batch), system=_SYSTEM, temperature=0.2)
-    except Exception as exc:  # model unavailable / transport error → keep everything
+    except Exception as exc:  # model unavailable / transport error -> keep baselines
         for p in batch:
-            p.setdefault("eligible", True)
-            p.setdefault("fit_score", None)
-            p.setdefault("fit_reason", f"unranked ({exc})")
+            p["fit_reason"] = f"{p['fit_reason']} (unrefined: {exc})"
         return
+
     parsed = _parse(reply, len(batch))
     for i, p in enumerate(batch):
         hit = parsed.get(i)
-        p["eligible"] = hit["eligible"] if hit else True
-        p["fit_score"] = hit["score"] if hit else None
-        p["fit_reason"] = (hit["reason"] if hit and hit["reason"] else ("unranked" if profile else "no profile set"))
+        if not hit:
+            continue
+        p["eligible"] = hit["eligible"]
+        if hit["score"] is not None:
+            p["fit_score"] = hit["score"]
+            if hit["reason"]:
+                p["fit_reason"] = hit["reason"]
 
 
 def rank_node(state: JobScraperState) -> JobScraperState:
@@ -109,20 +132,20 @@ def rank_node(state: JobScraperState) -> JobScraperState:
     if not new:
         return {"new": new}
 
-    profile = (config.JOB_PROFILE or "").strip()
+    # Profile: explicit pref wins, else the applicant profile's summary.
+    profile = (config.JOB_PROFILE or "").strip() or profile_store.fit_profile_text()
+    keywords = extract_keywords(profile)
 
-    # Run the model on every scrape — even without a profile — for the eligibility
-    # judgment (and fit score when a profile exists).
     for start in range(0, len(new), _BATCH):
-        _score_batch(profile, new[start : start + _BATCH])
+        _score_batch(profile, keywords, new[start : start + _BATCH])
 
     # Drop roles the model judged not undergrad-eligible (grad-only / senior).
     new = [p for p in new if p.get("eligible", True)]
 
-    # Optional fit threshold (never drops unscored roles).
+    # Optional fit threshold. Every posting now HAS a score, so there is no
+    # "unscored" carve-out to make any more.
     if config.JOB_MIN_FIT > 0:
-        new = [p for p in new if p.get("fit_score") is None or p["fit_score"] >= config.JOB_MIN_FIT]
+        new = [p for p in new if p["fit_score"] >= config.JOB_MIN_FIT]
 
-    # Highest fit first; unscored (None) sink to the bottom.
-    new.sort(key=lambda p: (p.get("fit_score") is not None, p.get("fit_score") or 0), reverse=True)
+    new.sort(key=lambda p: p["fit_score"], reverse=True)
     return {"new": new}
