@@ -128,26 +128,3 @@ def test_rank_parse() -> None:
     check("clamps score to 100", parsed[1]["score"] == 100)
     check("bad json -> {}", _parse("no json here", 3) == {})
     check("drops out-of-range index", 5 not in _parse('[{"i":5,"score":10}]', 2))
-
-
-def main() -> int:
-    for fn in (
-        test_ats_helpers,
-        test_matching,
-        test_relevance,
-        test_rank_eligibility,
-        test_freshness,
-        test_dedupe_cross_source,
-        test_rank_parse,
-    ):
-        fn()
-    print()
-    if _failures:
-        print(f"FAILED ({len(_failures)}): " + ", ".join(_failures))
-        return 1
-    print("All job-scraper tests passed.")
-    return 0
-
-
-if __name__ == "__main__":
-    raise SystemExit(main())

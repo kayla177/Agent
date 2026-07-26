@@ -17,14 +17,6 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from agents.application_tracker import store as appstore
 from agents.job_scraper import store as jobstore
 
-_failures: list[str] = []
-
-
-def check(name: str, cond: bool) -> None:
-    print(("  ✓ " if cond else "  ✗ ") + name)
-    if not cond:
-        _failures.append(name)
-
 
 def _raises(fn) -> bool:
     try:
@@ -96,18 +88,3 @@ def test_replace_record(temp_db) -> None:
     got = jobstore.load_records()["j1"]
     assert got["status"] == "dismissed"
     assert got["first_seen"] == "2026-06-01"
-
-
-def main() -> int:
-    for fn in (test_applications, test_jobs_roundtrip, test_replace_record):
-        fn()
-    print()
-    if _failures:
-        print(f"FAILED ({len(_failures)}): " + ", ".join(_failures))
-        return 1
-    print("all store tests passed")
-    return 0
-
-
-if __name__ == "__main__":
-    sys.exit(main())
