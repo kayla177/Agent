@@ -24,6 +24,7 @@
 - **Never drop a posting on an `UNKNOWN` country.** Ambiguous locations are kept and badged.
 - **The LLM must never overwrite a good baseline score with `NULL`.**
 - Tests never hit the network or a live ATS site.
+- **There is no JS/TS test harness in this repo and this plan does not add one.** Frontend tasks (11, 12, 13) are verified by `npm run lint`, `npm run build`, and the explicit browser checklist in the task. This matches the precedent set by `docs/superpowers/plans/2026-07-21-plan4-jobs-tab.md`. Absence of component tests in a frontend task is therefore per-spec, not a defect.
 
 ---
 
@@ -1645,7 +1646,7 @@ def test_dismissed_rows_get_country_but_not_llm_refinement(temp_db):
     """No inference is ever spent on a job already rejected."""
     _seed([{"id": "d", "status": "dismissed", "title": "SWE Intern",
             "location": "Austin, TX", "fit_score": None, "country": ""}])
-    out = backfill_node({"new": []})["new"]
+    out = backfill_node({"new": [], "backfill": True})["new"]
     row = next(p for p in out if p["id"] == "d")
     assert row["country"] == "US"
     assert row["_skip_llm"] is True
@@ -1659,10 +1660,20 @@ def test_respects_the_llm_cap(temp_db, monkeypatch):
          "location": "Austin, TX", "fit_score": None, "country": ""}
         for i in range(5)
     ])
-    out = backfill_node({"new": []})["new"]
+    out = backfill_node({"new": [], "backfill": True})["new"]
     refinable = [p for p in out if not p.get("_skip_llm")]
     assert len(refinable) == 2, "cap must bound the expensive pass"
     assert len(out) == 5, "the cheap deterministic pass still covers everything"
+
+
+def test_no_llm_refinement_without_the_flag(temp_db):
+    """The interactive 'run scraper' button must stay fast: the cheap pass still
+    runs, but nothing is queued for the ~6.5s/posting model call."""
+    _seed([{"id": "1", "status": "new", "title": "SWE Intern",
+            "location": "Austin, TX", "fit_score": None, "country": ""}])
+    out = backfill_node({"new": []})["new"]
+    assert out[0]["_skip_llm"] is True
+    assert out[0]["country"] == "US", "the cheap deterministic pass still runs"
 
 
 def test_preserves_incoming_new_postings(temp_db):
@@ -1748,9 +1759,12 @@ def backfill_node(state: JobScraperState) -> JobScraperState:
             rec["country"] = country_of(rec.get("location", ""))
         rec["_rescored"] = True
 
-    # Expensive: only non-dismissed rows, and only up to the cap.
-    budget = LLM_CAP
-    skipped = 0
+    # Expensive: LLM refinement, only when this run opted in. The launchd runs
+    # pass backfill=True (nobody is waiting) and the "score backlog" button does
+    # too; the interactive "run scraper" button does not, so it stays fast.
+    refine = bool(state.get("backfill"))
+    budget = LLM_CAP if refine else 0
+    over_cap = 0
     for rec in selected:
         if rec.get("status") == "dismissed" or not _needs_score(rec):
             rec["_skip_llm"] = True
@@ -1758,10 +1772,11 @@ def backfill_node(state: JobScraperState) -> JobScraperState:
             budget -= 1
         else:
             rec["_skip_llm"] = True
-            skipped += 1
+            if refine:
+                over_cap += 1  # only "over the cap" when refinement was actually on
 
-    if skipped:
-        print(f"ℹ️ backfill: {skipped} row(s) over the {LLM_CAP}-row LLM cap, deferred to a later run")
+    if over_cap:
+        print(f"ℹ️ backfill: {over_cap} row(s) over the {LLM_CAP}-row LLM cap, deferred to a later run")
 
     return {"new": incoming + selected}
 ```
@@ -2827,18 +2842,9 @@ export default function ScoreBacklogButton() {
 }
 ```
 
-- [ ] **Step 3: Gate the LLM pass on the flag**
+- [ ] **Step 3: Declare the input flag on the state**
 
-In `agents/job_scraper/nodes/backfill.py`, read the flag from state so an interactive scrape stays fast. Change the expensive loop's condition:
-
-```python
-    # LLM refinement only when this run opted in: the launchd runs pass
-    # backfill=True (nobody is waiting), the interactive "run scraper" button
-    # does not, and the "score backlog" button does.
-    refine = bool(state.get("backfill"))
-    budget = LLM_CAP if refine else 0
-```
-
+`backfill_node` already reads `state.get("backfill")` (Task 8), so this step only declares the key.
 Add `backfill: bool` to `JobScraperState` in `agents/job_scraper/state.py`:
 
 ```python
@@ -2878,26 +2884,12 @@ Also update the plist's comment line to
 Note: passing `{"backfill": True}` to an agent whose state lacks that key is harmless — LangGraph
 ignores unknown keys on a `TypedDict` state — but only `job_scraper` acts on it.
 
-- [ ] **Step 5: Update the backfill test for the flag**
-
-In `tests/test_backfill.py`, the LLM-cap and dismissed tests must pass the flag. Change `backfill_node({"new": []})` to `backfill_node({"new": [], "backfill": True})` in `test_dismissed_rows_get_country_but_not_llm_refinement` and `test_respects_the_llm_cap`, and add:
-
-```python
-def test_no_llm_refinement_without_the_flag(temp_db):
-    """The interactive scraper button must stay fast."""
-    _seed([{"id": "1", "status": "new", "title": "SWE Intern",
-            "location": "Austin, TX", "fit_score": None, "country": ""}])
-    out = backfill_node({"new": []})["new"]
-    assert out[0]["_skip_llm"] is True
-    assert out[0]["country"] == "US", "the cheap pass still runs"
-```
-
-- [ ] **Step 6: Run the tests**
+- [ ] **Step 5: Run the tests**
 
 Run: `.venv/bin/python -m pytest tests/ -v`
 Expected: all PASS.
 
-- [ ] **Step 7: Reload launchd and commit**
+- [ ] **Step 6: Reload launchd and commit**
 
 ```bash
 launchctl unload ops/com.kayla.daily-agents.jobscraper.plist 2>/dev/null
