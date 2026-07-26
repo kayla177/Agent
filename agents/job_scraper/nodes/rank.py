@@ -111,8 +111,13 @@ def _score_batch(profile: str, keywords: list[str], batch: list[dict]) -> None:
     try:
         reply = llm("local", _prompt(profile, batch), system=_SYSTEM, temperature=0.2)
     except Exception as exc:  # model unavailable / transport error -> keep baselines
+        # Print the detail (can be a very long litellm/httpx error) rather than
+        # storing it in fit_reason, which is rendered directly in the jobs board
+        # UI. The fixed " (unrefined)" suffix must keep is_baseline_reason() True
+        # so the backfill node still retries these rows.
+        print(f"rank_node: LLM unavailable, keeping baseline scores: {exc}")
         for p in batch:
-            p["fit_reason"] = f"{p['fit_reason']} (unrefined: {exc})"
+            p["fit_reason"] = f"{p['fit_reason']} (unrefined)"
         return
 
     parsed = _parse(reply, len(batch))

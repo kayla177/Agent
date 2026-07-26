@@ -8,9 +8,11 @@ fit_score=NULL.
 from __future__ import annotations
 
 import config
+import profile_store
 from agents.job_scraper.nodes import rank as rank_mod
 from agents.job_scraper.nodes.filter import filter_node
 from agents.job_scraper.nodes.rank import rank_node
+from agents.job_scraper.scoring import is_baseline_reason
 
 _POSTINGS = [
     {"id": "a", "title": "Software Engineer Intern", "description": "Python and React.", "location": "Austin, TX"},
@@ -67,6 +69,36 @@ def test_ineligible_still_dropped(monkeypatch):
     )
     out = rank_node({"new": [dict(p) for p in _POSTINGS]})["new"]
     assert [p["id"] for p in out] == ["b"]
+
+
+def test_no_profile_and_llm_failure_still_reads_as_baseline(monkeypatch):
+    """Regression: no profile configured (the current default state) + the model
+    unavailable used to break the `is_baseline_reason` persistence contract, since
+    the exception text was appended straight onto "no profile keywords set",
+    defeating the exact-match check and stranding the row as "already refined"
+    for the backfill node. Neutralize BOTH profile sources so the empty-profile
+    path is deterministic rather than depending on the live DB being blank.
+    """
+    monkeypatch.setattr(config, "JOB_PROFILE", "")
+    monkeypatch.setattr(profile_store, "fit_profile_text", lambda: "")
+    monkeypatch.setattr(config, "JOB_MIN_FIT", 0)
+
+    def boom(*a, **k):
+        raise RuntimeError("ollama down")
+
+    monkeypatch.setattr(rank_mod, "llm", boom)
+    out = rank_node({"new": [dict(p) for p in _POSTINGS]})["new"]
+    assert len(out) == 2
+    for p in out:
+        assert is_baseline_reason(p["fit_reason"]) is True
+        assert "ollama down" not in p["fit_reason"]
+
+
+def test_is_baseline_reason_excludes_legacy_fallback_strings():
+    """rank.py's own legacy fallback strings ("unranked", "no profile set") must
+    keep classifying as NOT baseline — they are not written by scoring.py."""
+    assert is_baseline_reason("unranked") is False
+    assert is_baseline_reason("no profile set") is False
 
 
 def test_filter_tags_country_and_keeps_everything(monkeypatch):

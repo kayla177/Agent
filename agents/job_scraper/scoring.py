@@ -113,6 +113,13 @@ def is_baseline_reason(reason: str) -> bool:
     rank.py overwrites fit_reason when the model returns a usable score, so a
     still-baseline reason marks a row that has not been LLM-refined yet. The
     backfill node selects on exactly this.
+
+    Prefix-tolerant (not exact-match) on BOTH markers: rank.py's exception path
+    appends a short suffix (e.g. " (unrefined)") to whatever baseline reason was
+    already set, and that round-trip must still read as a baseline reason —
+    otherwise a row scored while the model was unavailable and no profile was
+    configured is permanently misclassified as "already LLM-refined" and never
+    retried by the backfill node.
     """
     r = (reason or "").strip()
-    return r.startswith(_MATCH_PREFIX) or r == _NO_KEYWORDS_REASON
+    return r.startswith(_MATCH_PREFIX) or r.startswith(_NO_KEYWORDS_REASON)
