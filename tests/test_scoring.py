@@ -63,3 +63,48 @@ def test_target_role_title_bonus():
 
 def test_llm_reason_is_not_baseline():
     assert not is_baseline_reason("Strong Python background, great fit for the team")
+
+
+def test_extract_keywords_includes_cpp_and_csharp():
+    """C++ and C# are valid skill keywords and must be extracted.
+
+    Regression test: _TOKEN_RE deliberately captures [a-z0-9+#]*, so C++ and C#
+    come through as keywords. They must not be silently dropped by the matching
+    logic.
+    """
+    kws = extract_keywords("C++ for systems, C# for backend, Python for ML.")
+    assert "c++" in kws
+    assert "c#" in kws
+    assert "python" in kws
+
+
+def test_cpp_and_csharp_match_and_score():
+    """C++ and C# keywords must match in postings and contribute to the score.
+
+    Regression test for lookaround anchoring: \b does not work for keywords
+    ending in non-word characters like + or #, so C++ and C# were silently
+    dropped from every score. Verify they now match and increase the score.
+    """
+    kws_no_dotnet = ["java", "python"]
+    kws_with_dotnet = ["java", "c#"]
+
+    # Same posting, one without C# in description, one with it.
+    without_csharp = score_baseline(
+        kws_with_dotnet,
+        {"title": "Backend Engineer Intern", "description": "We use Java and Python."},
+    )[0]
+    with_csharp = score_baseline(
+        kws_with_dotnet,
+        {"title": "Backend Engineer Intern", "description": "We use Java and C#."},
+    )[0]
+    # Score must increase when C# is present.
+    assert with_csharp > without_csharp
+
+    # Verify both C++ and C# can match in a single posting.
+    cpp_and_csharp_score, reason = score_baseline(
+        ["c++", "c#"],
+        {"title": "Systems Engineer Intern", "description": "C++ and C# experience desired."},
+    )
+    assert cpp_and_csharp_score > 50  # Both keywords present; should be well above neutral.
+    assert "c++" in reason.lower() or "C++" in reason
+    assert "c#" in reason.lower() or "C#" in reason

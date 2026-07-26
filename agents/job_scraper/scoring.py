@@ -6,7 +6,13 @@ a partly-null column actively hides good roles. So every posting gets a cheap,
 explainable keyword-overlap score here, and the LLM in rank.py only OVERRIDES it
 when it returns a usable integer.
 
-Matching is word-boundary anchored (see locations.py for the same rule and why).
+Matching uses negative lookarounds (not \b word boundaries) so that keywords
+ending in non-word characters like C++ and C# still match. A keyword like "c++"
+with trailing \b would only match if followed by a word character in the haystack,
+which never happens in normal prose where a skill is followed by space, comma,
+or period. Negative lookarounds work regardless of keyword edge characters while
+still protecting against substring matches inside larger words (e.g., "r" in
+"Research", "go" in "Going").
 """
 
 from __future__ import annotations
@@ -58,10 +64,19 @@ def extract_keywords(profile: str) -> list[str]:
 
 
 def _matches(keywords: list[str], haystack: str) -> list[str]:
-    """Keywords present in the haystack, word-boundary anchored."""
+    r"""Keywords present in the haystack, word-boundary anchored with lookarounds.
+
+    Uses (?<!\w) and (?!\w) instead of \b so that keywords ending in non-word
+    characters (e.g., c++, c#) can match. \b requires a word↔non-word transition,
+    so a keyword ending in + or # would only match if followed by a word character,
+    which doesn't happen in normal prose (skills are followed by space/comma/period).
+    Lookarounds assert "not preceded/followed by word char" regardless of the
+    keyword's own edge characters, while still protecting against false positives
+    like r in Research or go in Going.
+    """
     hits: list[str] = []
     for kw in keywords:
-        if re.search(r"\b" + re.escape(kw) + r"\b", haystack, re.IGNORECASE):
+        if re.search(r"(?<!\w)" + re.escape(kw) + r"(?!\w)", haystack, re.IGNORECASE):
             hits.append(kw)
     return hits
 
