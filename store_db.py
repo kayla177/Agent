@@ -31,10 +31,16 @@ def connect() -> sqlite3.Connection:
 
 def init_db() -> None:
     """Create every table/index if absent, from the canonical schema.sql.
-    Safe to call repeatedly (CREATE TABLE IF NOT EXISTS)."""
+    Safe to call repeatedly (CREATE TABLE IF NOT EXISTS).
+
+    `_migrate` runs FIRST: it adds columns to tables that already exist, and
+    schema.sql may declare an INDEX over a newly-added column. `CREATE INDEX IF
+    NOT EXISTS` only guards the index name, not the column, so running the script
+    first would raise "no such column" on a pre-existing table.
+    """
     with connect() as conn:
-        conn.executescript(SCHEMA_FILE.read_text(encoding="utf-8"))
         _migrate(conn)
+        conn.executescript(SCHEMA_FILE.read_text(encoding="utf-8"))
 
 
 def _migrate(conn: sqlite3.Connection) -> None:
@@ -44,10 +50,17 @@ def _migrate(conn: sqlite3.Connection) -> None:
     tables, but never adds a column to a table that already exists. Each guard
     here is idempotent (checked against PRAGMA table_info), so this is safe to
     run on every init. Keep in sync with schema.sql; the drift check builds a
-    fresh DB from schema.sql alone, so these ALTERs must match its columns."""
+    fresh DB from schema.sql alone, so these ALTERs must match its columns.
+
+    `_migrate` now runs BEFORE schema.sql's CREATE TABLE IF NOT EXISTS, so on a
+    fresh DB none of these tables exist yet — every check below must tolerate a
+    missing table (PRAGMA table_info returns no rows, giving an empty `cols`)."""
     cols = {r[1] for r in conn.execute("PRAGMA table_info(applications)")}
-    if "resume_job_id" not in cols:
+    if cols and "resume_job_id" not in cols:
         conn.execute("ALTER TABLE applications ADD COLUMN resume_job_id TEXT")
+    # Pins which cached résumé PDF was actually sent with an application.
+    if cols and "resume_pdf_key" not in cols:
+        conn.execute("ALTER TABLE applications ADD COLUMN resume_pdf_key TEXT")
 
     # LaTeX résumé export: their .tex template on the master, tailored .tex per job.
     master_cols = {r[1] for r in conn.execute("PRAGMA table_info(master_resume)")}
@@ -56,3 +69,8 @@ def _migrate(conn: sqlite3.Connection) -> None:
     resume_cols = {r[1] for r in conn.execute("PRAGMA table_info(resumes)")}
     if resume_cols and "latex" not in resume_cols:
         conn.execute("ALTER TABLE resumes ADD COLUMN latex TEXT NOT NULL DEFAULT ''")
+
+    # Country classification for the jobs board's US/Canada filter.
+    job_cols = {r[1] for r in conn.execute("PRAGMA table_info(jobs)")}
+    if job_cols and "country" not in job_cols:
+        conn.execute("ALTER TABLE jobs ADD COLUMN country TEXT NOT NULL DEFAULT ''")

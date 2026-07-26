@@ -22,7 +22,8 @@ CREATE TABLE IF NOT EXISTS applications (
     updated_date  TEXT    NOT NULL,
     notes         TEXT    NOT NULL DEFAULT '',
     auto_detected INTEGER NOT NULL DEFAULT 0,
-    resume_job_id TEXT             -- which generated resume was used to apply (-> resumes.job_id); NULL if none
+    resume_job_id TEXT,            -- which generated resume was used to apply (-> resumes.job_id); NULL if none
+    resume_pdf_key TEXT           -- pins the exact cached PDF sent (see server/resume_pdf.py); NULL if none
 );
 
 -- ---------------------------------------------------------------------------
@@ -45,6 +46,7 @@ CREATE TABLE IF NOT EXISTS jobs (
     fit_reason   TEXT,
     ghost        INTEGER NOT NULL DEFAULT 0,
     also_on      TEXT    NOT NULL DEFAULT '[]',
+    country      TEXT    NOT NULL DEFAULT '',  -- US | CA | OTHER | UNKNOWN (see locations.py)
     first_seen   TEXT    NOT NULL DEFAULT '',
     last_seen    TEXT    NOT NULL DEFAULT '',
     data         TEXT    NOT NULL DEFAULT '{}'   -- full enriched posting (round-trip source of truth)
@@ -144,3 +146,30 @@ CREATE TABLE IF NOT EXISTS stock_analysis (
     PRIMARY KEY (run_at, symbol)
 );
 CREATE INDEX IF NOT EXISTS idx_stock_analysis_run ON stock_analysis(run_at DESC);
+
+CREATE INDEX IF NOT EXISTS idx_jobs_country ON jobs(country);
+
+-- ---------------------------------------------------------------------------
+-- Applicant profile — one row (id is always 1, enforced by profile_store).
+-- Typed fields exist so NO LLM ever invents a phone number or a work-
+-- authorization answer into a submitted application form. `summary` is the
+-- free-text candidate description that drives job fit scoring.
+-- ---------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS applicant_profile (
+    id                INTEGER PRIMARY KEY AUTOINCREMENT,
+    full_name         TEXT    NOT NULL DEFAULT '',
+    email             TEXT    NOT NULL DEFAULT '',
+    phone             TEXT    NOT NULL DEFAULT '',
+    location          TEXT    NOT NULL DEFAULT '',
+    linkedin_url      TEXT    NOT NULL DEFAULT '',
+    github_url        TEXT    NOT NULL DEFAULT '',
+    portfolio_url     TEXT    NOT NULL DEFAULT '',
+    school            TEXT    NOT NULL DEFAULT '',
+    degree            TEXT    NOT NULL DEFAULT '',
+    grad_date         TEXT    NOT NULL DEFAULT '',   -- ISO YYYY-MM
+    us_work_auth      TEXT    NOT NULL DEFAULT '',   -- citizen|permanent_resident|f1_opt|tn_eligible|needs_sponsorship
+    ca_work_auth      TEXT    NOT NULL DEFAULT '',
+    needs_sponsorship INTEGER NOT NULL DEFAULT 0,
+    summary           TEXT    NOT NULL DEFAULT '',
+    updated_at        TEXT    NOT NULL DEFAULT ''
+);

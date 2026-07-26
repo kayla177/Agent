@@ -51,7 +51,7 @@ via Prisma. Mutations and agent actions are proxied to :8001 by `next.config.ts`
 
 ## Data model & schema ownership
 
-Nine tables in `data/control_center.db`. **`schema.sql` (repo root) is the single source of
+Ten tables in `data/control_center.db`. **`schema.sql` (repo root) is the single source of
 truth** — `store_db.init_db()` applies it, and `server/db.py` + the agent stores delegate
 there. `web-next/prisma/schema.prisma` mirrors it and is verified by `npm run db:check`
 (builds a temp DB from `schema.sql`, diffs against the Prisma datamodel; fails on drift).
@@ -67,6 +67,7 @@ there. `web-next/prisma/schema.prisma` mirrors it and is verified by `npm run db
 | `master_resume` | `agents/resume_generator/store.py` (via `PUT /data/resume/master`) | both sides |
 | `resume_versions` | `agents/resume_generator/store.py` (inside graph nodes) | Python; Next (via `/data/resumes/{job_id}/versions`) |
 | `stock_analysis` | `agents/stock_digest/store.py` (inside graph nodes) | Python; Next (via `/stocks/desk`) |
+| `applicant_profile` | `profile_store.py` (via `PUT /data/profile`) | both sides |
 
 The `jobs` row carries both **mirrored columns** and a full-record **`data` JSON blob**;
 `job_scraper/store.py:set_status` updates both together, so the single writer keeps them in

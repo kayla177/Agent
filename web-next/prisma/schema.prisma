@@ -8,16 +8,17 @@ datasource db {
 }
 
 model applications {
-  id            Int     @id @default(autoincrement())
-  company       String
-  role          String
-  url           String  @default("")
-  status        String  @default("applied")
-  applied_date  String
-  updated_date  String
-  notes         String  @default("")
-  auto_detected Int     @default(0)
-  resume_job_id String?
+  id             Int     @id @default(autoincrement())
+  company        String
+  role           String
+  url            String  @default("")
+  status         String  @default("applied")
+  applied_date   String
+  updated_date   String
+  notes          String  @default("")
+  auto_detected  Int     @default(0)
+  resume_job_id  String?
+  resume_pdf_key String?
 }
 
 model node_events {
@@ -64,12 +65,14 @@ model jobs {
   fit_reason   String?
   ghost        Int     @default(0)
   also_on      String  @default("[]")
+  country      String  @default("")
   first_seen   String  @default("")
   last_seen    String  @default("")
   data         String  @default("{}")
 
   @@index([company], map: "idx_jobs_company")
   @@index([status], map: "idx_jobs_status")
+  @@index([country], map: "idx_jobs_country")
 }
 
 // Resume generator (feature/resume-generator). Tables are created by the Python
@@ -121,13 +124,35 @@ model resume_versions {
 model stock_analysis {
   symbol  String
   run_at  String
-  verdict String  @default("")
+  verdict String @default("")
   score   Int?
-  signal  String  @default("")
+  signal  String @default("")
   price   Float?
   pct     Float?
-  data    String  @default("{}")
+  data    String @default("{}")
 
   @@id([run_at, symbol])
   @@index([run_at(sort: Desc)], map: "idx_stock_analysis_run")
+}
+
+// Applicant profile — one row (id is always 1, enforced by profile_store).
+// Typed fields exist so no LLM ever invents a phone number or a work-
+// authorization answer into a submitted application form.
+model applicant_profile {
+  id                Int    @id @default(autoincrement())
+  full_name         String @default("")
+  email             String @default("")
+  phone             String @default("")
+  location          String @default("")
+  linkedin_url      String @default("")
+  github_url        String @default("")
+  portfolio_url     String @default("")
+  school            String @default("")
+  degree            String @default("")
+  grad_date         String @default("")
+  us_work_auth      String @default("")
+  ca_work_auth      String @default("")
+  needs_sponsorship Int    @default(0)
+  summary           String @default("")
+  updated_at        String @default("")
 }
