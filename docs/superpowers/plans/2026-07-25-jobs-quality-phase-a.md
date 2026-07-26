@@ -3757,7 +3757,8 @@ Add a test asserting that a reply with a usable score and an empty reason yields
 which `is_baseline_reason()` is False, and that a second pass does not re-select the row.
 
 **(ii) `upsert_records` honouring a record's own `last_seen` has no guarding test.** Reverting that
-line to an unconditional `today` leaves the whole suite green. Add:
+line to an unconditional `today` leaves the whole suite green. Add this to
+`tests/test_delisting.py` (it already imports `datetime as dt` and `store as jobstore`):
 
 ```python
 def test_upsert_preserves_an_explicit_last_seen(temp_db):
