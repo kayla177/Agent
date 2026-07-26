@@ -1232,10 +1232,18 @@ from server import prefs as prefstore
 
 @pytest.fixture
 def overlay(tmp_path, monkeypatch):
-    """Redirect the prefs overlay at a temp file and restore config after."""
+    """Redirect the prefs overlay at a temp file and restore config after.
+
+    `monkeypatch.undo()` MUST come before `config.refresh()`. Fixture finalizers
+    run in reverse setup order, so `monkeypatch` (set up first, as a dependency)
+    is torn down LAST — meaning a bare `config.refresh()` here would re-read the
+    temp overlay and leave those values loaded in `config` for every later test.
+    Verified: without the undo, teardown's refresh reads the tmp_path file.
+    """
     path = tmp_path / "prefs.json"
     monkeypatch.setattr(config, "PREFS_FILE", path)
     yield path
+    monkeypatch.undo()
     config.refresh()
 
 
