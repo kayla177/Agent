@@ -3327,6 +3327,84 @@ git commit -m "feat(profile): Profile section on Settings; document new endpoint
 
 ---
 
+## Task 15: Make `tests/test_job_scraper.py`'s assertions actually assert
+
+**Execute this BEFORE Task 14** — until it lands, roughly 40 assertions covering the scraper's core
+logic cannot fail, so no later task's green suite means what it appears to.
+
+**Why.** `tests/test_job_scraper.py` still uses the repo's pre-pytest `check(name, cond)` helper,
+which only appends to a module-level `_failures` list and prints. The `main()` that used to inspect
+that list was deleted in Task 1 when pytest was adopted — and under pytest it was never called
+anyway. So a failing `check()` is silent. Proved by injecting `check("DELIBERATELY FALSE", 1 == 2)`:
+all 8 tests in the file still reported PASS.
+
+This is my own scoping error from Task 1, which converted only `tests/test_stores_sqlite.py`.
+
+Affected coverage, all currently decorative: ATS field helpers (`_strip_html`, `_to_iso_date`,
+`_has_remote`, compensation formatting), `matching.age_days` / `canonical_location`, the
+undergrad relevance filter, freshness/ghost flagging, and LLM-reply parsing.
+
+**Files:**
+- Modify: `tests/test_job_scraper.py`
+
+- [ ] **Step 1: Prove the defect before changing anything**
+
+```bash
+cp tests/test_job_scraper.py /tmp/tjs.bak
+python3 - <<'PY'
+import pathlib
+p = pathlib.Path("tests/test_job_scraper.py"); s = p.read_text()
+s = s.replace('check("intern is target", is_target_role("Software Engineer Intern"))',
+              'check("DELIBERATELY FALSE", 1 == 2)')
+p.write_text(s)
+PY
+.venv/bin/python -m pytest tests/test_job_scraper.py -q
+cp /tmp/tjs.bak tests/test_job_scraper.py && rm /tmp/tjs.bak
+```
+
+Expected: the suite reports PASS despite the false assertion. Record that output in your report — it
+is the evidence this task exists.
+
+- [ ] **Step 2: Convert every `check(...)` call to a real assert**
+
+Mechanically rewrite each `check("<name>", <cond>)` as `assert <cond>, "<name>"`. Keep the message
+text — it is the only documentation of intent for several of these. Do not change any condition, and
+do not "fix" a condition that now fails; if any assertion fails once enforced, STOP and report it as
+a genuine pre-existing bug rather than adjusting the test to match the code.
+
+Then delete the now-unused `check` function, the `_failures` list, and any `print` lines that only
+existed to label the hand-rolled runner's output.
+
+Preserve the one test the Task 8 fix round added, which already uses real asserts.
+
+- [ ] **Step 3: Run the suite**
+
+Run: `.venv/bin/python -m pytest tests/ -v`
+Expected: all tests pass. If any newly-enforced assertion fails, that is a real bug the decorative
+helper was hiding — report it and stop rather than editing the assertion.
+
+- [ ] **Step 4: Re-prove enforcement**
+
+Repeat Step 1's injection, but as a real `assert 1 == 2, "DELIBERATELY FALSE"`. The suite must now
+FAIL. Restore the file and confirm `git status --short` is clean. Record both outputs.
+
+- [ ] **Step 5: Confirm no other test file has the same problem**
+
+```bash
+grep -rn "def check\|_failures" tests/
+```
+
+Expected: no matches anywhere. Report what you find.
+
+- [ ] **Step 6: Commit**
+
+```bash
+git add tests/test_job_scraper.py
+git commit -m "test(jobs): enforce assertions in test_job_scraper.py (check() was silent)"
+```
+
+---
+
 ## Task 14: Accurate `last_seen` + real delisting detection
 
 **Execute this immediately after Task 8** — it edits the same nodes and closes the one defect from
@@ -3651,6 +3729,55 @@ In `agents/job_scraper/state.py`, add to `JobScraperState`:
 Run: `.venv/bin/python -m pytest tests/ -v`
 Expected: all PASS, including the pre-existing freshness tests (which pass no `observed_ids` and so
 must be unaffected).
+
+- [ ] **Step 8b: Close two convergence gaps the Task 8 re-review surfaced**
+
+Both are in the same "loops forever burning inference" class the Task 8 fix round closed.
+
+**(i) A usable score with an EMPTY reason still reads as baseline.** In
+`agents/job_scraper/nodes/rank.py:_score_batch`, the reason is written only `if hit["reason"]`. The
+model's prompt asks for a `<=12 word` reason but nothing guarantees one, and `_parse` normalizes a
+missing reason to `""`. So a reply carrying a good score but no reason leaves the baseline reason in
+place — `is_baseline_reason` stays True, the row is re-selected every run forever, and each pass
+re-clobbers the refined score via the unconditional baseline-first write at the top of the function.
+
+Fix: when the model returns a usable score, always leave a non-baseline reason. Use the model's
+reason when present, otherwise an explicit fallback:
+
+```python
+        if hit["score"] is not None:
+            p["fit_score"] = hit["score"]
+            # Always overwrite the reason when the score was refined. Leaving the
+            # baseline reason in place would make is_baseline_reason() True, so the
+            # row would be re-selected (and re-clobbered) on every future run.
+            p["fit_reason"] = hit["reason"] or "refined (no reason given)"
+```
+
+Add a test asserting that a reply with a usable score and an empty reason yields a `fit_reason` for
+which `is_baseline_reason()` is False, and that a second pass does not re-select the row.
+
+**(ii) `upsert_records` honouring a record's own `last_seen` has no guarding test.** Reverting that
+line to an unconditional `today` leaves the whole suite green. Add:
+
+```python
+def test_upsert_preserves_an_explicit_last_seen(temp_db):
+    """backfill must not be able to bump last_seen. Without this guard, a
+    re-injected row that this scrape never observed gets today's date, which
+    destroys the only signal that detects a delisted posting."""
+    stale = (dt.date.today() - dt.timedelta(days=30)).isoformat()
+    jobstore.upsert_records([{
+        "id": "a", "company": "Acme", "title": "SWE Intern", "last_seen": stale,
+    }])
+    with jobstore.store_db.connect() as conn:
+        row = conn.execute("SELECT last_seen FROM jobs WHERE id = 'a'").fetchone()
+    assert row["last_seen"] == stale
+
+    # A posting genuinely observed this run still gets stamped, via touch_last_seen.
+    jobstore.touch_last_seen(["a"])
+    with jobstore.store_db.connect() as conn:
+        row = conn.execute("SELECT last_seen FROM jobs WHERE id = 'a'").fetchone()
+    assert row["last_seen"] == dt.date.today().isoformat()
+```
 
 - [ ] **Step 9: Correct the docs Task 8 had to walk back**
 
