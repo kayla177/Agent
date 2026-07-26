@@ -88,3 +88,24 @@ def test_replace_record(temp_db) -> None:
     got = jobstore.load_records()["j1"]
     assert got["status"] == "dismissed"
     assert got["first_seen"] == "2026-06-01"
+
+
+def test_country_is_mirrored_to_its_column(temp_db):
+    """Regression: `country` lived only in the `data` blob, so Prisma (which reads
+    the COLUMN) saw '' for every row and the US/Canada filter did nothing."""
+    import store_db
+
+    jobstore.upsert_records([{
+        "id": "Acme:greenhouse:1", "company": "Acme", "title": "SWE Intern",
+        "location": "Austin, TX", "country": "US",
+    }])
+    with store_db.connect() as conn:
+        row = conn.execute("SELECT country FROM jobs WHERE id = ?", ("Acme:greenhouse:1",)).fetchone()
+    assert row["country"] == "US"
+
+    # A status change must not blank it out (set_status re-writes every column).
+    jobstore.set_status("Acme:greenhouse:1", "applied")
+    with store_db.connect() as conn:
+        row = conn.execute("SELECT country, status FROM jobs WHERE id = ?", ("Acme:greenhouse:1",)).fetchone()
+    assert row["country"] == "US"
+    assert row["status"] == "applied"

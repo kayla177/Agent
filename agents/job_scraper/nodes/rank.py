@@ -141,8 +141,15 @@ def rank_node(state: JobScraperState) -> JobScraperState:
     profile = (config.JOB_PROFILE or "").strip() or profile_store.fit_profile_text()
     keywords = extract_keywords(profile)
 
-    for start in range(0, len(new), _BATCH):
-        _score_batch(profile, keywords, new[start : start + _BATCH])
+    refinable = [p for p in new if not p.get("_skip_llm")]
+    baseline_only = [p for p in new if p.get("_skip_llm")]
+
+    for p in baseline_only:
+        p["fit_score"], p["fit_reason"] = score_baseline(keywords, p)
+        p.setdefault("eligible", True)
+
+    for start in range(0, len(refinable), _BATCH):
+        _score_batch(profile, keywords, refinable[start : start + _BATCH])
 
     # Drop roles the model judged not undergrad-eligible (grad-only / senior).
     new = [p for p in new if p.get("eligible", True)]

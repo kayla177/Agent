@@ -42,6 +42,7 @@ def _mirror(rec: dict) -> dict:
         "fit_reason": rec.get("fit_reason"),
         "ghost": 1 if rec.get("ghost") else 0,
         "also_on": json.dumps(rec.get("also_on", [])),
+        "country": rec.get("country", ""),
         "first_seen": rec.get("first_seen", ""),
         "last_seen": rec.get("last_seen", ""),
     }
@@ -50,9 +51,9 @@ def _mirror(rec: dict) -> dict:
 _INSERT = (
     "INSERT INTO jobs (id, company, title, location, url, status, ats, posted_at, "
     "remote, compensation, department, description, fit_score, fit_reason, ghost, "
-    "also_on, first_seen, last_seen, data) VALUES (:id, :company, :title, :location, "
+    "also_on, country, first_seen, last_seen, data) VALUES (:id, :company, :title, :location, "
     ":url, :status, :ats, :posted_at, :remote, :compensation, :department, "
-    ":description, :fit_score, :fit_reason, :ghost, :also_on, :first_seen, "
+    ":description, :fit_score, :fit_reason, :ghost, :also_on, :country, :first_seen, "
     ":last_seen, :data) ON CONFLICT(id) DO UPDATE SET "
     "company=excluded.company, title=excluded.title, location=excluded.location, "
     "url=excluded.url, status=excluded.status, ats=excluded.ats, "
@@ -60,6 +61,7 @@ _INSERT = (
     "compensation=excluded.compensation, department=excluded.department, "
     "description=excluded.description, fit_score=excluded.fit_score, "
     "fit_reason=excluded.fit_reason, ghost=excluded.ghost, also_on=excluded.also_on, "
+    "country=excluded.country, "
     "first_seen=excluded.first_seen, last_seen=excluded.last_seen, data=excluded.data"
 )
 

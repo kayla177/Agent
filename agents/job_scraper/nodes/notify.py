@@ -9,12 +9,21 @@ Full enriched records are persisted here on every run (the same store powers the
 web jobs view + the dedupe "seen" memory). Discord delivery is the only side
 effect gated on send=True — so the web "run scraper" button (send=0) still fills
 the jobs board.
+
+The backfill node re-injects stored rows tagged `_rescored` so they get scored /
+re-freshness-checked / persisted, but they are NOT genuinely new finds — so the
+digest must not re-announce them. Every posting is persisted regardless (the
+board needs the refreshed score/country/last_seen), but only untagged, shown-
+country rows are formatted into the announcement. Transient `_`-prefixed
+pipeline tags (`_rescored`, `_skip_llm`) are stripped before persistence so they
+never reach the mirrored columns or the `data` JSON blob.
 """
 
 from __future__ import annotations
 
 import datetime as dt
 
+import config
 from agents.job_scraper.state import JobScraperState
 from agents.job_scraper.store import upsert_records
 from shell.discord_client import send_message
@@ -76,16 +85,26 @@ def make_notify_node(*, send: bool):
     """Return a notify node bound to whether it should deliver to Discord."""
 
     def notify_node(state: JobScraperState) -> JobScraperState:
-        new = state.get("new", [])
+        all_rows = state.get("new", [])
         warnings = state.get("warnings", [])
-        message = _format_message(new, warnings)
+
+        # Announce only genuinely new postings in the shown countries. Rescored
+        # backlog rows are persisted but never re-announced.
+        shown = set(config.JOB_COUNTRIES)
+        announce = [
+            p for p in all_rows
+            if not p.get("_rescored") and (p.get("country", "UNKNOWN") in shown or p.get("country") == "UNKNOWN")
+        ]
+        message = _format_message(announce, warnings)
 
         # Persist the scraped roles on EVERY run — this is the data the web jobs
         # view + dedupe memory read, and the web "run scraper" button runs with
         # send=0. Persistence is a data operation; Discord delivery is the only
-        # send-gated side effect.
+        # send-gated side effect. Transient pipeline tags (`_rescored`,
+        # `_skip_llm`) must never reach the store: strip any `_`-prefixed key
+        # before persisting, so they can't land in the mirrored columns or blob.
         try:
-            upsert_records(new)
+            upsert_records([{k: v for k, v in p.items() if not k.startswith("_")} for p in all_rows])
         except Exception as exc:
             print(f"⚠️ Could not persist job records: {exc}")
 
