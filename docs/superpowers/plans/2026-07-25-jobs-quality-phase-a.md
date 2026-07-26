@@ -777,29 +777,104 @@ CREATE TABLE IF NOT EXISTS applicant_profile (
 );
 ```
 
-- [ ] **Step 4: Add the `_migrate` guards**
+- [ ] **Step 4: Reorder `init_db` so migration runs BEFORE the schema script**
 
-Append inside `store_db.py:_migrate()`:
+**This ordering change is mandatory and must be done before adding the column guards.** `init_db()`
+currently runs `executescript(schema.sql)` and *then* `_migrate(conn)`. That order cannot work for a
+new **indexed** column: `CREATE INDEX IF NOT EXISTS idx_jobs_country ON jobs(country)` guards the
+index *name*, not the column, so on a pre-existing `jobs` table it raises
+`sqlite3.OperationalError: no such column: country` before `_migrate` ever gets a chance to add it.
+Verified against a replica of the live schema:
+
+```
+executescript FIRST (current order):  fresh DB OK  |  existing DB FAIL "no such column: country"
+_migrate FIRST      (required order): fresh DB OK  |  existing DB OK
+```
+
+`init_db()` runs on FastAPI startup and inside every agent store, so getting this wrong takes the
+whole app down against the real database.
+
+In `store_db.py`, swap the two calls:
+
+```python
+def init_db() -> None:
+    """Create every table/index if absent, from the canonical schema.sql.
+    Safe to call repeatedly (CREATE TABLE IF NOT EXISTS).
+
+    `_migrate` runs FIRST: it adds columns to tables that already exist, and
+    schema.sql may declare an INDEX over a newly-added column. `CREATE INDEX IF
+    NOT EXISTS` only guards the index name, not the column, so running the script
+    first would raise "no such column" on a pre-existing table.
+    """
+    with connect() as conn:
+        _migrate(conn)
+        conn.executescript(SCHEMA_FILE.read_text(encoding="utf-8"))
+```
+
+- [ ] **Step 5: Add the `_migrate` guards (every check guarded on table existence)**
+
+Because `_migrate` now runs before any table is created, **every** check must tolerate a missing
+table — `PRAGMA table_info` on a nonexistent table returns no rows, so an unguarded
+`if "col" not in cols` would try to `ALTER` a table that does not exist yet and fail on a fresh DB.
+The existing `applications` check lacks that guard; add it.
+
+Change the existing `applications` block to:
+
+```python
+    cols = {r[1] for r in conn.execute("PRAGMA table_info(applications)")}
+    if cols and "resume_job_id" not in cols:
+        conn.execute("ALTER TABLE applications ADD COLUMN resume_job_id TEXT")
+    # Pins which cached résumé PDF was actually sent with an application.
+    if cols and "resume_pdf_key" not in cols:
+        conn.execute("ALTER TABLE applications ADD COLUMN resume_pdf_key TEXT")
+```
+
+and append:
 
 ```python
     # Country classification for the jobs board's US/Canada filter.
     job_cols = {r[1] for r in conn.execute("PRAGMA table_info(jobs)")}
     if job_cols and "country" not in job_cols:
         conn.execute("ALTER TABLE jobs ADD COLUMN country TEXT NOT NULL DEFAULT ''")
-
-    # Pins which cached résumé PDF was actually sent with an application.
-    if "resume_pdf_key" not in cols:
-        conn.execute("ALTER TABLE applications ADD COLUMN resume_pdf_key TEXT")
 ```
 
-Note `cols` is already computed at the top of `_migrate` for `applications`.
+The `master_resume` and `resumes` checks already carry the `if <cols> and` guard — leave them as is.
 
-- [ ] **Step 5: Run the test**
+- [ ] **Step 6: Add the migration-path test**
+
+Append to `tests/test_schema.py`:
+
+```python
+def test_indexed_new_column_survives_a_preexisting_table(tmp_path, monkeypatch):
+    """Regression: schema.sql declares idx_jobs_country over a column that only
+    _migrate adds. CREATE INDEX IF NOT EXISTS guards the index NAME, not the
+    column, so if the schema script ran before the migration this raised
+    'no such column: country' against every already-existing database."""
+    db = tmp_path / "preexisting.db"
+    monkeypatch.setattr(store_db, "DB_PATH", db)
+    with store_db.connect() as conn:
+        # A `jobs` table shaped like the live one, WITHOUT `country`.
+        conn.execute(
+            "CREATE TABLE jobs (id TEXT NOT NULL PRIMARY KEY, company TEXT NOT NULL DEFAULT '', "
+            "status TEXT NOT NULL DEFAULT 'new', location TEXT NOT NULL DEFAULT '', "
+            "data TEXT NOT NULL DEFAULT '{}')"
+        )
+        conn.execute("CREATE INDEX idx_jobs_company ON jobs(company)")
+
+    store_db.init_db()  # must not raise
+
+    with store_db.connect() as conn:
+        assert "country" in _cols(conn, "jobs")
+        idx = {r[1] for r in conn.execute("PRAGMA index_list(jobs)")}
+        assert "idx_jobs_country" in idx
+```
+
+- [ ] **Step 7: Run the test**
 
 Run: `.venv/bin/python -m pytest tests/test_schema.py -v`
 Expected: all PASS.
 
-- [ ] **Step 6: Mirror in Prisma and verify no drift**
+- [ ] **Step 8: Mirror in Prisma and verify no drift**
 
 In `web-next/prisma/schema.prisma`, add to `model jobs` after `also_on`:
 
@@ -845,7 +920,7 @@ model applicant_profile {
 Run: `cd web-next && npm run db:check && npx prisma generate`
 Expected: drift check PASSES.
 
-- [ ] **Step 7: Update ARCHITECTURE.md**
+- [ ] **Step 9: Update ARCHITECTURE.md**
 
 In the "Data model & schema ownership" table, change "Nine tables" to "Ten tables" and add:
 
@@ -853,7 +928,7 @@ In the "Data model & schema ownership" table, change "Nine tables" to "Ten table
 | `applicant_profile` | `profile_store.py` (via `PUT /data/profile`) | both sides |
 ```
 
-- [ ] **Step 8: Commit**
+- [ ] **Step 10: Commit**
 
 ```bash
 git add schema.sql store_db.py web-next/prisma/schema.prisma ARCHITECTURE.md tests/test_schema.py
