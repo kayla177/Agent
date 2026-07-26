@@ -21,11 +21,13 @@ from agents.job_scraper.sources import get_sources
 from agents.stock_digest.watchlist import get_headline_topics, get_watchlist
 
 # Editable preference keys (must match config.py globals).
-STR_KEYS = ("WEATHER_TIMEZONE", "WEATHER_TEMP_UNIT", "COMMUTE_ORIGIN", "COMMUTE_DESTINATION")
+STR_KEYS = ("WEATHER_TIMEZONE", "WEATHER_TEMP_UNIT", "COMMUTE_ORIGIN", "COMMUTE_DESTINATION", "JOB_PROFILE")
 FLOAT_KEYS = ("WEATHER_LATITUDE", "WEATHER_LONGITUDE")
 INT_KEYS = ("NEWS_MAX_ITEMS_PER_TOPIC",)
+BOOL_KEYS = ("JOB_DROP_GHOSTS",)
 LIST_KEYS = ("NEWS_TOPICS", "STOCK_WATCHLIST", "STOCK_HEADLINE_TOPICS")
 # JOB_SOURCES is a list of {company, ats, token} dicts, handled specially.
+_VALID_COUNTRIES = {"US", "CA", "OTHER"}
 
 _VALID_ATS = {"greenhouse", "lever", "ashby", "smartrecruiters", "workable", "workday"}
 
@@ -45,6 +47,11 @@ def current() -> dict[str, Any]:
         "STOCK_WATCHLIST": get_watchlist(),
         "STOCK_HEADLINE_TOPICS": get_headline_topics(),
         "JOB_SOURCES": get_sources(),
+        "JOB_PROFILE": config.JOB_PROFILE,
+        "JOB_MIN_FIT": config.JOB_MIN_FIT,
+        "JOB_MAX_AGE_DAYS": config.JOB_MAX_AGE_DAYS,
+        "JOB_DROP_GHOSTS": config.JOB_DROP_GHOSTS,
+        "JOB_COUNTRIES": list(config.JOB_COUNTRIES),
     }
 
 
@@ -83,19 +90,59 @@ def _validate(prefs: dict[str, Any]) -> dict[str, Any]:
                 )
             srcs.append({"company": company, "ats": ats, "token": token})
         out["JOB_SOURCES"] = srcs
+
+    for k in BOOL_KEYS:
+        if k in prefs:
+            out[k] = bool(prefs[k]) and str(prefs[k]).lower() not in ("0", "false", "off", "")
+
+    if "JOB_MIN_FIT" in prefs and prefs["JOB_MIN_FIT"] != "":
+        n = int(prefs["JOB_MIN_FIT"])
+        if not 0 <= n <= 100:
+            raise ValueError("JOB_MIN_FIT must be between 0 and 100")
+        out["JOB_MIN_FIT"] = n
+
+    if "JOB_MAX_AGE_DAYS" in prefs and prefs["JOB_MAX_AGE_DAYS"] != "":
+        n = int(prefs["JOB_MAX_AGE_DAYS"])
+        if n < 1:
+            raise ValueError("JOB_MAX_AGE_DAYS must be >= 1")
+        out["JOB_MAX_AGE_DAYS"] = n
+
+    if "JOB_COUNTRIES" in prefs:
+        codes = [str(c).strip().upper() for c in prefs["JOB_COUNTRIES"] if str(c).strip()]
+        bad = [c for c in codes if c not in _VALID_COUNTRIES]
+        if bad:
+            raise ValueError(f"unknown country code(s) {bad} (use {sorted(_VALID_COUNTRIES)})")
+        out["JOB_COUNTRIES"] = codes
+
     return out
 
 
 def save_prefs(prefs: dict[str, Any]) -> dict[str, Any]:
-    """Validate, atomically write the overlay, and refresh config in-process."""
+    """Validate, MERGE into the overlay, write atomically, and refresh config.
+
+    Merging (rather than replacing) means a key this function does not validate
+    — a hand-added pref, or one added by a newer version — survives a save from
+    an older form. The previous replace-everything behavior silently destroyed
+    such keys.
+    """
     clean = _validate(prefs)
+    existing: dict[str, Any] = {}
+    try:
+        with config.PREFS_FILE.open("r", encoding="utf-8") as fh:
+            loaded = json.load(fh)
+        if isinstance(loaded, dict):
+            existing = loaded
+    except (FileNotFoundError, json.JSONDecodeError, OSError):
+        existing = {}
+    merged = {**existing, **clean}
+
     config.PREFS_FILE.parent.mkdir(parents=True, exist_ok=True)
     tmp = config.PREFS_FILE.with_suffix(".json.tmp")
     with tmp.open("w", encoding="utf-8") as fh:
-        json.dump(clean, fh, indent=2, ensure_ascii=False)
+        json.dump(merged, fh, indent=2, ensure_ascii=False)
     os.replace(tmp, config.PREFS_FILE)  # atomic swap
     config.refresh()  # long-lived web process now sees the new values
-    return clean
+    return merged
 
 
 def secret_status() -> list[dict[str, Any]]:

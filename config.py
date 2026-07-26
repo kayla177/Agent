@@ -66,7 +66,7 @@ def _apply_prefs() -> None:
     global COMMUTE_ORIGIN, COMMUTE_DESTINATION
     global NEWS_TOPICS, NEWS_MAX_ITEMS_PER_TOPIC
     global STOCK_WATCHLIST, STOCK_HEADLINE_TOPICS, JOB_SOURCES
-    global JOB_MAX_AGE_DAYS, JOB_DROP_GHOSTS, JOB_PROFILE, JOB_MIN_FIT
+    global JOB_MAX_AGE_DAYS, JOB_DROP_GHOSTS, JOB_PROFILE, JOB_MIN_FIT, JOB_COUNTRIES
 
     # Weather location (Open-Meteo, no API key). Waterloo, Ontario.
     WEATHER_LATITUDE = float(os.getenv("WEATHER_LATITUDE", _pref("WEATHER_LATITUDE", 43.4643)))
@@ -104,6 +104,11 @@ def _apply_prefs() -> None:
     #   JOB_MIN_FIT: drop roles scoring below this (0 = keep everything).
     JOB_PROFILE = _pref("JOB_PROFILE", "")
     JOB_MIN_FIT = int(_pref("JOB_MIN_FIT", 0))
+
+    # Job scraper — which countries the board and digest show. Postings are
+    # always classified and stored (see locations.py); this only controls
+    # visibility, so narrowing it never loses data.
+    JOB_COUNTRIES = _pref("JOB_COUNTRIES", ["US", "CA"])
 
 
 def refresh() -> None:
