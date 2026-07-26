@@ -1700,6 +1700,69 @@ git commit -m "feat(jobs): baseline+LLM fit scoring; tag country without droppin
 - Consumes: `country_of` (Task 2), `is_baseline_reason` (Task 3), `jobstore.load_records` / `upsert_records`.
 - Produces: `backfill_node(state) -> {"new": [...]}` where merged rows carry `_rescored: True`; `LLM_CAP = 60`; graph input key `backfill: bool` enabling the LLM pass.
 
+- [ ] **Step 0: Persist `country` to its mirrored column (do this FIRST)**
+
+`agents/job_scraper/store.py` never writes `country` — the word appears **zero** times in that file.
+Task 4 added the column, Task 7 tags the record dict, but `_mirror()` doesn't return it and `_INSERT`
+doesn't list it, so the column stays `''` forever while only the `data` JSON blob carries the value.
+Prisma reads the **column**, so without this step the jobs board's US/Canada filter would silently do
+nothing. Confirmed against the live DB: all 523 rows have `country = ''`.
+
+Add to the dict returned by `_mirror()`, after `"also_on"`:
+
+```python
+        "country": rec.get("country", ""),
+```
+
+Then add it to all three parts of `_INSERT` — the column list, the `VALUES` placeholders, and the
+`ON CONFLICT DO UPDATE SET` clause:
+
+```python
+_INSERT = (
+    "INSERT INTO jobs (id, company, title, location, url, status, ats, posted_at, "
+    "remote, compensation, department, description, fit_score, fit_reason, ghost, "
+    "also_on, country, first_seen, last_seen, data) VALUES (:id, :company, :title, :location, "
+    ":url, :status, :ats, :posted_at, :remote, :compensation, :department, "
+    ":description, :fit_score, :fit_reason, :ghost, :also_on, :country, :first_seen, "
+    ":last_seen, :data) ON CONFLICT(id) DO UPDATE SET "
+    "company=excluded.company, title=excluded.title, location=excluded.location, "
+    "url=excluded.url, status=excluded.status, ats=excluded.ats, "
+    "posted_at=excluded.posted_at, remote=excluded.remote, "
+    "compensation=excluded.compensation, department=excluded.department, "
+    "description=excluded.description, fit_score=excluded.fit_score, "
+    "fit_reason=excluded.fit_reason, ghost=excluded.ghost, also_on=excluded.also_on, "
+    "country=excluded.country, "
+    "first_seen=excluded.first_seen, last_seen=excluded.last_seen, data=excluded.data"
+)
+```
+
+`set_status` also routes through `_write`, so it picks this up automatically — which keeps the
+mirrored column and the blob in sync, exactly as the ARCHITECTURE doc requires.
+
+Add this test to `tests/test_stores_sqlite.py`:
+
+```python
+def test_country_is_mirrored_to_its_column(temp_db):
+    """Regression: `country` lived only in the `data` blob, so Prisma (which reads
+    the COLUMN) saw '' for every row and the US/Canada filter did nothing."""
+    from agents.job_scraper import store as jobstore
+
+    jobstore.upsert_records([{
+        "id": "Acme:greenhouse:1", "company": "Acme", "title": "SWE Intern",
+        "location": "Austin, TX", "country": "US",
+    }])
+    with store_db.connect() as conn:
+        row = conn.execute("SELECT country FROM jobs WHERE id = ?", ("Acme:greenhouse:1",)).fetchone()
+    assert row["country"] == "US"
+
+    # A status change must not blank it out (set_status re-writes every column).
+    jobstore.set_status("Acme:greenhouse:1", "applied")
+    with store_db.connect() as conn:
+        row = conn.execute("SELECT country, status FROM jobs WHERE id = ?", ("Acme:greenhouse:1",)).fetchone()
+    assert row["country"] == "US"
+    assert row["status"] == "applied"
+```
+
 - [ ] **Step 1: Write the failing test**
 
 `tests/test_backfill.py`:
@@ -1714,6 +1777,10 @@ and last_seen never refreshed.
 
 from __future__ import annotations
 
+import pytest
+
+import config
+import profile_store
 from agents.job_scraper import store as jobstore
 from agents.job_scraper.nodes.backfill import backfill_node
 
@@ -1721,6 +1788,14 @@ from agents.job_scraper.nodes.backfill import backfill_node
 def _seed(records):
     for rec in records:
         jobstore.replace_record(rec)
+
+
+@pytest.fixture
+def with_profile(monkeypatch):
+    """A profile must exist for the LLM refinement pass to be queued at all, so
+    any test asserting on refinement has to set one explicitly."""
+    monkeypatch.setattr(config, "JOB_PROFILE", "Python React SQL")
+    return "Python React SQL"
 
 
 def test_selects_rows_missing_score_or_country(temp_db):
@@ -1742,17 +1817,21 @@ def test_fills_country_deterministically(temp_db):
     assert out[0]["country"] == "OTHER"
 
 
-def test_dismissed_rows_get_country_but_not_llm_refinement(temp_db):
-    """No inference is ever spent on a job already rejected."""
+def test_dismissed_rows_get_country_but_not_llm_refinement(temp_db, with_profile):
+    """No inference is ever spent on a job already rejected. A profile is set so
+    this test fails for the RIGHT reason — without one, every row is skipped
+    anyway and the assertion would pass vacuously."""
     _seed([{"id": "d", "status": "dismissed", "title": "SWE Intern",
+            "location": "Austin, TX", "fit_score": None, "country": ""},
+           {"id": "n", "status": "new", "title": "SWE Intern",
             "location": "Austin, TX", "fit_score": None, "country": ""}])
-    out = backfill_node({"new": [], "backfill": True})["new"]
-    row = next(p for p in out if p["id"] == "d")
-    assert row["country"] == "US"
-    assert row["_skip_llm"] is True
+    out = {p["id"]: p for p in backfill_node({"new": [], "backfill": True})["new"]}
+    assert out["d"]["country"] == "US"
+    assert out["d"]["_skip_llm"] is True, "dismissed row must not be refined"
+    assert out["n"].get("_skip_llm") is not True, "new row SHOULD be refined"
 
 
-def test_respects_the_llm_cap(temp_db, monkeypatch):
+def test_respects_the_llm_cap(temp_db, monkeypatch, with_profile):
     from agents.job_scraper.nodes import backfill as bf
     monkeypatch.setattr(bf, "LLM_CAP", 2)
     _seed([
@@ -1766,14 +1845,37 @@ def test_respects_the_llm_cap(temp_db, monkeypatch):
     assert len(out) == 5, "the cheap deterministic pass still covers everything"
 
 
-def test_no_llm_refinement_without_the_flag(temp_db):
+def test_no_llm_refinement_without_the_flag(temp_db, monkeypatch):
     """The interactive 'run scraper' button must stay fast: the cheap pass still
     runs, but nothing is queued for the ~6.5s/posting model call."""
+    monkeypatch.setattr(config, "JOB_PROFILE", "Python React")
     _seed([{"id": "1", "status": "new", "title": "SWE Intern",
             "location": "Austin, TX", "fit_score": None, "country": ""}])
     out = backfill_node({"new": []})["new"]
     assert out[0]["_skip_llm"] is True
     assert out[0]["country"] == "US", "the cheap deterministic pass still runs"
+
+
+def test_no_llm_refinement_without_a_profile(temp_db, monkeypatch):
+    """With no profile the rank prompt can only return null scores, and a null
+    score leaves the baseline reason in place — so these rows stay selectable and
+    would be re-queued on every scheduled run forever. Skip the expensive pass.
+    Both profile sources must be neutralised, not just config."""
+    monkeypatch.setattr(config, "JOB_PROFILE", "")
+    monkeypatch.setattr(profile_store, "fit_profile_text", lambda: "")
+    _seed([{"id": "1", "status": "new", "title": "SWE Intern",
+            "location": "Austin, TX", "fit_score": None, "country": ""}])
+    out = backfill_node({"new": [], "backfill": True})["new"]
+    assert out[0]["_skip_llm"] is True, "no profile -> no inference"
+    assert out[0]["country"] == "US", "the cheap deterministic pass still runs"
+
+
+def test_llm_refinement_runs_when_a_profile_exists(temp_db, monkeypatch):
+    monkeypatch.setattr(config, "JOB_PROFILE", "Python React SQL")
+    _seed([{"id": "1", "status": "new", "title": "SWE Intern",
+            "location": "Austin, TX", "fit_score": None, "country": ""}])
+    out = backfill_node({"new": [], "backfill": True})["new"]
+    assert out[0].get("_skip_llm") is not True, "a profile exists, so refine it"
 
 
 def test_preserves_incoming_new_postings(temp_db):
@@ -1820,6 +1922,8 @@ Cost control, measured 2026-07-25 at ~6.5s/job of local inference:
 
 from __future__ import annotations
 
+import config
+import profile_store
 from agents.job_scraper.locations import country_of
 from agents.job_scraper.scoring import is_baseline_reason
 from agents.job_scraper.state import JobScraperState
@@ -1862,7 +1966,22 @@ def backfill_node(state: JobScraperState) -> JobScraperState:
     # Expensive: LLM refinement, only when this run opted in. The launchd runs
     # pass backfill=True (nobody is waiting) and the "score backlog" button does
     # too; the interactive "run scraper" button does not, so it stays fast.
-    refine = bool(state.get("backfill"))
+    #
+    # ALSO gated on a profile existing. With no profile the rank prompt tells the
+    # model to return a null score for every role, so refinement cannot improve
+    # anything — and because a null score leaves the baseline reason in place,
+    # those rows stay selectable and would be re-queued on EVERY run. Measured on
+    # the live data that is 60 rows x ~6.5s = ~6.5 min of inference twice daily,
+    # forever, producing nothing. Skip it until a profile exists.
+    has_profile = bool(
+        (config.JOB_PROFILE or "").strip() or profile_store.fit_profile_text()
+    )
+    refine = bool(state.get("backfill")) and has_profile
+    if state.get("backfill") and not has_profile:
+        print(
+            "ℹ️ backfill: no candidate profile set, so LLM refinement is skipped "
+            "(it could only return null scores). Set one on the Settings page."
+        )
     budget = LLM_CAP if refine else 0
     over_cap = 0
     for rec in selected:
