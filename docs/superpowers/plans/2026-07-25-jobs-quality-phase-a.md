@@ -3327,6 +3327,349 @@ git commit -m "feat(profile): Profile section on Settings; document new endpoint
 
 ---
 
+## Task 14: Accurate `last_seen` + real delisting detection
+
+**Execute this immediately after Task 8** — it edits the same nodes and closes the one defect from
+the original audit that Task 8 turned out not to fix.
+
+**Why.** The audit found `last_seen` frozen on 393 rows, so a posting pulled down from a board was
+undetectable. Task 8 was supposed to fix that by re-stamping rows it re-injected, but review showed
+that is actively wrong: backfill re-injects rows this scrape never observed, so stamping them
+destroys the very signal. The real cause is upstream — `dedupe` removes already-seen postings before
+`notify` persists, so a posting that IS still listed never gets its `last_seen` refreshed.
+
+The fix does not infer delisting from staleness. `fetch_node` already knows which sources it read
+successfully, so if a board was fetched without error and a stored posting was **not in the
+response**, that is a direct observation that the posting is gone — no threshold, no grace period,
+no new pref.
+
+**Files:**
+- Modify: `agents/job_scraper/nodes/fetch.py`, `nodes/freshness.py`, `nodes/notify.py`, `state.py`, `store.py`
+- Test: `tests/test_delisting.py` (create)
+
+**Interfaces:**
+- Consumes: `store.load_records`, `store._write`.
+- Produces: state keys `observed_ids: set[str]` (every posting id returned by any source this run)
+  and `fetched_ok: set[str]` (company names whose every configured source fetched without error);
+  `store.touch_last_seen(ids) -> int`.
+
+- [ ] **Step 1: Write the failing test**
+
+`tests/test_delisting.py`:
+
+```python
+"""last_seen accuracy + delisting detection.
+
+The audit found 393 rows with a frozen last_seen: `dedupe` drops already-seen
+postings before `notify` persists, so a posting that is STILL listed never gets
+re-stamped. Delisting is then detected directly rather than inferred from age —
+if a board was fetched successfully and a stored posting was not in the response,
+it is gone.
+"""
+
+from __future__ import annotations
+
+import datetime as dt
+
+from agents.job_scraper import store as jobstore
+from agents.job_scraper.nodes.fetch import fetch_node
+from agents.job_scraper.nodes.freshness import freshness_node
+
+
+def _yesterday() -> str:
+    return (dt.date.today() - dt.timedelta(days=1)).isoformat()
+
+
+def test_touch_last_seen_updates_column_and_blob(temp_db):
+    jobstore.replace_record({
+        "id": "Acme:greenhouse:1", "company": "Acme", "title": "SWE Intern",
+        "status": "new", "first_seen": _yesterday(), "last_seen": _yesterday(),
+    })
+    n = jobstore.touch_last_seen(["Acme:greenhouse:1"])
+    assert n == 1
+
+    today = dt.date.today().isoformat()
+    with jobstore.store_db.connect() as conn:
+        row = conn.execute(
+            "SELECT last_seen, data FROM jobs WHERE id = ?", ("Acme:greenhouse:1",)
+        ).fetchone()
+    import json
+    assert row["last_seen"] == today, "mirrored column must be stamped"
+    assert json.loads(row["data"])["last_seen"] == today, "blob must be stamped too"
+
+
+def test_touch_last_seen_ignores_unknown_ids(temp_db):
+    assert jobstore.touch_last_seen(["nope"]) == 0
+    assert jobstore.touch_last_seen([]) == 0
+
+
+def test_touch_last_seen_preserves_everything_else(temp_db):
+    jobstore.replace_record({
+        "id": "a", "company": "Acme", "title": "SWE Intern", "status": "applied",
+        "country": "US", "fit_score": 91, "fit_reason": "great match",
+        "first_seen": "2026-01-01", "last_seen": _yesterday(),
+    })
+    jobstore.touch_last_seen(["a"])
+    rec = jobstore.load_records()["a"]
+    assert rec["status"] == "applied"
+    assert rec["country"] == "US"
+    assert rec["fit_score"] == 91
+    assert rec["first_seen"] == "2026-01-01", "first_seen must never move"
+
+
+def test_fetch_reports_observed_ids_and_healthy_sources(monkeypatch):
+    """A company counts as fetched_ok only if EVERY one of its sources succeeded."""
+    from agents.job_scraper.nodes import fetch as fetch_mod
+
+    monkeypatch.setattr(fetch_mod, "get_sources", lambda: [
+        {"company": "Acme", "ats": "greenhouse", "token": "acme"},
+        {"company": "Beta", "ats": "greenhouse", "token": "beta"},
+        {"company": "Beta", "ats": "lever", "token": "beta"},
+    ])
+
+    def fake_fetch(source):
+        if source["ats"] == "lever":
+            raise RuntimeError("bad token")
+        return [{"id": f"{source['company']}:{source['ats']}:1", "company": source["company"]}]
+
+    monkeypatch.setattr(fetch_mod, "fetch_source", fake_fetch)
+    out = fetch_node({})
+
+    assert out["observed_ids"] == {"Acme:greenhouse:1", "Beta:greenhouse:1"}
+    assert out["fetched_ok"] == {"Acme"}, "Beta had a failing source, so it is not trustworthy"
+    assert len(out["warnings"]) == 1
+
+
+def test_delisting_flags_only_unobserved_rows_from_healthy_boards(temp_db):
+    rows = [
+        # still on the board -> not delisted
+        {"id": "Acme:greenhouse:1", "company": "Acme", "posted_at": "2026-07-01", "_rescored": True},
+        # board read fine, posting absent -> DELISTED
+        {"id": "Acme:greenhouse:2", "company": "Acme", "posted_at": "2026-07-01", "_rescored": True},
+        # board failed this run -> must NOT be called delisted
+        {"id": "Beta:lever:9", "company": "Beta", "posted_at": "2026-07-01", "_rescored": True},
+    ]
+    out = freshness_node({
+        "new": rows,
+        "observed_ids": {"Acme:greenhouse:1"},
+        "fetched_ok": {"Acme"},
+    })["new"]
+    by = {p["id"]: p for p in out}
+
+    assert by["Acme:greenhouse:1"]["ghost"] is False
+    assert by["Acme:greenhouse:2"]["ghost"] is True
+    assert "delisted" in by["Acme:greenhouse:2"]["ghost_reason"]
+    assert by["Beta:lever:9"]["ghost"] is False, "a failed fetch must never imply delisting"
+
+
+def test_delisting_never_applies_to_freshly_scraped_postings(temp_db):
+    """A brand-new posting is by definition observed; it must never be flagged."""
+    out = freshness_node({
+        "new": [{"id": "Acme:greenhouse:3", "company": "Acme", "posted_at": "2026-07-20"}],
+        "observed_ids": {"Acme:greenhouse:3"},
+        "fetched_ok": {"Acme"},
+    })["new"]
+    assert out[0]["ghost"] is False
+
+
+def test_freshness_without_the_new_state_keys_is_unchanged(temp_db):
+    """Backwards safety: absent observed_ids/fetched_ok, nothing is called delisted."""
+    out = freshness_node({"new": [
+        {"id": "x", "company": "Acme", "posted_at": "2026-07-20", "_rescored": True},
+    ]})["new"]
+    assert out[0]["ghost"] is False
+```
+
+- [ ] **Step 2: Run test to verify it fails**
+
+Run: `.venv/bin/python -m pytest tests/test_delisting.py -v`
+Expected: FAIL — `store.touch_last_seen` does not exist and `fetch_node` returns no `observed_ids`.
+
+- [ ] **Step 3: Have `fetch_node` report what it saw and which boards were healthy**
+
+Replace the body of `agents/job_scraper/nodes/fetch.py:fetch_node`:
+
+```python
+def fetch_node(state: JobScraperState) -> JobScraperState:
+    raw: list[dict] = []
+    warnings: list[str] = []
+    ok: set[str] = set()
+    failed: set[str] = set()
+
+    for source in get_sources():
+        company = source.get("company", "?")
+        label = f"{company}/{source.get('ats', '?')}"
+        try:
+            postings = fetch_source(source)
+            raw.extend(postings)
+            ok.add(company)
+        except Exception as exc:  # one bad source must not kill the run
+            warnings.append(f"⚠️ {label}: fetch failed ({exc})")
+            failed.add(company)
+
+    # A company is only trustworthy for delisting decisions when EVERY one of its
+    # sources succeeded. If a company is on two boards and one 404s, a posting
+    # missing from the other could easily still be live.
+    return {
+        "raw": raw,
+        "warnings": warnings,
+        "observed_ids": {p.get("id", "") for p in raw if p.get("id")},
+        "fetched_ok": ok - failed,
+    }
+```
+
+- [ ] **Step 4: Add `touch_last_seen` to the store**
+
+Append to `agents/job_scraper/store.py`:
+
+```python
+def touch_last_seen(ids: list[str] | set[str]) -> int:
+    """Stamp `last_seen` = today on postings observed in this scrape.
+
+    Writes through `_write`, so the mirrored column and the `data` blob stay in
+    sync (the dual-write rule). Ids absent from the table are skipped. Nothing
+    else on the record is altered — notably `first_seen` and `status`.
+
+    This is what makes `last_seen` mean "observed on a board", which is the
+    prerequisite for detecting a delisted posting: `dedupe` removes already-seen
+    postings before `notify` persists, so without this they would never be
+    re-stamped.
+    """
+    ids = [i for i in ids if i]
+    if not ids:
+        return 0
+    store_db.init_db()
+    today = _today()
+    touched = 0
+    with store_db.connect() as conn:
+        for pid in ids:
+            row = conn.execute("SELECT data FROM jobs WHERE id = ?", (pid,)).fetchone()
+            if row is None:
+                continue
+            try:
+                record = json.loads(row["data"]) if row["data"] else {}
+            except json.JSONDecodeError:
+                record = {}
+            record["id"] = pid
+            record["last_seen"] = today
+            _write(conn, record)
+            touched += 1
+    return touched
+```
+
+- [ ] **Step 5: Detect delisting in `freshness`**
+
+In `agents/job_scraper/nodes/freshness.py`, give `_ghost_reason` access to the two new state keys
+and check delisting FIRST, since it is a direct observation rather than an age heuristic:
+
+```python
+def _ghost_reason(p: dict, observed_ids: set[str], fetched_ok: set[str]) -> str:
+    """Return a short reason string if the posting looks like a ghost, else ""."""
+    # Direct observation beats every heuristic: the board was read successfully
+    # this run and this posting was not in it, so it is gone. Only trust this for
+    # companies whose every source succeeded (see fetch_node).
+    if p.get("company") in fetched_ok and p.get("id") not in observed_ids:
+        return f"delisted (not on {p.get('company')}'s board)"
+
+    age = p.get("age_days")
+    if age is not None and age > config.JOB_MAX_AGE_DAYS:
+        return f"stale ({age}d old)"
+
+    deadline = (p.get("deadline") or "")[:10]
+    if deadline:
+        try:
+            if dt.date.fromisoformat(deadline) < dt.date.today():
+                return f"deadline passed ({deadline})"
+        except ValueError:
+            pass
+
+    if p.get("listed") is False:  # Ashby-only signal; absent elsewhere
+        return "delisted by source"
+
+    return ""
+```
+
+and in `freshness_node`, read the keys defensively so a caller that omits them (older tests, a
+partial run) can never mark anything delisted:
+
+```python
+def freshness_node(state: JobScraperState) -> JobScraperState:
+    observed_ids = state.get("observed_ids") or set()
+    fetched_ok = state.get("fetched_ok") or set()
+    kept: list[dict] = []
+    for p in state.get("new", []):
+        p = {**p, "age_days": age_days(p.get("posted_at", ""))}
+        reason = _ghost_reason(p, observed_ids, fetched_ok)
+        p["ghost"] = bool(reason)
+        p["ghost_reason"] = reason
+        if reason and config.JOB_DROP_GHOSTS and not p.get("_rescored"):
+            continue  # hard-drop mode, but never discard a re-injected row's update
+        kept.append(p)
+    return {"new": kept}
+```
+
+Note the `not p.get("_rescored")` guard — it is the Task 8 fix and must be preserved here.
+
+- [ ] **Step 6: Refresh `last_seen` in `notify`**
+
+In `notify_node`, after the `upsert_records(...)` call, stamp everything observed this run and log
+the count (silent truncation reads as "covered everything"):
+
+```python
+        try:
+            touched = touch_last_seen(state.get("observed_ids") or set())
+            if touched:
+                print(f"ℹ️ refreshed last_seen on {touched} still-listed posting(s)")
+        except Exception as exc:
+            print(f"⚠️ Could not refresh last_seen: {exc}")
+```
+
+Import it alongside the existing store import:
+
+```python
+from agents.job_scraper.store import touch_last_seen, upsert_records
+```
+
+Order matters: this runs AFTER `upsert_records`, so a row that is both re-injected and still listed
+ends up correctly stamped with today.
+
+- [ ] **Step 7: Document the new state keys**
+
+In `agents/job_scraper/state.py`, add to `JobScraperState`:
+
+```python
+    # fetch: every posting id returned by any source this run. A stored posting
+    # absent from this set, whose company is in `fetched_ok`, has been delisted.
+    observed_ids: set[str]
+    # fetch: companies whose EVERY configured source fetched without error. Only
+    # these can be trusted for a delisting decision.
+    fetched_ok: set[str]
+```
+
+- [ ] **Step 8: Run the tests**
+
+Run: `.venv/bin/python -m pytest tests/ -v`
+Expected: all PASS, including the pre-existing freshness tests (which pass no `observed_ids` and so
+must be unaffected).
+
+- [ ] **Step 9: Correct the docs Task 8 had to walk back**
+
+`agents/job_scraper/nodes/backfill.py`'s docstring was amended in Task 8 to say delisting detection
+is NOT solved. Update it: `last_seen` is now refreshed by `notify` from `observed_ids`, and
+`freshness` flags genuinely delisted postings. Backfill itself still must NOT stamp `last_seen`.
+
+In `ARCHITECTURE.md`, note under the agent flow that the scraper detects delisted postings by
+comparing stored ids against what each healthy board returned.
+
+- [ ] **Step 10: Commit**
+
+```bash
+git add agents/job_scraper/ tests/test_delisting.py ARCHITECTURE.md
+git commit -m "feat(jobs): accurate last_seen + detect delisted postings from healthy boards"
+```
+
+---
+
 ## Done criteria
 
 - [ ] `.venv/bin/python -m pytest tests/` — all pass.
@@ -3340,3 +3683,7 @@ git commit -m "feat(profile): Profile section on Settings; document new endpoint
       `resume_job_id` and `resume_pdf_key` populated, and is undoable.
 - [ ] Expanding a `new` row marks it `viewed`; dismissed rows can be restored.
 - [ ] Saving Settings twice in a row does not lose `JOB_PROFILE`.
+- [ ] After a scrape, `SELECT COUNT(*) FROM jobs WHERE last_seen = date('now')` is greater than 0
+      and matches the still-listed postings — not every row.
+- [ ] A posting removed from a healthy board is flagged `ghost` with a `delisted` reason; a posting
+      whose board failed to fetch is never flagged.
