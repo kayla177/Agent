@@ -108,6 +108,24 @@ def test_freshness() -> None:
     check("age_days attached", by["2"]["age_days"] == 3)
 
 
+def test_rescored_ghost_survives_hard_drop(monkeypatch) -> None:
+    """Regression (Task 8 review): with JOB_DROP_GHOSTS=True, a `_rescored`
+    backlog row flagged as stale used to be dropped here before notify could
+    persist its refreshed country/fit_score — so backfill reselected the same
+    row every run, forever. `_rescored` rows are already in the DB either way,
+    so this hard-drop (meant for NEW postings) must exempt them. Uses `assert`
+    (not the module's `check()` helper, which never fails the test) because
+    this invariant must actually be enforced.
+    """
+    monkeypatch.setattr(config, "JOB_DROP_GHOSTS", True)
+    old = (dt.date.today() - dt.timedelta(days=config.JOB_MAX_AGE_DAYS + 10)).isoformat()
+    out = freshness_node({"new": [
+        {"id": "r", "posted_at": old, "_rescored": True},
+    ]})["new"]
+    assert [p["id"] for p in out] == ["r"], "rescored ghost row must NOT be dropped"
+    assert out[0]["ghost"] is True, "ghost must still be correctly flagged"
+
+
 def test_dedupe_cross_source(temp_db) -> None:
     filtered = [
         {"id": "Acme:greenhouse:1", "company": "Acme", "title": "SWE Intern", "location": "NYC", "ats": "greenhouse"},

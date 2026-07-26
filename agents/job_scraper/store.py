@@ -113,7 +113,13 @@ def upsert_records(postings: list[dict], *, status: str = "new") -> None:
             record = {**existing, **p}
             record["id"] = pid
             record["first_seen"] = existing.get("first_seen") or today
-            record["last_seen"] = today
+            # last_seen means "observed in a live scrape". A genuinely fetched
+            # posting never carries its own `last_seen` (fetch/filter/dedupe
+            # never set it), so it defaults to today. A backfilled row DOES
+            # carry its own `last_seen` (loaded straight from storage by
+            # backfill_node) and must NOT be bumped here — it was reprocessed
+            # for scoring/country, not re-observed by this scrape.
+            record["last_seen"] = p.get("last_seen") or today
             record["status"] = existing.get("status") or status
             _write(conn, record)
 

@@ -111,3 +111,77 @@ def test_filter_tags_country_and_keeps_everything(monkeypatch):
     ]})["filtered"]
     assert len(out) == 3, "location must NEVER drop a posting; only the role filter drops"
     assert {p["country"] for p in out} == {"US", "OTHER", "UNKNOWN"}
+
+
+def test_skip_llm_row_never_reaches_the_model(monkeypatch):
+    """Regression (Task 8 review): the `_skip_llm` split could be deleted
+    entirely with the whole suite still green, sending all rows (523 on the
+    live DB) to the model. A `_skip_llm` row's content must never appear in a
+    prompt handed to `llm()`, while a refinable row's does."""
+    monkeypatch.setattr(config, "JOB_PROFILE", "Python React SQL")
+    monkeypatch.setattr(config, "JOB_MIN_FIT", 0)
+    calls: list[str] = []
+
+    def spy(role, prompt, **kwargs):
+        calls.append(prompt)
+        return '[{"i":0,"eligible":true,"score":91,"reason":"great"}]'
+
+    monkeypatch.setattr(rank_mod, "llm", spy)
+    out = {p["id"]: p for p in rank_node({"new": [
+        {"id": "skip", "title": "Data Intern", "description": "SQL dashboards.",
+         "location": "Austin, TX", "_skip_llm": True},
+        {"id": "go", "title": "Software Engineer Intern", "description": "Python and React.",
+         "location": "Austin, TX"},
+    ]})["new"]}
+    assert calls, "the refinable row must have triggered at least one model call"
+    assert not any("Data Intern" in prompt for prompt in calls), \
+        "a _skip_llm row must never be sent to the model"
+    assert out["go"]["fit_score"] == 91, "the refinable row IS sent and refined"
+
+
+def test_skip_llm_row_with_existing_refined_score_is_not_clobbered(monkeypatch):
+    """Regression (Task 8 review): backfill can select a row for a reason that
+    has nothing to do with its score — e.g. only `country` was blank, while
+    the row already carries a real, LLM-refined fit_score/fit_reason. The old
+    unconditional `score_baseline()` recompute in the `_skip_llm` branch
+    clobbered that (measured: 92/"strong python + react match" ->
+    35/"matched: none"), which also made the row's reason look baseline-only
+    again — reselecting it forever. `llm()` is monkeypatched to raise so this
+    also proves no network/model call happens for this row.
+    """
+    monkeypatch.setattr(config, "JOB_PROFILE", "Python")
+    monkeypatch.setattr(config, "JOB_MIN_FIT", 0)
+
+    def boom(*a, **k):
+        raise AssertionError("llm() must not be called for a _skip_llm-only batch")
+
+    monkeypatch.setattr(rank_mod, "llm", boom)
+    out = rank_node({"new": [
+        {"id": "r", "title": "SWE Intern", "location": "Austin, TX",
+         "fit_score": 92, "fit_reason": "strong python + react match", "_skip_llm": True},
+    ]})["new"]
+    assert out[0]["fit_score"] == 92, "a real, already-refined score must survive"
+    assert out[0]["fit_reason"] == "strong python + react match"
+
+
+def test_rescored_row_survives_eligibility_and_min_fit_drops(monkeypatch):
+    """Regression (Task 8 review): rank_node's eligible/JOB_MIN_FIT drops exist
+    to decide which NEWLY discovered postings are worth keeping. A `_rescored`
+    backlog row is already in the DB either way, so dropping it here discarded
+    its freshly computed country/fit_score before notify could ever persist
+    them — causing backfill to reselect (and, if refinable, re-bill an
+    LLM_CAP slot for) the same row every run, forever."""
+    monkeypatch.setattr(config, "JOB_PROFILE", "Python")
+    monkeypatch.setattr(config, "JOB_MIN_FIT", 99)  # nothing baseline-scores this high
+    monkeypatch.setattr(
+        rank_mod, "llm",
+        lambda *a, **k: '[{"i":0,"eligible":false,"score":10,"reason":"not a fit"}]',
+    )
+    out = rank_node({"new": [
+        {"id": "r", "title": "SWE Intern", "location": "Austin, TX",
+         "fit_score": None, "country": "US", "_rescored": True},
+    ]})["new"]
+    assert [p["id"] for p in out] == ["r"], \
+        "a _rescored row must survive both the eligibility drop and the min-fit drop"
+    assert out[0]["eligible"] is False
+    assert out[0]["fit_score"] == 10

@@ -29,7 +29,7 @@ import re
 
 import config
 import profile_store
-from agents.job_scraper.scoring import extract_keywords, score_baseline
+from agents.job_scraper.scoring import extract_keywords, is_baseline_reason, score_baseline
 from agents.job_scraper.state import JobScraperState
 from shell.model_router import llm
 
@@ -145,19 +145,35 @@ def rank_node(state: JobScraperState) -> JobScraperState:
     baseline_only = [p for p in new if p.get("_skip_llm")]
 
     for p in baseline_only:
-        p["fit_score"], p["fit_reason"] = score_baseline(keywords, p)
+        # Never clobber an existing LLM-refined score. A row can land here with
+        # `_skip_llm` set for a reason that has nothing to do with its score —
+        # e.g. backfill selected it only because `country` was blank, and it
+        # already carries a real, LLM-refined fit_score/fit_reason. Recomputing
+        # unconditionally would overwrite that (measured: 92/"strong python +
+        # react match" -> 35/"matched: none"), and since a baseline reason
+        # reads as "not yet refined", the row would then be re-selected by
+        # backfill forever. Only (re)compute when there is no score yet, or
+        # the current score already IS the baseline (never refined).
+        if p.get("fit_score") is None or is_baseline_reason(p.get("fit_reason", "")):
+            p["fit_score"], p["fit_reason"] = score_baseline(keywords, p)
         p.setdefault("eligible", True)
 
     for start in range(0, len(refinable), _BATCH):
         _score_batch(profile, keywords, refinable[start : start + _BATCH])
 
     # Drop roles the model judged not undergrad-eligible (grad-only / senior).
-    new = [p for p in new if p.get("eligible", True)]
+    # `_rescored` rows are backlog rows already in the store, not newly
+    # discovered postings — this drop exists to decide which NEW postings are
+    # worth keeping, so it must not discard a backlog row's freshly computed
+    # country/fit_score before notify can persist it. `_rescored` already
+    # suppresses announcement, so letting one through here only updates a row
+    # that exists in the DB either way.
+    new = [p for p in new if p.get("_rescored") or p.get("eligible", True)]
 
     # Optional fit threshold. Every posting now HAS a score, so there is no
-    # "unscored" carve-out to make any more.
+    # "unscored" carve-out to make any more. Same `_rescored` exemption as above.
     if config.JOB_MIN_FIT > 0:
-        new = [p for p in new if p["fit_score"] >= config.JOB_MIN_FIT]
+        new = [p for p in new if p.get("_rescored") or p["fit_score"] >= config.JOB_MIN_FIT]
 
     new.sort(key=lambda p: p["fit_score"], reverse=True)
     return {"new": new}

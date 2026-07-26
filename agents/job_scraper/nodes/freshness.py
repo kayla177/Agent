@@ -47,7 +47,11 @@ def freshness_node(state: JobScraperState) -> JobScraperState:
         reason = _ghost_reason(p)
         p["ghost"] = bool(reason)
         p["ghost_reason"] = reason
-        if reason and config.JOB_DROP_GHOSTS:
-            continue  # hard-drop mode: exclude flagged roles entirely
+        # `_rescored` rows are backlog rows already in the store; dropping one
+        # here would discard its freshly computed country/fit_score before
+        # notify can persist them, and backfill would re-select (and, if
+        # refinable, re-spend an LLM_CAP slot on) the same row every run.
+        if reason and config.JOB_DROP_GHOSTS and not p.get("_rescored"):
+            continue  # hard-drop mode: exclude flagged NEW roles entirely
         kept.append(p)
     return {"new": kept}

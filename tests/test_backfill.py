@@ -1,8 +1,18 @@
 """backfill node — pulls stored rows back through the pipeline tail.
 
 dedupe drops every already-seen id BEFORE rank runs, so without this node the
-523 existing rows could never be scored, their ghost flag never re-evaluated,
-and last_seen never refreshed.
+523 existing rows could never be scored and their ghost flag never
+re-evaluated. (`last_seen` is deliberately NOT touched by this node — see
+store.upsert_records and backfill.py's module docstring; true delisting
+detection is out of scope here.)
+
+The tests at the bottom of this file (`test_*_converges_after_one_run`)
+demonstrate the fixes from the Task 8 review: a row selected in "run 1"
+because it needed work must NOT be reselected in "run 2" once that work is
+persisted — for each of the three ways rows used to loop forever (a dismissed
+row's permanent baseline reason, an LLM-refined row losing its score to the
+baseline recompute, and a row dropped by rank/freshness before notify could
+ever persist it).
 """
 
 from __future__ import annotations
@@ -116,3 +126,119 @@ def test_preserves_incoming_new_postings(temp_db):
     ids = {p["id"] for p in out}
     assert ids == {"fresh", "stored"}
     assert next(p for p in out if p["id"] == "fresh").get("_rescored") is not True
+
+
+# ---------------------------------------------------------------------------
+# Convergence tests (Task 8 review): a row selected in "run 1" must NOT be
+# reselected in "run 2" once whatever it was missing has been persisted. Each
+# test chains backfill_node -> freshness_node -> rank_node -> a persistence
+# step that strips `_`-prefixed keys exactly like notify.py does, then calls
+# backfill_node again to prove convergence. No network: rank_mod.llm is
+# either never reached (skip_llm path) or monkeypatched.
+# ---------------------------------------------------------------------------
+
+def _persist(postings):
+    """Mirror notify.py's persistence step: strip transient tags, then upsert."""
+    jobstore.upsert_records([{k: v for k, v in p.items() if not k.startswith("_")} for p in postings])
+
+
+def test_dismissed_row_converges_after_one_run(temp_db, monkeypatch):
+    """Regression: a dismissed row's fit_reason is always baseline (it is
+    never LLM-refined), so selecting on `is_baseline_reason` alone reselected
+    it every run forever, wasting a deterministic pass on the same 392 rows
+    twice daily forever. One backfill+rank+persist pass must be enough."""
+    from agents.job_scraper.nodes.freshness import freshness_node
+    from agents.job_scraper.nodes.rank import rank_node
+
+    monkeypatch.setattr(config, "JOB_PROFILE", "Python React SQL")
+    _seed([{"id": "d", "status": "dismissed", "title": "SWE Intern",
+            "location": "Austin, TX", "fit_score": None, "country": ""}])
+
+    run1 = backfill_node({"new": [], "backfill": True})["new"]
+    assert [p["id"] for p in run1] == ["d"], "row must be selected in run 1"
+    run1 = freshness_node({"new": run1})["new"]
+    run1 = rank_node({"new": run1})["new"]
+    _persist(run1)
+
+    stored = jobstore.load_records()["d"]
+    assert stored["country"] == "US"
+    assert stored["fit_score"] is not None
+
+    run2 = backfill_node({"new": [], "backfill": True})["new"]
+    assert run2 == [], "dismissed row must NOT be reselected once scored + countried"
+
+
+def test_llm_refined_row_not_clobbered_or_reselected_after_one_run(temp_db, monkeypatch):
+    """Regression: a row selected by backfill ONLY because `country` was
+    blank (its score was already LLM-refined) had that real score overwritten
+    by the unconditional baseline recompute in rank.py's `_skip_llm` branch —
+    and because that recompute always writes a baseline reason, the row would
+    then look unrefined again and be reselected forever."""
+    from agents.job_scraper.nodes.freshness import freshness_node
+    from agents.job_scraper.nodes.rank import rank_node
+    from agents.job_scraper.nodes import rank as rank_mod
+
+    monkeypatch.setattr(config, "JOB_PROFILE", "Python React SQL")
+
+    def boom(*a, **k):
+        raise AssertionError("llm() must not be called: this row only needed a country")
+
+    monkeypatch.setattr(rank_mod, "llm", boom)
+
+    _seed([{"id": "r", "status": "new", "title": "SWE Intern", "location": "Austin, TX",
+            "fit_score": 92, "fit_reason": "strong python + react match", "country": ""}])
+
+    run1 = backfill_node({"new": [], "backfill": True})["new"]
+    assert [p["id"] for p in run1] == ["r"]
+    assert run1[0]["_skip_llm"] is True, "already refined -> no LLM needed, only country was missing"
+
+    run1 = freshness_node({"new": run1})["new"]
+    run1 = rank_node({"new": run1})["new"]
+    assert run1[0]["fit_score"] == 92, "the real LLM-refined score must survive backfill + rank"
+    assert run1[0]["fit_reason"] == "strong python + react match"
+    _persist(run1)
+
+    stored = jobstore.load_records()["r"]
+    assert stored["country"] == "US"
+    assert stored["fit_score"] == 92
+    assert stored["fit_reason"] == "strong python + react match"
+
+    run2 = backfill_node({"new": [], "backfill": True})["new"]
+    assert run2 == [], "row must not be reselected — country filled, score was already refined"
+
+
+def test_rescored_row_dropped_by_rank_still_converges(temp_db, monkeypatch):
+    """Regression: a `_rescored` row that the model judges ineligible (or
+    that scores below JOB_MIN_FIT) used to be dropped by rank_node before
+    notify could ever persist its refreshed country/fit_score — so backfill
+    reselected the very same row every run, forever, burning an LLM_CAP slot
+    on it each time. rank.py's `_rescored` exemption must let it through so
+    one pass is actually enough."""
+    from agents.job_scraper.nodes.freshness import freshness_node
+    from agents.job_scraper.nodes.rank import rank_node
+    from agents.job_scraper.nodes import rank as rank_mod
+
+    monkeypatch.setattr(config, "JOB_PROFILE", "Python")
+    monkeypatch.setattr(config, "JOB_MIN_FIT", 0)
+    monkeypatch.setattr(
+        rank_mod, "llm",
+        lambda *a, **k: '[{"i":0,"eligible":false,"score":10,"reason":"not a fit"}]',
+    )
+
+    _seed([{"id": "r", "status": "new", "title": "SWE Intern", "location": "Austin, TX",
+            "fit_score": None, "country": ""}])
+
+    run1 = backfill_node({"new": [], "backfill": True})["new"]
+    assert [p["id"] for p in run1] == ["r"]
+    run1 = freshness_node({"new": run1})["new"]
+    run1 = rank_node({"new": run1})["new"]
+    assert [p["id"] for p in run1] == ["r"], \
+        "a _rescored row judged ineligible must still survive rank_node so it can be persisted"
+    _persist(run1)
+
+    stored = jobstore.load_records()["r"]
+    assert stored["country"] == "US"
+    assert stored["fit_score"] == 10
+
+    run2 = backfill_node({"new": [], "backfill": True})["new"]
+    assert run2 == [], "row must not be reselected once it has both a country and a score"

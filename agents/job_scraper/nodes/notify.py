@@ -13,10 +13,16 @@ the jobs board.
 The backfill node re-injects stored rows tagged `_rescored` so they get scored /
 re-freshness-checked / persisted, but they are NOT genuinely new finds — so the
 digest must not re-announce them. Every posting is persisted regardless (the
-board needs the refreshed score/country/last_seen), but only untagged, shown-
-country rows are formatted into the announcement. Transient `_`-prefixed
-pipeline tags (`_rescored`, `_skip_llm`) are stripped before persistence so they
-never reach the mirrored columns or the `data` JSON blob.
+board needs the refreshed score/country), but only untagged, shown-country rows
+are formatted into the announcement. Transient `_`-prefixed pipeline tags
+(`_rescored`, `_skip_llm`) are stripped before persistence so they never reach
+the mirrored columns or the `data` JSON blob.
+
+`JOB_COUNTRIES` empty means "no country filtering" (same convention as
+`JOB_SOURCES` / `STOCK_WATCHLIST`), not "show nothing" — an empty prefs list
+must never silently blank the whole digest. A missing/blank `country` is
+treated as `UNKNOWN`, which is never hidden (see locations.py: only `OTHER` is
+ever filtered out downstream, never `UNKNOWN`).
 """
 
 from __future__ import annotations
@@ -89,12 +95,21 @@ def make_notify_node(*, send: bool):
         warnings = state.get("warnings", [])
 
         # Announce only genuinely new postings in the shown countries. Rescored
-        # backlog rows are persisted but never re-announced.
+        # backlog rows are persisted but never re-announced. An empty
+        # JOB_COUNTRIES means "no filtering" (matches JOB_SOURCES /
+        # STOCK_WATCHLIST's empty-means-default convention) — otherwise
+        # clearing that Settings textarea would silently blank the whole
+        # digest. A missing/blank country is kept as UNKNOWN rather than
+        # dropped, per "never drop a posting on an UNKNOWN country".
         shown = set(config.JOB_COUNTRIES)
-        announce = [
-            p for p in all_rows
-            if not p.get("_rescored") and (p.get("country", "UNKNOWN") in shown or p.get("country") == "UNKNOWN")
-        ]
+        announce = []
+        for p in all_rows:
+            if p.get("_rescored"):
+                continue
+            c = p.get("country") or "UNKNOWN"
+            if shown and c not in shown and c != "UNKNOWN":
+                continue
+            announce.append(p)
         message = _format_message(announce, warnings)
 
         # Persist the scraped roles on EVERY run — this is the data the web jobs

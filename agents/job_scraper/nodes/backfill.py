@@ -3,21 +3,32 @@
 dedupe drops every already-seen id before rank runs, so a posting scored once
 (or never) is frozen forever. This node re-injects stored rows that still need
 work, tagged `_rescored` so notify persists them WITHOUT announcing them as new
-finds. Because they then traverse freshness and rank like any other posting, one
-node fixes three separate defects at once:
+finds. Because they then traverse freshness and rank like any other posting,
+one node fixes two separate defects at once:
 
   * the fit_score backlog gets scored,
-  * `ghost` is recomputed for rows that have since aged past JOB_MAX_AGE_DAYS,
-  * `last_seen` is refreshed (it previously froze at first sight, so a delisted
-    posting was undetectable).
+  * `ghost` is recomputed for rows that have since aged past JOB_MAX_AGE_DAYS.
+
+NOT solved here: true delisting detection (a posting that vanished from the
+source ATS entirely). `last_seen` is intentionally NOT bumped for `_rescored`
+rows (see store.upsert_records) — it means "observed in a live scrape", and a
+backlog row reprocessed here was NOT re-observed, only rescored. Making
+delisting detectable needs the seen-ids plumbing threaded through from
+`dedupe` so a genuinely-missing id can be noticed; that's out of scope here.
 
 Cost control, measured 2026-07-25 at ~6.5s/job of local inference:
   * the deterministic half (country, baseline score) covers EVERY selected row —
     it is free,
-  * only non-dismissed rows are eligible for LLM refinement (392 of 523 rows are
-    dismissed, so this alone saves ~42 minutes),
-  * LLM_CAP bounds one run and the skipped count is logged, so a bounded pass
-    never silently reads as "covered everything". Successive runs converge.
+  * dismissed rows are never eligible for LLM refinement (392 of 523 rows are
+    dismissed, so this alone saves ~42 minutes) — and once a dismissed row has
+    BOTH a country and a score, it is done: it is never reselected again,
+    because (unlike a live row) it can never earn a non-baseline reason,
+  * LLM_CAP bounds one run and the over-cap count is logged, so a bounded pass
+    never silently reads as "covered everything". Successive runs converge:
+    a row selected in one run because it lacked a country/score/refinement is
+    not reselected in the next run once that gap is filled (dismissed rows:
+    filled by the baseline pass alone; live rows: filled once actually
+    refined).
 """
 
 from __future__ import annotations
@@ -37,11 +48,23 @@ def _needs_country(rec: dict) -> bool:
     return not (rec.get("country") or "").strip()
 
 
-def _needs_score(rec: dict) -> bool:
-    if rec.get("fit_score") is None:
-        return True
-    # Baseline-only reason means the LLM has not refined this row yet.
-    return is_baseline_reason(rec.get("fit_reason", ""))
+def _lacks_score(rec: dict) -> bool:
+    """True if no fit_score has ever been computed for this row at all."""
+    return rec.get("fit_score") is None
+
+
+def _needs_llm_refinement(rec: dict) -> bool:
+    """True if the LLM could still meaningfully improve this row's score.
+
+    Dismissed rows are EXCLUDED unconditionally: they are never refined (no
+    inference is spent on a job already rejected), so once a dismissed row has
+    a score at all, it is done. Basing this on `is_baseline_reason` alone
+    (like a live row) would loop forever for a dismissed row, since a
+    baseline-only reason never changes for a row that's never sent to the LLM.
+    """
+    if rec.get("status") == "dismissed":
+        return False
+    return _lacks_score(rec) or is_baseline_reason(rec.get("fit_reason", ""))
 
 
 def backfill_node(state: JobScraperState) -> JobScraperState:
@@ -53,7 +76,7 @@ def backfill_node(state: JobScraperState) -> JobScraperState:
         pid = rec.get("id")
         if not pid or pid in incoming_ids:
             continue
-        if not (_needs_country(rec) or _needs_score(rec)):
+        if not (_needs_country(rec) or _lacks_score(rec) or _needs_llm_refinement(rec)):
             continue
         selected.append(rec)
 
@@ -85,7 +108,7 @@ def backfill_node(state: JobScraperState) -> JobScraperState:
     budget = LLM_CAP if refine else 0
     over_cap = 0
     for rec in selected:
-        if rec.get("status") == "dismissed" or not _needs_score(rec):
+        if not _needs_llm_refinement(rec):
             rec["_skip_llm"] = True
         elif budget > 0:
             budget -= 1
