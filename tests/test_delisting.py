@@ -137,3 +137,123 @@ def test_upsert_preserves_an_explicit_last_seen(temp_db):
     with jobstore.store_db.connect() as conn:
         row = conn.execute("SELECT last_seen FROM jobs WHERE id = 'a'").fetchone()
     assert row["last_seen"] == dt.date.today().isoformat()
+
+
+# --- Fix-loop round: a board returning [] without raising must not look
+# healthy, and a fully-processed row must still be reachable for delisting. ---
+
+
+def test_fetch_empty_result_does_not_mark_company_trustworthy(monkeypatch):
+    """An ATS provider schema change (or a moved board) can make an adapter
+    return [] without raising at all — e.g. Greenhouse's adapter is
+    `resp.json().get("jobs", [])`. If that counted as "healthy", every stored
+    posting for the company would look absent from a "healthy" board and get
+    mass-flagged delisted in one run."""
+    from agents.job_scraper.nodes import fetch as fetch_mod
+
+    monkeypatch.setattr(fetch_mod, "get_sources", lambda: [
+        {"company": "Acme", "ats": "greenhouse", "token": "acme"},
+    ])
+    monkeypatch.setattr(fetch_mod, "fetch_source", lambda source: [])  # no raise, just empty
+
+    out = fetch_node({})
+    assert out["fetched_ok"] == set(), "an empty, non-raising result must not count as healthy"
+    assert out["observed_ids"] == set()
+    assert out["warnings"] == [], "an empty result is not itself an error"
+
+
+def test_sweep_flags_a_fully_processed_row_never_reinjected_by_backfill(temp_db):
+    """The gap the fix-loop review found: freshness_node only ever sees rows
+    that pass through the pipeline this run (fresh finds, or rows backfill
+    re-injects because they still lack a country/score/refinement). A row
+    that is fully processed (country set, real score, non-baseline reason) is
+    never re-selected by backfill, so it can never reach freshness_node again
+    — and those are exactly the high-fit rows someone would apply to.
+    sweep_delisted must flag such a row directly from the store."""
+    jobstore.replace_record({
+        "id": "Acme:greenhouse:1", "company": "Acme", "status": "new",
+        "country": "US", "fit_score": 91, "fit_reason": "matched: python, react",
+    })
+    # observed_ids is non-empty (some OTHER posting was seen this run) but
+    # does not include this id — an empty observed_ids is deliberately a
+    # global no-op guard (second layer of protection), tested separately.
+    n = jobstore.sweep_delisted(observed_ids={"Acme:greenhouse:99"}, fetched_ok={"Acme"})
+    assert n == 1
+    rec = jobstore.load_records()["Acme:greenhouse:1"]
+    assert rec["ghost"] is True
+    assert "delisted" in rec["ghost_reason"]
+
+
+def test_sweep_never_relabels_an_applied_row(temp_db):
+    """A posting closing after you've already applied is normal, not a signal
+    to relabel it — only new/viewed rows are eligible for the sweep."""
+    jobstore.replace_record({
+        "id": "Acme:greenhouse:2", "company": "Acme", "status": "applied",
+        "country": "US", "fit_score": 91, "fit_reason": "matched: python, react",
+    })
+    n = jobstore.sweep_delisted(observed_ids={"Acme:greenhouse:99"}, fetched_ok={"Acme"})
+    assert n == 0
+    rec = jobstore.load_records()["Acme:greenhouse:2"]
+    assert rec.get("ghost") is not True
+    assert rec["status"] == "applied"
+
+
+def test_sweep_ignores_a_company_whose_board_returned_zero_this_run(temp_db):
+    """Companion to the fetch-node guard: even given a broad observed_ids set
+    from elsewhere, a company simply absent from fetched_ok (because its
+    board returned nothing, or never got queried) must never have its stored
+    rows swept."""
+    jobstore.replace_record({
+        "id": "Acme:greenhouse:1", "company": "Acme", "status": "new",
+        "country": "US", "fit_score": 91, "fit_reason": "matched: python, react",
+    })
+    n = jobstore.sweep_delisted(observed_ids={"unrelated"}, fetched_ok=set())
+    assert n == 0
+    assert jobstore.load_records()["Acme:greenhouse:1"].get("ghost") is not True
+
+
+def test_sweep_is_a_no_op_with_empty_inputs(temp_db):
+    jobstore.replace_record({"id": "a", "company": "Acme", "status": "new"})
+    assert jobstore.sweep_delisted(set(), set()) == 0
+    assert jobstore.sweep_delisted({"a"}, set()) == 0
+    assert jobstore.sweep_delisted(set(), {"Acme"}) == 0
+
+
+def test_notify_logs_the_actual_swept_count(temp_db, capsys):
+    """The plan requires bounded/destructive coverage to be logged — the
+    count printed by notify must reflect exactly how many rows the sweep
+    flagged, not a guess."""
+    from agents.job_scraper.nodes.notify import make_notify_node
+
+    jobstore.replace_record({
+        "id": "Acme:greenhouse:1", "company": "Acme", "status": "new",
+        "country": "US", "fit_score": 91, "fit_reason": "matched: python, react",
+    })
+    jobstore.replace_record({
+        "id": "Acme:greenhouse:2", "company": "Acme", "status": "viewed",
+        "country": "US", "fit_score": 80, "fit_reason": "matched: sql",
+    })
+    # A third, applied row must not be counted.
+    jobstore.replace_record({
+        "id": "Acme:greenhouse:3", "company": "Acme", "status": "applied",
+        "country": "US", "fit_score": 70, "fit_reason": "matched: sql",
+    })
+
+    notify = make_notify_node(send=False)
+    notify({"new": [], "observed_ids": {"unrelated"}, "fetched_ok": {"Acme"}})
+    out = capsys.readouterr().out
+    assert "swept 2 stored posting(s) as delisted" in out
+
+
+def test_freshness_never_flags_a_row_with_blank_id_or_company():
+    """A missing/blank id or company must fall to the SAFE side (not flagged),
+    never the unsafe side."""
+    out = freshness_node({
+        "new": [
+            {"id": "", "company": "Acme", "posted_at": "2026-07-01"},
+            {"id": "x", "company": "", "posted_at": "2026-07-01"},
+        ],
+        "observed_ids": set(),
+        "fetched_ok": {"Acme", ""},
+    })["new"]
+    assert all(p["ghost"] is False for p in out)

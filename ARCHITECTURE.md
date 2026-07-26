@@ -86,11 +86,21 @@ NOT EXISTS` from `schema.sql`; the drift-check guards the Prisma mirror.
 
 The job scraper detects delisted postings directly rather than inferring it from age:
 `fetch_node` records `observed_ids` (every posting id any source returned) and `fetched_ok`
-(companies whose every configured source fetched without error); `freshness_node` flags a
-stored posting as a ghost when its company is `fetched_ok` but its id is absent from
-`observed_ids`. `notify_node` also refreshes `last_seen` on every observed posting after
-persisting — `dedupe` drops already-seen postings before that point, so a posting that is
-still listed would otherwise never be re-stamped.
+(companies whose every configured source fetched without error **and returned at least one
+posting** — an empty result without an exception, e.g. an ATS schema change, must not be
+read as "healthy"). Detection then happens two ways:
+- `freshness_node` flags a posting passing through the pipeline this run (freshly fetched, or
+  re-injected by `backfill_node`) as a ghost when its company is in `fetched_ok` but its id is
+  absent from `observed_ids`.
+- `store.sweep_delisted`, called from `notify_node`, flags the same signal directly against
+  the WHOLE store, since a fully-processed row (country set, score set, already refined) is
+  never re-selected by `backfill_node` and so would otherwise never pass through
+  `freshness_node` again. It only touches `new`/`viewed` rows — an `applied` row going quiet
+  is normal and is never relabeled.
+
+`notify_node` also refreshes `last_seen` on every observed posting after persisting —
+`dedupe` drops already-seen postings before that point, so a posting that is still listed
+would otherwise never be re-stamped.
 
 ## Config & secrets
 

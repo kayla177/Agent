@@ -206,3 +206,54 @@ def touch_last_seen(ids: list[str] | set[str]) -> int:
             _write(conn, record)
             touched += 1
     return touched
+
+
+def sweep_delisted(observed_ids: set[str], fetched_ok: set[str]) -> int:
+    """Flag `ghost`=True directly in the store on every delisted posting.
+
+    `freshness_node` only ever sees rows passing through the pipeline this run
+    (freshly fetched, or re-injected by `backfill_node` because they still
+    lack a country/score/refinement) — so a fully-processed row (country set,
+    score set, already-refined reason) is never re-selected by backfill and
+    can never be flagged there, even though it is exactly the kind of
+    high-fit row someone would actually apply to. This sweep checks EVERY
+    stored row directly: for any row whose company fetched cleanly this run
+    (`fetched_ok`) and whose id was not seen (`observed_ids`), mark it
+    delisted with the same reason string `freshness` uses.
+
+    Restricted to `new` / `viewed` rows. `applied` rows are deliberately
+    excluded — a posting closing after you've already applied is normal, not
+    a signal to relabel it. `dismissed` rows are irrelevant either way.
+
+    Guarded to a no-op when either set is empty. This also protects against
+    a source returning `[]` without raising (see `fetch_node`): such a
+    company is never added to `fetched_ok`, so an empty `fetched_ok` (e.g.
+    every source in this run came back empty or failed) sweeps nothing,
+    rather than mass-flagging every stored row.
+    """
+    if not observed_ids or not fetched_ok:
+        return 0
+    store_db.init_db()
+    swept = 0
+    placeholders = ",".join("?" for _ in fetched_ok)
+    with store_db.connect() as conn:
+        rows = conn.execute(
+            f"SELECT id, data FROM jobs WHERE company IN ({placeholders}) "
+            "AND status IN ('new', 'viewed')",
+            tuple(fetched_ok),
+        ).fetchall()
+        for row in rows:
+            pid = row["id"]
+            if not pid or pid in observed_ids:
+                continue
+            try:
+                record = json.loads(row["data"]) if row["data"] else {}
+            except json.JSONDecodeError:
+                record = {}
+            record["id"] = pid
+            company = record.get("company", "")
+            record["ghost"] = True
+            record["ghost_reason"] = f"delisted (not on {company}'s board)"
+            _write(conn, record)
+            swept += 1
+    return swept

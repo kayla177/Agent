@@ -13,12 +13,17 @@ NOT done here: true delisting detection (a posting that vanished from the
 source ATS entirely). `last_seen` is intentionally NOT bumped for `_rescored`
 rows (see store.upsert_records) — it means "observed in a live scrape", and a
 backlog row reprocessed here was NOT re-observed, only rescored. Delisting IS
-detected, just not by this node: `fetch_node` reports `observed_ids` (every id
-any source returned) and `fetched_ok` (companies whose every source succeeded),
-`freshness_node` flags a stored posting absent from `observed_ids` for a
-`fetched_ok` company as a ghost, and `notify_node` refreshes `last_seen` on
-everything actually observed — after `dedupe` would otherwise have dropped it
-from the pipeline before it reached persistence.
+detected, just not by this node, and not only via the pipeline: `fetch_node`
+reports `observed_ids` (every id any source returned) and `fetched_ok`
+(companies whose every source succeeded AND returned postings — an empty
+result without an error is not "healthy"). `freshness_node` flags a posting
+that re-enters the pipeline (fresh, or `_rescored` by this node) as a ghost
+when it's absent from `observed_ids` for a `fetched_ok` company — but this
+node only re-selects a row that still lacks country/score/refinement, so a
+fully-processed row is never re-injected and `freshness_node` alone can never
+flag it. `store.sweep_delisted`, called from `notify_node`, closes that gap
+by checking every stored `new`/`viewed` row directly, independent of what
+passed through the pipeline this run.
 
 Cost control, measured 2026-07-25 at ~6.5s/job of local inference:
   * the deterministic half (country, baseline score) covers EVERY selected row —

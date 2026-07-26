@@ -11,6 +11,14 @@ posting's `posted_at` and flags a role as a ghost when any of:
 By default this only TAGS roles (``ghost`` / ``ghost_reason``) so nothing
 silently disappears — matching the soft-filter philosophy of ``filter.py``. Set
 ``config.JOB_DROP_GHOSTS = True`` to drop flagged roles from the batch instead.
+
+This node only ever sees `state["new"]` — freshly-fetched postings (observed by
+definition) plus whatever `backfill_node` re-injects (rows still missing a
+country/score/refinement). A fully-processed row (country set, score set,
+already refined) is never re-selected by backfill, so it never passes through
+here again and this node alone cannot flag it. `store.sweep_delisted`, called
+from `notify_node`, closes that gap by checking every stored `new`/`viewed` row
+directly against `observed_ids`/`fetched_ok`, independent of the pipeline.
 """
 
 from __future__ import annotations
@@ -26,8 +34,11 @@ def _ghost_reason(p: dict, observed_ids: set[str], fetched_ok: set[str]) -> str:
     """Return a short reason string if the posting looks like a ghost, else ""."""
     # Direct observation beats every heuristic: the board was read successfully
     # this run and this posting was not in it, so it is gone. Only trust this for
-    # companies whose every source succeeded (see fetch_node).
-    if p.get("company") in fetched_ok and p.get("id") not in observed_ids:
+    # companies whose every source succeeded (see fetch_node). Require both id
+    # and company to be non-empty first — a blank/missing value must never
+    # fall to the unsafe (flag-it) side of this check.
+    if p.get("id") and p.get("company") and p.get("company") in fetched_ok \
+            and p.get("id") not in observed_ids:
         return f"delisted (not on {p.get('company')}'s board)"
 
     age = p.get("age_days")
@@ -54,11 +65,14 @@ def freshness_node(state: JobScraperState) -> JobScraperState:
     observed_ids = state.get("observed_ids") or set()
     fetched_ok = state.get("fetched_ok") or set()
     kept: list[dict] = []
+    delisted = 0
     for p in state.get("new", []):
         p = {**p, "age_days": age_days(p.get("posted_at", ""))}
         reason = _ghost_reason(p, observed_ids, fetched_ok)
         p["ghost"] = bool(reason)
         p["ghost_reason"] = reason
+        if reason.startswith("delisted ("):
+            delisted += 1
         # `_rescored` rows are backlog rows already in the store; dropping one
         # here would discard its freshly computed country/fit_score before
         # notify can persist them, and backfill would re-select (and, if
@@ -66,4 +80,7 @@ def freshness_node(state: JobScraperState) -> JobScraperState:
         if reason and config.JOB_DROP_GHOSTS and not p.get("_rescored"):
             continue  # hard-drop mode: exclude flagged NEW roles entirely
         kept.append(p)
+    # A bounded/destructive coverage change must never land silently.
+    if delisted:
+        print(f"ℹ️ freshness: flagged {delisted} posting(s) as delisted (absent from a healthy board)")
     return {"new": kept}

@@ -23,6 +23,12 @@ the mirrored columns or the `data` JSON blob.
 must never silently blank the whole digest. A missing/blank `country` is
 treated as `UNKNOWN`, which is never hidden (see locations.py: only `OTHER` is
 ever filtered out downstream, never `UNKNOWN`).
+
+After persisting, this node also refreshes `last_seen` (`store.touch_last_seen`)
+on everything observed this run, and sweeps the WHOLE store for delisted
+postings (`store.sweep_delisted`) — not just the rows that happened to pass
+through the pipeline this run. See `freshness.py`'s module docstring for why
+the pipeline-only check can't reach a fully-processed row on its own.
 """
 
 from __future__ import annotations
@@ -31,7 +37,7 @@ import datetime as dt
 
 import config
 from agents.job_scraper.state import JobScraperState
-from agents.job_scraper.store import touch_last_seen, upsert_records
+from agents.job_scraper.store import sweep_delisted, touch_last_seen, upsert_records
 from shell.discord_client import send_message
 
 
@@ -134,6 +140,19 @@ def make_notify_node(*, send: bool):
                 print(f"ℹ️ refreshed last_seen on {touched} still-listed posting(s)")
         except Exception as exc:
             print(f"⚠️ Could not refresh last_seen: {exc}")
+
+        # freshness_node only sees rows that re-enter the pipeline this run
+        # (fresh finds, or backlog rows backfill re-injected because they
+        # still needed work) — a fully-processed row is never re-selected by
+        # backfill and so can never be flagged there. This sweep checks the
+        # WHOLE store directly against observed_ids/fetched_ok, so a delisted
+        # posting is flagged even once it's fully scored and refined.
+        try:
+            swept = sweep_delisted(state.get("observed_ids") or set(), state.get("fetched_ok") or set())
+            if swept:
+                print(f"ℹ️ swept {swept} stored posting(s) as delisted (absent from a healthy board)")
+        except Exception as exc:
+            print(f"⚠️ Could not sweep delisted postings: {exc}")
 
         if send:
             try:
