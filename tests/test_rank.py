@@ -164,6 +164,30 @@ def test_skip_llm_row_with_existing_refined_score_is_not_clobbered(monkeypatch):
     assert out[0]["fit_reason"] == "strong python + react match"
 
 
+def test_refined_score_with_empty_reason_gets_a_non_baseline_reason(monkeypatch):
+    """Regression (Task 14 convergence gap): the model's prompt asks for a
+    <=12 word reason but nothing guarantees one, and `_parse` normalizes a
+    missing reason to "". If a usable score arrived with an empty reason, the
+    OLD code's `if hit["reason"]:` guard left the baseline reason in place, so
+    `is_baseline_reason()` stayed True and backfill would reselect (and
+    re-clobber) the row forever. A refined score must always leave a
+    non-baseline reason behind."""
+    monkeypatch.setattr(config, "JOB_PROFILE", "Python React SQL")
+    monkeypatch.setattr(config, "JOB_MIN_FIT", 0)
+    monkeypatch.setattr(
+        rank_mod, "llm",
+        lambda *a, **k: '[{"i":0,"eligible":true,"score":88,"reason":""}]',
+    )
+    out = rank_node({"new": [dict(_POSTINGS[0])]})["new"]
+    assert out[0]["fit_score"] == 88
+    assert is_baseline_reason(out[0]["fit_reason"]) is False
+
+    # A second pass (as backfill would do) must not reselect this row: it is
+    # no longer "lacks a score" nor "still baseline".
+    from agents.job_scraper.nodes.backfill import _needs_llm_refinement
+    assert _needs_llm_refinement(out[0]) is False
+
+
 def test_rescored_row_survives_eligibility_and_min_fit_drops(monkeypatch):
     """Regression (Task 8 review): rank_node's eligible/JOB_MIN_FIT drops exist
     to decide which NEWLY discovered postings are worth keeping. A `_rescored`

@@ -128,8 +128,10 @@ def _score_batch(profile: str, keywords: list[str], batch: list[dict]) -> None:
         p["eligible"] = hit["eligible"]
         if hit["score"] is not None:
             p["fit_score"] = hit["score"]
-            if hit["reason"]:
-                p["fit_reason"] = hit["reason"]
+            # Always overwrite the reason when the score was refined. Leaving the
+            # baseline reason in place would make is_baseline_reason() True, so the
+            # row would be re-selected (and re-clobbered) on every future run.
+            p["fit_reason"] = hit["reason"] or "refined (no reason given)"
 
 
 def rank_node(state: JobScraperState) -> JobScraperState:

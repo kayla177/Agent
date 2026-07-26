@@ -2,6 +2,8 @@
 
 Runs after dedupe, over the `new` postings. It computes `age_days` from the
 posting's `posted_at` and flags a role as a ghost when any of:
+  - a healthy board was fetched this run and the posting was NOT in it — a
+    direct observation that it has been delisted (see `fetch_node`),
   - it is older than ``config.JOB_MAX_AGE_DAYS`` (default 60),
   - its application ``deadline`` has already passed, or
   - the source marked it un-listed (Ashby ``isListed == False``).
@@ -20,8 +22,14 @@ from agents.job_scraper.matching import age_days
 from agents.job_scraper.state import JobScraperState
 
 
-def _ghost_reason(p: dict) -> str:
+def _ghost_reason(p: dict, observed_ids: set[str], fetched_ok: set[str]) -> str:
     """Return a short reason string if the posting looks like a ghost, else ""."""
+    # Direct observation beats every heuristic: the board was read successfully
+    # this run and this posting was not in it, so it is gone. Only trust this for
+    # companies whose every source succeeded (see fetch_node).
+    if p.get("company") in fetched_ok and p.get("id") not in observed_ids:
+        return f"delisted (not on {p.get('company')}'s board)"
+
     age = p.get("age_days")
     if age is not None and age > config.JOB_MAX_AGE_DAYS:
         return f"stale ({age}d old)"
@@ -41,10 +49,14 @@ def _ghost_reason(p: dict) -> str:
 
 
 def freshness_node(state: JobScraperState) -> JobScraperState:
+    # Read defensively: a caller that omits these keys (older tests, a partial
+    # run) must never have anything marked delisted.
+    observed_ids = state.get("observed_ids") or set()
+    fetched_ok = state.get("fetched_ok") or set()
     kept: list[dict] = []
     for p in state.get("new", []):
         p = {**p, "age_days": age_days(p.get("posted_at", ""))}
-        reason = _ghost_reason(p)
+        reason = _ghost_reason(p, observed_ids, fetched_ok)
         p["ghost"] = bool(reason)
         p["ghost_reason"] = reason
         # `_rescored` rows are backlog rows already in the store; dropping one

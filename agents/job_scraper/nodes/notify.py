@@ -31,7 +31,7 @@ import datetime as dt
 
 import config
 from agents.job_scraper.state import JobScraperState
-from agents.job_scraper.store import upsert_records
+from agents.job_scraper.store import touch_last_seen, upsert_records
 from shell.discord_client import send_message
 
 
@@ -122,6 +122,18 @@ def make_notify_node(*, send: bool):
             upsert_records([{k: v for k, v in p.items() if not k.startswith("_")} for p in all_rows])
         except Exception as exc:
             print(f"⚠️ Could not persist job records: {exc}")
+
+        # Refresh last_seen on everything actually observed this run. dedupe
+        # drops already-seen postings before this point, so without this a
+        # posting that is STILL listed would never get re-stamped — this runs
+        # AFTER upsert_records so a row that is both re-injected (_rescored)
+        # and still listed ends up correctly stamped with today.
+        try:
+            touched = touch_last_seen(state.get("observed_ids") or set())
+            if touched:
+                print(f"ℹ️ refreshed last_seen on {touched} still-listed posting(s)")
+        except Exception as exc:
+            print(f"⚠️ Could not refresh last_seen: {exc}")
 
         if send:
             try:

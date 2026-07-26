@@ -84,6 +84,14 @@ NOT EXISTS` from `schema.sql`; the drift-check guards the Prisma mirror.
 4. Agents' **domain writes** (applications/jobs/resumes) happen inside graph nodes via the
    per-agent `store.py`, separate from run bookkeeping.
 
+The job scraper detects delisted postings directly rather than inferring it from age:
+`fetch_node` records `observed_ids` (every posting id any source returned) and `fetched_ok`
+(companies whose every configured source fetched without error); `freshness_node` flags a
+stored posting as a ghost when its company is `fetched_ok` but its id is absent from
+`observed_ids`. `notify_node` also refreshes `last_seen` on every observed posting after
+persisting — `dedupe` drops already-seen postings before that point, so a posting that is
+still listed would otherwise never be re-stamped.
+
 ## Config & secrets
 
 `config.py` resolves each editable pref as **env var → `data/prefs.json` → default**, and

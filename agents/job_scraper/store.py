@@ -172,3 +172,37 @@ def load_seen() -> set[str]:
 def add_seen(ids: list[str]) -> None:
     """Record bare ids as seen (prefer upsert_records with full dicts)."""
     upsert_records([{"id": pid} for pid in ids])
+
+
+def touch_last_seen(ids: list[str] | set[str]) -> int:
+    """Stamp `last_seen` = today on postings observed in this scrape.
+
+    Writes through `_write`, so the mirrored column and the `data` blob stay in
+    sync (the dual-write rule). Ids absent from the table are skipped. Nothing
+    else on the record is altered — notably `first_seen` and `status`.
+
+    This is what makes `last_seen` mean "observed on a board", which is the
+    prerequisite for detecting a delisted posting: `dedupe` removes already-seen
+    postings before `notify` persists, so without this they would never be
+    re-stamped.
+    """
+    ids = [i for i in ids if i]
+    if not ids:
+        return 0
+    store_db.init_db()
+    today = _today()
+    touched = 0
+    with store_db.connect() as conn:
+        for pid in ids:
+            row = conn.execute("SELECT data FROM jobs WHERE id = ?", (pid,)).fetchone()
+            if row is None:
+                continue
+            try:
+                record = json.loads(row["data"]) if row["data"] else {}
+            except json.JSONDecodeError:
+                record = {}
+            record["id"] = pid
+            record["last_seen"] = today
+            _write(conn, record)
+            touched += 1
+    return touched

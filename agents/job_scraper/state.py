@@ -43,3 +43,9 @@ class JobScraperState(TypedDict, total=False):
     message: str
     # Non-fatal per-source problems, surfaced but never raised.
     warnings: list[str]
+    # fetch: every posting id returned by any source this run. A stored posting
+    # absent from this set, whose company is in `fetched_ok`, has been delisted.
+    observed_ids: set[str]
+    # fetch: companies whose EVERY configured source fetched without error. Only
+    # these can be trusted for a delisting decision.
+    fetched_ok: set[str]

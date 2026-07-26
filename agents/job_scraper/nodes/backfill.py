@@ -9,12 +9,16 @@ one node fixes two separate defects at once:
   * the fit_score backlog gets scored,
   * `ghost` is recomputed for rows that have since aged past JOB_MAX_AGE_DAYS.
 
-NOT solved here: true delisting detection (a posting that vanished from the
+NOT done here: true delisting detection (a posting that vanished from the
 source ATS entirely). `last_seen` is intentionally NOT bumped for `_rescored`
 rows (see store.upsert_records) — it means "observed in a live scrape", and a
-backlog row reprocessed here was NOT re-observed, only rescored. Making
-delisting detectable needs the seen-ids plumbing threaded through from
-`dedupe` so a genuinely-missing id can be noticed; that's out of scope here.
+backlog row reprocessed here was NOT re-observed, only rescored. Delisting IS
+detected, just not by this node: `fetch_node` reports `observed_ids` (every id
+any source returned) and `fetched_ok` (companies whose every source succeeded),
+`freshness_node` flags a stored posting absent from `observed_ids` for a
+`fetched_ok` company as a ghost, and `notify_node` refreshes `last_seen` on
+everything actually observed — after `dedupe` would otherwise have dropped it
+from the pipeline before it reached persistence.
 
 Cost control, measured 2026-07-25 at ~6.5s/job of local inference:
   * the deterministic half (country, baseline score) covers EVERY selected row —
