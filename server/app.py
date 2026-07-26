@@ -5,7 +5,7 @@ the prefs overlay. The web UI is the Next.js app (web-next) — this service has
 no Jinja, no static files, no page routes. The Next.js dev server proxies
 /agents/*, /runs/*, and /prefs here (same-origin, so no CORS needed).
 
-Launch::  uv run python -m server    # 127.0.0.1:8001
+Launch::  .venv/bin/python -m server    # 127.0.0.1:8001
 """
 
 from __future__ import annotations

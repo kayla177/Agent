@@ -28,8 +28,16 @@ mutation is proxied to FastAPI, which writes through the Python stores.
 - `POST /experience/upload` — PDF/DOCX parse into the résumé experience pool
 - `POST|PATCH|DELETE /data/*` — all DB mutations (applications, jobs apply/dismiss,
   résumés, experience docs), wrapping the Python stores
+- `GET|PUT /data/resume/master` — master résumé; `GET /data/resumes/{job_id}/versions`
+- `POST /data/render`, `POST /data/resume/pdf` — markdown render + LaTeX→PDF (Tectonic)
+- `GET /stocks/desk` — latest persisted `stock_analysis` (no model call on page load).
+  Not proxied — `web-next/src/lib/stocks-server.ts` fetches `:8001` directly, server-side.
 - `GET /agents` — UI metadata for every agent (sourced from `agents/registry.py`)
 - `GET /healthz`
+
+Routes live in `server/routers/` (`runs`, `prefs`, `resume`, `applications`, `jobs`,
+`stocks`), included by `server/app.py`. **Uvicorn is not reload-watching** — restart
+`.venv/bin/python -m server` after adding or changing a route.
 
 **Next.js (`web-next/`, `:3000`)** — owns all UI. Server components read the DB directly
 via Prisma. Mutations and agent actions are proxied to :8001 by `next.config.ts` rewrites
@@ -43,7 +51,7 @@ via Prisma. Mutations and agent actions are proxied to :8001 by `next.config.ts`
 
 ## Data model & schema ownership
 
-Six tables in `data/control_center.db`. **`schema.sql` (repo root) is the single source of
+Nine tables in `data/control_center.db`. **`schema.sql` (repo root) is the single source of
 truth** — `store_db.init_db()` applies it, and `server/db.py` + the agent stores delegate
 there. `web-next/prisma/schema.prisma` mirrors it and is verified by `npm run db:check`
 (builds a temp DB from `schema.sql`, diffs against the Prisma datamodel; fails on drift).
@@ -56,6 +64,9 @@ there. `web-next/prisma/schema.prisma` mirrors it and is verified by `npm run db
 | `node_events` | `server/db.py` | Python; Next (via `runs` relation) |
 | `experience_docs` | `agents/resume_generator/store.py` (via `/data/resume/docs`) | both sides |
 | `resumes` | `agents/resume_generator/store.py` (via `/data/resumes`) | both sides |
+| `master_resume` | `agents/resume_generator/store.py` (via `PUT /data/resume/master`) | both sides |
+| `resume_versions` | `agents/resume_generator/store.py` (inside graph nodes) | Python; Next (via `/data/resumes/{job_id}/versions`) |
+| `stock_analysis` | `agents/stock_digest/store.py` (inside graph nodes) | Python; Next (via `/stocks/desk`) |
 
 The `jobs` row carries both **mirrored columns** and a full-record **`data` JSON blob**;
 `job_scraper/store.py:set_status` updates both together, so the single writer keeps them in
