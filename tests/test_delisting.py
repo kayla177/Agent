@@ -162,6 +162,53 @@ def test_fetch_empty_result_does_not_mark_company_trustworthy(monkeypatch):
     assert out["warnings"] == [], "an empty result is not itself an error"
 
 
+def test_fetch_multi_board_company_untrustworthy_when_one_board_is_empty(temp_db, monkeypatch):
+    """Fix-loop round 2: a company on TWO boards where one silently returns
+    [] and the other returns postings must NOT land in fetched_ok — the old
+    code tracked "returned postings" only as an addition to `ok`, so the
+    productive board's `ok.add(company)` papered over the empty board ever
+    having been untrustworthy. Probed pre-fix: Duo/greenhouse -> [] plus
+    Duo/lever -> 1 posting yielded fetched_ok={'Duo'}, and a stored
+    Duo:greenhouse:7 row got wrongly flagged delisted. Not reachable with the
+    current one-source-per-company config, but reachable the moment a second
+    board is added for an existing company via Settings."""
+    from agents.job_scraper.nodes import fetch as fetch_mod
+
+    monkeypatch.setattr(fetch_mod, "get_sources", lambda: [
+        {"company": "Duo", "ats": "greenhouse", "token": "duo-gh"},
+        {"company": "Duo", "ats": "lever", "token": "duo-lever"},
+    ])
+
+    def fake_fetch(source):
+        if source["ats"] == "greenhouse":
+            return []  # schema drift / empty board: succeeds, returns nothing
+        return [{"id": "Duo:lever:1", "company": "Duo"}]
+
+    monkeypatch.setattr(fetch_mod, "fetch_source", fake_fetch)
+    out = fetch_node({})
+
+    assert out["fetched_ok"] == set(), \
+        "one empty board must make the whole company untrustworthy, even with a productive second board"
+    assert out["observed_ids"] == {"Duo:lever:1"}
+
+    # A stored row from the empty board must never be flagged delisted, since
+    # Duo never actually earned fetched_ok this run.
+    jobstore.replace_record({
+        "id": "Duo:greenhouse:7", "company": "Duo", "posted_at": "2026-07-01",
+        "status": "new",
+    })
+    fresh_out = freshness_node({
+        "new": [{"id": "Duo:greenhouse:7", "company": "Duo", "posted_at": "2026-07-01", "_rescored": True}],
+        "observed_ids": out["observed_ids"],
+        "fetched_ok": out["fetched_ok"],
+    })["new"]
+    assert fresh_out[0]["ghost"] is False
+
+    swept = jobstore.sweep_delisted(out["observed_ids"], out["fetched_ok"])
+    assert swept == 0
+    assert jobstore.load_records()["Duo:greenhouse:7"].get("ghost") is not True
+
+
 def test_sweep_flags_a_fully_processed_row_never_reinjected_by_backfill(temp_db):
     """The gap the fix-loop review found: freshness_node only ever sees rows
     that pass through the pipeline this run (fresh finds, or rows backfill

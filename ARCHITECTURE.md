@@ -86,9 +86,10 @@ NOT EXISTS` from `schema.sql`; the drift-check guards the Prisma mirror.
 
 The job scraper detects delisted postings directly rather than inferring it from age:
 `fetch_node` records `observed_ids` (every posting id any source returned) and `fetched_ok`
-(companies whose every configured source fetched without error **and returned at least one
-posting** — an empty result without an exception, e.g. an ATS schema change, must not be
-read as "healthy"). Detection then happens two ways:
+(companies whose **every** configured source both fetched without error **and returned at
+least one posting** — an empty result without an exception, e.g. an ATS schema change, must
+not be read as "healthy", even when a second source for the same company did return
+postings). Detection then happens two ways:
 - `freshness_node` flags a posting passing through the pipeline this run (freshly fetched, or
   re-injected by `backfill_node`) as a ghost when its company is in `fetched_ok` but its id is
   absent from `observed_ids`.
