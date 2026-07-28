@@ -2,6 +2,7 @@ import { prisma } from "@/lib/db";
 import type { Job } from "@/lib/jobs";
 import JobsBoard from "@/components/jobs/JobsBoard";
 import RunScraperButton from "@/components/jobs/RunScraperButton";
+import ScoreBacklogButton from "@/components/jobs/ScoreBacklogButton";
 
 export const dynamic = "force-dynamic";
 
@@ -24,6 +25,7 @@ export default async function JobsPage() {
       <div className="jobs-header">
         <h1>jobs</h1>
         <div className="jobs-header-actions">
+          <ScoreBacklogButton />
           <RunScraperButton />
         </div>
       </div>

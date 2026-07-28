@@ -6,13 +6,14 @@
     <key>Label</key>
     <string>com.kayla.daily-agents.jobscraper</string>
 
-    <!-- Run: .venv/bin/python scripts/run.py job_scraper --send -->
+    <!-- Run: .venv/bin/python scripts/run.py job_scraper --send --backfill -->
     <key>ProgramArguments</key>
     <array>
         <string>/Users/kayla.li/.superset/Agent/.venv/bin/python</string>
         <string>scripts/run.py</string>
         <string>job_scraper</string>
         <string>--send</string>
+        <string>--backfill</string>
     </array>
 
     <key>WorkingDirectory</key>

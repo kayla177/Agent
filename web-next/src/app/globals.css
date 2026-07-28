@@ -129,6 +129,17 @@ table.apps button:disabled { opacity: .5; cursor: default; }
 .btn-run:disabled { opacity: .6; cursor: default; }
 .run-scraper .run-stream { width: 320px; max-width: 60vw; text-align: left; }
 
+/* Secondary action: visually subordinate to .btn-run (no accent fill) — used
+   by "score backlog", an explicit, slow, opt-in action vs. the fast default. */
+.btn-secondary {
+  font: inherit; cursor: pointer; white-space: nowrap;
+  background: transparent; color: var(--muted); border: 1px solid var(--border-soft);
+  border-radius: 999px; padding: .5rem 1.1rem; font-weight: 600; letter-spacing: .3px;
+  transition: filter .15s ease, opacity .15s ease, border-color .15s ease, color .15s ease;
+}
+.btn-secondary:hover { border-color: var(--accent); color: var(--text); }
+.btn-secondary:disabled { opacity: .5; cursor: default; }
+
 .job-badge.src { color: var(--accent); border-color: var(--accent); text-transform: lowercase; }
 
 .job-chips { display: flex; gap: .75rem; margin: .5rem 0 1rem; }
