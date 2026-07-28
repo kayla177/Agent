@@ -21,6 +21,8 @@ export default function JobsBoard({ jobs, resumes, hasMaster }: {
   const [countries, setCountries] = useState<string[]>(DEFAULT_COUNTRIES);
   const [applyFor, setApplyFor] = useState<Job | null>(null);
   const [undo, setUndo] = useState<{ jobId: string; applicationId: number } | null>(null);
+  const [undoBusy, setUndoBusy] = useState(false);
+  const [undoError, setUndoError] = useState<string | null>(null);
 
   const counts = useMemo(() => {
     const c = { new: 0, applied: 0, dismissed: 0 };
@@ -81,19 +83,46 @@ export default function JobsBoard({ jobs, resumes, hasMaster }: {
   }
 
   async function doUndo() {
-    if (!undo) return;
-    const ok = await post("/data/jobs/undo-apply", { id: undo.jobId, application_id: undo.applicationId });
-    setUndo(null);
-    if (ok) router.refresh();
+    if (!undo || undoBusy) return;
+    setUndoBusy(true);
+    setUndoError(null);
+    const res = await fetch("/data/jobs/undo-apply", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ id: undo.jobId, application_id: undo.applicationId }),
+    });
+    setUndoBusy(false);
+    if (res.ok) {
+      setUndo(null);
+      router.refresh();
+      return;
+    }
+    if (res.status === 404) {
+      // Already undone (e.g. from another tab) — nothing left to revert, but say
+      // so instead of letting the banner vanish silently.
+      setUndo(null);
+      setUndoError("This application was already undone.");
+      return;
+    }
+    if (res.status === 409) {
+      // Belongs to a different job, or predates job-linking — not retryable.
+      setUndoError("Can't undo this application here — it belongs to a different job, or predates job-linking.");
+      return;
+    }
+    setUndoError("Could not undo the application. Try again.");
   }
 
   return (
     <>
       {undo ? (
         <div className="banner ok undo-banner">
-          Application logged. <button className="link" onClick={doUndo}>Undo</button>
+          Application logged.{" "}
+          <button className="link" onClick={doUndo} disabled={undoBusy}>
+            {undoBusy ? "Undoing…" : "Undo"}
+          </button>
         </div>
       ) : null}
+      {undoError ? <p className="banner err">{undoError}</p> : null}
 
       {applyFor ? (
         <ApplyModal
@@ -107,6 +136,7 @@ export default function JobsBoard({ jobs, resumes, hasMaster }: {
           onApplied={(applicationId) => {
             setApplyFor(null);
             setUndo({ jobId: applyFor.id, applicationId });
+            setUndoError(null);
             router.refresh();
           }}
         />

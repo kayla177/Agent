@@ -85,7 +85,7 @@ export default function ApplyModal({
   }
 
   return (
-    <div className="modal-backdrop" onClick={onClose}>
+    <div className="modal-backdrop" onClick={() => { if (!busy) onClose(); }}>
       <div className="modal apply-modal" onClick={(e) => e.stopPropagation()}>
         <h2>Apply — {jobTitle}</h2>
         <p className="muted">{jobCompany}</p>
