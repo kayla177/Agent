@@ -12,16 +12,30 @@ export default function ScoreBacklogButton() {
   const router = useRouter();
   const [runId, setRunId] = useState<number | null>(null);
   const [starting, setStarting] = useState(false);
+  const [error, setError] = useState<string | null>(null);
 
+  // The busy flag is reset in `finally` — guaranteed on every exit path,
+  // including a rejected fetch (:8001 down) — so a network failure can never
+  // strand the button permanently disabled.
   async function run() {
     setStarting(true);
-    const res = await fetch("/agents/job_scraper/run?send=0", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ input: { backfill: true } }),
-    });
-    setStarting(false);
-    if (res.ok) setRunId((await res.json()).run_id);
+    setError(null);
+    try {
+      const res = await fetch("/agents/job_scraper/run?send=0", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ input: { backfill: true } }),
+      });
+      if (!res.ok) {
+        setError("Could not start backlog scoring.");
+        return;
+      }
+      setRunId((await res.json()).run_id);
+    } catch {
+      setError("Could not reach the agent service (is FastAPI on :8001 running?).");
+    } finally {
+      setStarting(false);
+    }
   }
 
   const onDone = useCallback(() => {
@@ -42,6 +56,7 @@ export default function ScoreBacklogButton() {
         {starting ? "starting…" : runId !== null ? "scoring…" : "◔ score backlog"}
       </button>
       {runId !== null ? <RunStream runId={runId} onDone={onDone} /> : null}
+      {error ? <p className="banner err">{error}</p> : null}
     </div>
   );
 }
