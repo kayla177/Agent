@@ -56,32 +56,40 @@ export default function ApplyModal({
     });
   }
 
+  // The busy flag is reset in `finally` — guaranteed on every exit path,
+  // including a rejected fetch — so a network failure can never leave the
+  // modal stuck open with Cancel and the backdrop both disabled.
   async function confirm() {
     setBusy(true);
     setError(null);
-    const res = await fetch("/data/jobs/apply", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ id: jobId, resume_job_id: choice || null }),
-    });
-    setBusy(false);
-    if (!res.ok) {
-      if (res.status === 409) {
-        setError("This job was already applied to.");
-      } else {
-        setError("Could not record the application.");
+    try {
+      const res = await fetch("/data/jobs/apply", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ id: jobId, resume_job_id: choice || null }),
+      });
+      if (!res.ok) {
+        if (res.status === 409) {
+          setError("This job was already applied to.");
+        } else {
+          setError("Could not record the application.");
+        }
+        return;
       }
-      return;
+      const { application_id } = await res.json();
+
+      // Hand over the exact PDF to upload, then open the posting. The posting is
+      // opened last so it's the one most likely to survive popup blocking.
+      const q = choice ? `?job_id=${encodeURIComponent(choice)}` : "";
+      window.open(`/data/jobs/resume-pdf${q}`, "_blank", "noopener");
+      if (jobUrl) window.open(jobUrl, "_blank", "noopener");
+
+      onApplied(application_id);
+    } catch {
+      setError("Could not reach the agent service (is FastAPI on :8001 running?).");
+    } finally {
+      setBusy(false);
     }
-    const { application_id } = await res.json();
-
-    // Hand over the exact PDF to upload, then open the posting. The posting is
-    // opened last so it's the one most likely to survive popup blocking.
-    const q = choice ? `?job_id=${encodeURIComponent(choice)}` : "";
-    window.open(`/data/jobs/resume-pdf${q}`, "_blank", "noopener");
-    if (jobUrl) window.open(jobUrl, "_blank", "noopener");
-
-    onApplied(application_id);
   }
 
   return (

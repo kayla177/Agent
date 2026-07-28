@@ -23,6 +23,7 @@ export default function JobsBoard({ jobs, resumes, hasMaster }: {
   const [undo, setUndo] = useState<{ jobId: string; applicationId: number } | null>(null);
   const [undoBusy, setUndoBusy] = useState(false);
   const [undoError, setUndoError] = useState<string | null>(null);
+  const [undoBlocked, setUndoBlocked] = useState(false);
 
   const counts = useMemo(() => {
     const c = { new: 0, applied: 0, dismissed: 0 };
@@ -47,13 +48,20 @@ export default function JobsBoard({ jobs, resumes, hasMaster }: {
     return l;
   }, [jobs, statusFilter, companyFilter, hideGhost, countries, sort]);
 
+  // A rejected fetch (backend unreachable) is treated exactly like a failed
+  // response: callers already handle `false` by clearing their busy flag
+  // without refreshing, and never touching the DB.
   async function post(path: string, body: Record<string, unknown>) {
-    const res = await fetch(path, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(body),
-    });
-    return res.ok;
+    try {
+      const res = await fetch(path, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      });
+      return res.ok;
+    } catch {
+      return false;
+    }
   }
 
   async function dismiss(id: string) {
@@ -76,40 +84,54 @@ export default function JobsBoard({ jobs, resumes, hasMaster }: {
       const next = cur === id ? null : id;
       const job = jobs.find((j) => j.id === id);
       if (next === id && job?.status === "new") {
-        void post("/data/jobs/status", { id, status: "viewed" }).then(() => router.refresh());
+        // Marking a row viewed is incidental — a network failure here must
+        // never surface an error or escape as an unhandled rejection.
+        void post("/data/jobs/status", { id, status: "viewed" })
+          .then(() => router.refresh())
+          .catch(() => {});
       }
       return next;
     });
   }
 
+  // Undo needs the actual status code (not just post()'s ok/false), so it makes
+  // its own request rather than going through the shared helper. The busy flag
+  // is reset in `finally` so it can never stick on a throw.
   async function doUndo() {
-    if (!undo || undoBusy) return;
+    if (!undo || undoBusy || undoBlocked) return;
     setUndoBusy(true);
     setUndoError(null);
-    const res = await fetch("/data/jobs/undo-apply", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ id: undo.jobId, application_id: undo.applicationId }),
-    });
-    setUndoBusy(false);
-    if (res.ok) {
-      setUndo(null);
-      router.refresh();
-      return;
+    try {
+      const res = await fetch("/data/jobs/undo-apply", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ id: undo.jobId, application_id: undo.applicationId }),
+      });
+      if (res.ok) {
+        setUndo(null);
+        router.refresh();
+        return;
+      }
+      if (res.status === 404) {
+        // Already undone (e.g. from another tab) — nothing left to revert, but
+        // say so instead of letting the banner vanish silently.
+        setUndo(null);
+        setUndoError("This application was already undone.");
+        return;
+      }
+      if (res.status === 409) {
+        // Belongs to a different job, or predates job-linking — not retryable,
+        // so disable Undo rather than leave a message the button contradicts.
+        setUndoError("Can't undo this application here — it belongs to a different job, or predates job-linking.");
+        setUndoBlocked(true);
+        return;
+      }
+      setUndoError("Could not undo the application. Try again.");
+    } catch {
+      setUndoError("Could not reach the agent service (is FastAPI on :8001 running?).");
+    } finally {
+      setUndoBusy(false);
     }
-    if (res.status === 404) {
-      // Already undone (e.g. from another tab) — nothing left to revert, but say
-      // so instead of letting the banner vanish silently.
-      setUndo(null);
-      setUndoError("This application was already undone.");
-      return;
-    }
-    if (res.status === 409) {
-      // Belongs to a different job, or predates job-linking — not retryable.
-      setUndoError("Can't undo this application here — it belongs to a different job, or predates job-linking.");
-      return;
-    }
-    setUndoError("Could not undo the application. Try again.");
   }
 
   return (
@@ -117,7 +139,7 @@ export default function JobsBoard({ jobs, resumes, hasMaster }: {
       {undo ? (
         <div className="banner ok undo-banner">
           Application logged.{" "}
-          <button className="link" onClick={doUndo} disabled={undoBusy}>
+          <button className="link" onClick={doUndo} disabled={undoBusy || undoBlocked}>
             {undoBusy ? "Undoing…" : "Undo"}
           </button>
         </div>
@@ -137,6 +159,7 @@ export default function JobsBoard({ jobs, resumes, hasMaster }: {
             setApplyFor(null);
             setUndo({ jobId: applyFor.id, applicationId });
             setUndoError(null);
+            setUndoBlocked(false);
             router.refresh();
           }}
         />
