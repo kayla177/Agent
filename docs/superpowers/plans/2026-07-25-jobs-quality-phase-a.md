@@ -2395,7 +2395,8 @@ def test_undo_apply_removes_row_and_reverts_status(client):
     res = client.post("/data/jobs/undo-apply", json={"id": _JOB["id"], "application_id": app_id})
     assert res.status_code == 200
     assert appstore.load_all() == []
-    assert jobstore.load_records()[_JOB["id"]]["status"] == "new"
+    # `viewed`, not `new`: reaching the apply modal means the posting was read.
+    assert jobstore.load_records()[_JOB["id"]]["status"] == "viewed"
 
 
 def test_status_endpoint_sets_viewed_and_restores_dismissed(client):
@@ -2552,14 +2553,20 @@ def apply_to_job(body: ApplyBody):
 
 @router.post("/data/jobs/undo-apply")
 def undo_apply(body: UndoBody):
-    """Reverse an apply: delete the tracker row and put the job back to `new`."""
+    """Reverse an apply: delete the tracker row and un-apply the job.
+
+    The job goes back to `viewed`, not `new`. Reaching the apply modal at all
+    means the user opened and read the posting, so `new` would wrongly present
+    it as unread in a 130-row list — and `viewed` is exactly the state the row
+    was in immediately before Apply was clicked.
+    """
     jid = body.id.strip()
     if not jid or not body.application_id:
         return JSONResponse({"error": "id and application_id are required."}, status_code=400)
     if _load(jid) is None:
         return JSONResponse({"error": f"No job with id {jid}."}, status_code=404)
     appstore.delete_application(body.application_id)
-    jobstore.set_status(jid, "new")
+    jobstore.set_status(jid, "viewed")
     return {"ok": True}
 
 
