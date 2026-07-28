@@ -25,6 +25,7 @@ export type Job = {
   fit_reason: string | null;
   ghost: number;      // 0 | 1
   also_on: string;    // JSON array string
+  country: string;    // US | CA | OTHER | UNKNOWN
 };
 
 export type FitTier = "hi" | "mid" | "lo" | "none";
@@ -94,4 +95,16 @@ export function bestMatch(jobs: Job[]): Job | null {
   const fresh = scored.filter((j) => ageBucket(j) <= 2);
   const pool = fresh.length ? fresh : scored;
   return pool.reduce((best, j) => (j.fit_score! > best.fit_score! ? j : best));
+}
+
+export const COUNTRY_LABEL: Record<string, string> = {
+  US: "US", CA: "Canada", OTHER: "intl", UNKNOWN: "?",
+};
+
+// Countries shown by default. Non-North-America roles stay in the DB (so a
+// misclassification is auditable) and are hidden here instead.
+export const DEFAULT_COUNTRIES = ["US", "CA", "UNKNOWN"];
+
+export function inCountries(job: Job, allowed: string[]): boolean {
+  return allowed.includes(job.country || "UNKNOWN");
 }

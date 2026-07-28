@@ -10,20 +10,27 @@ const JOB_SELECT = {
   id: true, company: true, title: true, location: true, url: true, status: true,
   ats: true, posted_at: true, remote: true, compensation: true, department: true,
   description: true, fit_score: true, fit_reason: true, ghost: true, also_on: true,
+  country: true,
 } as const;
 
 export default async function JobsPage() {
-  const jobs = (await prisma.jobs.findMany({ select: JOB_SELECT })) as Job[];
+  const [jobs, resumes, master] = await Promise.all([
+    prisma.jobs.findMany({ select: JOB_SELECT }) as Promise<Job[]>,
+    prisma.resumes.findMany({ select: { job_id: true, company: true, role: true } }),
+    prisma.master_resume.findFirst({ select: { latex: true } }),
+  ]);
   return (
     <>
       <div className="jobs-header">
         <h1>jobs</h1>
-        <RunScraperButton />
+        <div className="jobs-header-actions">
+          <RunScraperButton />
+        </div>
       </div>
       {jobs.length === 0 ? (
         <p className="muted">No jobs yet — run the scraper above to pull fresh roles.</p>
       ) : (
-        <JobsBoard jobs={jobs} />
+        <JobsBoard jobs={jobs} resumes={resumes} hasMaster={Boolean(master?.latex?.trim())} />
       )}
     </>
   );

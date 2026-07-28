@@ -1,5 +1,5 @@
 import type { Job } from "@/lib/jobs";
-import { fitTier, FIT_COLOR, JOB_STATUS_META, ageDays, parseAlsoOn } from "@/lib/jobs";
+import { fitTier, FIT_COLOR, JOB_STATUS_META, ageDays, parseAlsoOn, COUNTRY_LABEL } from "@/lib/jobs";
 
 type Props = {
   job: Job;
@@ -8,9 +8,10 @@ type Props = {
   onToggle: (id: string) => void;
   onApply: (id: string) => void;
   onDismiss: (id: string) => void;
+  onRestore: (id: string) => void;
 };
 
-export default function JobRow({ job, expanded, busy, onToggle, onApply, onDismiss }: Props) {
+export default function JobRow({ job, expanded, busy, onToggle, onApply, onDismiss, onRestore }: Props) {
   const tier = fitTier(job.fit_score);
   const color = FIT_COLOR[tier];
   const age = ageDays(job.posted_at);
@@ -37,6 +38,9 @@ export default function JobRow({ job, expanded, busy, onToggle, onApply, onDismi
             {age !== null ? <span className="job-badge">🕒 {age}d ago</span> : null}
             {job.compensation ? <span className="job-badge">{job.compensation}</span> : null}
             {job.ats ? <span className="job-badge src">{job.ats}</span> : null}
+            {job.country && job.country !== "US" ? (
+              <span className="job-badge">{COUNTRY_LABEL[job.country] ?? job.country}</span>
+            ) : null}
             {alsoOn.length ? <span className="job-badge">also on {alsoOn.length}</span> : null}
             {job.ghost === 1 ? <span className="job-badge stale">⚠ stale{age !== null ? ` ${age}d` : ""}</span> : null}
           </div>
@@ -47,6 +51,9 @@ export default function JobRow({ job, expanded, busy, onToggle, onApply, onDismi
               <button className="apply" disabled={busy} onClick={() => onApply(job.id)}>Apply</button>
               <button disabled={busy} onClick={() => onDismiss(job.id)}>Dismiss</button>
             </>
+          ) : null}
+          {dismissed ? (
+            <button disabled={busy} onClick={() => onRestore(job.id)}>Restore</button>
           ) : null}
           <button className="job-caret" aria-label="Toggle details" onClick={() => onToggle(job.id)}>
             {expanded ? "▾" : "▸"}

@@ -1,13 +1,16 @@
 "use client";
 import { useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
-import { type Job, JOB_STATUSES, byPriority, byFitDesc, byDateDesc, bestMatch } from "@/lib/jobs";
+import { type Job, JOB_STATUSES, byPriority, byFitDesc, byDateDesc, bestMatch, inCountries, DEFAULT_COUNTRIES } from "@/lib/jobs";
 import BestMatchHero from "./BestMatchHero";
 import JobRow from "./JobRow";
+import ApplyModal, { type ResumeRow } from "./ApplyModal";
 
 type SortKey = "priority" | "fit" | "date";
 
-export default function JobsBoard({ jobs }: { jobs: Job[] }) {
+export default function JobsBoard({ jobs, resumes, hasMaster }: {
+  jobs: Job[]; resumes: ResumeRow[]; hasMaster: boolean;
+}) {
   const router = useRouter();
   const [sort, setSort] = useState<SortKey>("priority");
   const [statusFilter, setStatusFilter] = useState("");
@@ -15,6 +18,9 @@ export default function JobsBoard({ jobs }: { jobs: Job[] }) {
   const [hideGhost, setHideGhost] = useState(false);
   const [expandedId, setExpandedId] = useState<string | null>(null);
   const [busyId, setBusyId] = useState<string | null>(null);
+  const [countries, setCountries] = useState<string[]>(DEFAULT_COUNTRIES);
+  const [applyFor, setApplyFor] = useState<Job | null>(null);
+  const [undo, setUndo] = useState<{ jobId: string; applicationId: number } | null>(null);
 
   const counts = useMemo(() => {
     const c = { new: 0, applied: 0, dismissed: 0 };
@@ -34,30 +40,85 @@ export default function JobsBoard({ jobs }: { jobs: Job[] }) {
     l = statusFilter ? l.filter((j) => j.status === statusFilter) : l.filter((j) => j.status !== "dismissed");
     if (companyFilter) l = l.filter((j) => j.company === companyFilter);
     if (hideGhost) l = l.filter((j) => j.ghost !== 1);
+    l = l.filter((j) => inCountries(j, countries));
     l.sort(sort === "date" ? byDateDesc : sort === "fit" ? byFitDesc : byPriority);
     return l;
-  }, [jobs, statusFilter, companyFilter, hideGhost, sort]);
+  }, [jobs, statusFilter, companyFilter, hideGhost, countries, sort]);
 
-  async function mutate(kind: "apply" | "dismiss", id: string) {
-    setBusyId(id);
-    const res = await fetch(`/data/jobs/${kind}`, {
+  async function post(path: string, body: Record<string, unknown>) {
+    const res = await fetch(path, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ id }),
+      body: JSON.stringify(body),
     });
+    return res.ok;
+  }
+
+  async function dismiss(id: string) {
+    setBusyId(id);
+    const ok = await post("/data/jobs/dismiss", { id });
     setBusyId(null);
-    if (res.ok) router.refresh();
+    if (ok) router.refresh();
+  }
+
+  async function restore(id: string) {
+    setBusyId(id);
+    const ok = await post("/data/jobs/status", { id, status: "new" });
+    setBusyId(null);
+    if (ok) router.refresh();
+  }
+
+  // Expanding a row marks it viewed so you stop re-reading the same postings.
+  function toggle(id: string) {
+    setExpandedId((cur) => {
+      const next = cur === id ? null : id;
+      const job = jobs.find((j) => j.id === id);
+      if (next === id && job?.status === "new") {
+        void post("/data/jobs/status", { id, status: "viewed" }).then(() => router.refresh());
+      }
+      return next;
+    });
+  }
+
+  async function doUndo() {
+    if (!undo) return;
+    const ok = await post("/data/jobs/undo-apply", { id: undo.jobId, application_id: undo.applicationId });
+    setUndo(null);
+    if (ok) router.refresh();
   }
 
   return (
     <>
+      {undo ? (
+        <div className="banner ok undo-banner">
+          Application logged. <button className="link" onClick={doUndo}>Undo</button>
+        </div>
+      ) : null}
+
+      {applyFor ? (
+        <ApplyModal
+          jobId={applyFor.id}
+          jobTitle={applyFor.title}
+          jobCompany={applyFor.company}
+          jobUrl={applyFor.url}
+          resumes={resumes}
+          hasMaster={hasMaster}
+          onClose={() => setApplyFor(null)}
+          onApplied={(applicationId) => {
+            setApplyFor(null);
+            setUndo({ jobId: applyFor.id, applicationId });
+            router.refresh();
+          }}
+        />
+      ) : null}
+
       <div className="job-chips">
         <span className="job-chip"><strong>{counts.new}</strong> new</span>
         <span className="job-chip"><strong>{counts.applied}</strong> applied</span>
         <span className="job-chip"><strong>{counts.dismissed}</strong> dismissed</span>
       </div>
 
-      {best ? <BestMatchHero job={best} onApply={(id) => mutate("apply", id)} /> : null}
+      {best ? <BestMatchHero job={best} onApply={(id) => setApplyFor(jobs.find((j) => j.id === id) ?? null)} /> : null}
 
       <div className="job-filters">
         <select value={sort} onChange={(e) => setSort(e.target.value as SortKey)}>
@@ -72,6 +133,13 @@ export default function JobsBoard({ jobs }: { jobs: Job[] }) {
         <select value={companyFilter} onChange={(e) => setCompanyFilter(e.target.value)}>
           <option value="">all companies</option>
           {companies.map((c) => <option key={c} value={c}>{c}</option>)}
+        </select>
+        <select
+          value={countries.includes("OTHER") ? "all" : "na"}
+          onChange={(e) => setCountries(e.target.value === "all" ? ["US", "CA", "OTHER", "UNKNOWN"] : DEFAULT_COUNTRIES)}
+        >
+          <option value="na">US &amp; Canada</option>
+          <option value="all">all countries</option>
         </select>
         <label>
           <input type="checkbox" checked={hideGhost} onChange={(e) => setHideGhost(e.target.checked)} />
@@ -88,9 +156,10 @@ export default function JobsBoard({ jobs }: { jobs: Job[] }) {
             job={j}
             expanded={expandedId === j.id}
             busy={busyId === j.id}
-            onToggle={(id) => setExpandedId((cur) => (cur === id ? null : id))}
-            onApply={(id) => mutate("apply", id)}
-            onDismiss={(id) => mutate("dismiss", id)}
+            onToggle={toggle}
+            onApply={(id) => setApplyFor(jobs.find((j) => j.id === id) ?? null)}
+            onDismiss={dismiss}
+            onRestore={restore}
           />
         ))
       )}

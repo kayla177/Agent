@@ -445,3 +445,22 @@ table.mini th { color: var(--muted); font-weight: 400; font-size: .72rem; letter
   .hero-title { font-size: 2.4rem; letter-spacing: .8rem; text-indent: .8rem; }
   .hero { height: 250px; }
 }
+
+/* Apply modal + undo banner (jobs tab, Mars accent) */
+.modal-backdrop {
+  position: fixed; inset: 0; background: rgba(0, 0, 0, 0.6);
+  display: flex; align-items: center; justify-content: center; z-index: 50;
+}
+.modal {
+  background: #14161c; border: 1px solid #2a2e39; border-radius: 10px;
+  padding: 1.25rem 1.5rem; min-width: 420px; max-width: 560px;
+}
+.apply-modal h2 { margin: 0 0 0.25rem; font-size: 1.05rem; }
+.apply-modal label { display: block; margin: 1rem 0 0.5rem; }
+.apply-modal select { width: 100%; }
+.modal-actions { display: flex; gap: 0.5rem; justify-content: flex-end; margin-top: 1.25rem; }
+.modal-actions .primary { background: #e07a4a; border-color: #e07a4a; }
+.muted.small { font-size: 0.8rem; margin-top: 0.75rem; }
+.undo-banner { display: flex; gap: 0.5rem; align-items: center; }
+button.link { background: none; border: none; color: #e07a4a; cursor: pointer; text-decoration: underline; padding: 0; }
+.jobs-header-actions { display: flex; gap: 0.5rem; align-items: center; }
