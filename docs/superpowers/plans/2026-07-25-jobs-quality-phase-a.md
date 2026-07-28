@@ -2690,7 +2690,6 @@ export default async function JobsPage() {
       <div className="jobs-header">
         <h1>jobs</h1>
         <div className="jobs-header-actions">
-          <ScoreBacklogButton />
           <RunScraperButton />
         </div>
       </div>
@@ -2704,7 +2703,9 @@ export default async function JobsPage() {
 }
 ```
 
-Import `ScoreBacklogButton` from `@/components/jobs/ScoreBacklogButton` (built in Task 12).
+The `jobs-header-actions` wrapper is added now but holds only `RunScraperButton`. Task 12 adds
+`ScoreBacklogButton` beside it — do NOT import that component here, it does not exist yet and the
+build would fail.
 
 - [ ] **Step 3: Write `ApplyModal.tsx`**
 
@@ -3064,6 +3065,22 @@ curl -s -X POST 'localhost:8001/agents/job_scraper/run?send=0' \
 ```
 
 Expected: `{"run_id": <n>}` with no `"reused": true`, because a parameterized run is always fresh (`runs.py:65`).
+
+- [ ] **Step 1b: Mount the button on the jobs page**
+
+Task 11 left a `jobs-header-actions` wrapper holding only `RunScraperButton`. Add the import and the
+component beside it in `web-next/src/app/(hub)/jobs/page.tsx`:
+
+```tsx
+import ScoreBacklogButton from "@/components/jobs/ScoreBacklogButton";
+```
+
+```tsx
+        <div className="jobs-header-actions">
+          <ScoreBacklogButton />
+          <RunScraperButton />
+        </div>
+```
 
 - [ ] **Step 2: Write the button**
 
