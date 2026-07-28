@@ -23,7 +23,8 @@ CREATE TABLE IF NOT EXISTS applications (
     notes         TEXT    NOT NULL DEFAULT '',
     auto_detected INTEGER NOT NULL DEFAULT 0,
     resume_job_id TEXT,            -- which generated resume was used to apply (-> resumes.job_id); NULL if none
-    resume_pdf_key TEXT           -- pins the exact cached PDF sent (see server/resume_pdf.py); NULL if none
+    resume_pdf_key TEXT,          -- pins the exact cached PDF sent (see server/resume_pdf.py); NULL if none
+    job_id        TEXT           -- which jobs.id this application is for; NULL on legacy pre-link rows
 );
 
 -- ---------------------------------------------------------------------------

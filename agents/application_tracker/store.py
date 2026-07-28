@@ -45,12 +45,17 @@ def add_application(
     status: str = "applied",
     resume_job_id: str | None = None,
     resume_pdf_key: str | None = None,
+    job_id: str | None = None,
 ) -> dict:
     """Create and persist a new application; returns the stored record.
 
     `resume_job_id` links the résumé used (-> resumes.job_id) and
     `resume_pdf_key` pins the exact compiled PDF that was sent, so editing that
     résumé later cannot destroy the record of what the company received.
+    `job_id` links back to the exact `jobs.id` this application is for — the
+    only reliable way to verify an undo-apply request actually belongs to a
+    given posting, since company+title alone cannot disambiguate two distinct
+    postings sharing both (e.g. the same role on two ATS boards).
     """
     if status not in STATUSES:
         raise ValueError(f"status must be one of {STATUSES}")
@@ -60,11 +65,12 @@ def add_application(
         cur = conn.execute(
             "INSERT INTO applications "
             "(company, role, url, status, applied_date, updated_date, notes, "
-            " auto_detected, resume_job_id, resume_pdf_key) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?, ?) RETURNING *",
+            " auto_detected, resume_job_id, resume_pdf_key, job_id) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?) RETURNING *",
             (company.strip(), role.strip(), url.strip(), status, today, today,
              notes.strip(), (resume_job_id or "").strip() or None,
-             (resume_pdf_key or "").strip() or None),
+             (resume_pdf_key or "").strip() or None,
+             (job_id or "").strip() or None),
         )
         row = cur.fetchone()
     return _row(row)

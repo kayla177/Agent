@@ -79,6 +79,7 @@ def apply_to_job(body: ApplyBody):
         rec.get("company", ""), rec.get("title", ""),
         url=rec.get("url", ""), status="applied",
         resume_job_id=resume_job_id, resume_pdf_key=pdf_key,
+        job_id=jid,
     )
     jobstore.set_status(jid, "applied")
     return {"ok": True, "application_id": int(app["id"]), "resume_pdf_key": pdf_key}
@@ -93,11 +94,18 @@ def undo_apply(body: UndoBody):
     it as unread in a 130-row list — and `viewed` is exactly the state the row
     was in immediately before Apply was clicked.
 
-    There is no foreign key from `applications` back to `jobs.id`, so before
-    mutating anything this verifies the application actually belongs to this
-    job by matching the fields `apply` itself wrote: `company` and `role` vs.
-    the job's `company` and `title`. Validate-then-mutate, strictly in that
-    order — never delete or flip status on an unverified pair.
+    Ownership is verified via `applications.job_id`, an exact link to the
+    `jobs.id` this row was filed for. Matching on `company`/`role` instead
+    (an earlier version of this endpoint did) is NOT enough: job ids are
+    `f"{company}:{ats}:{native_id}"`, so the same company advertising the
+    same title through two different ATS boards — or two open reqs with an
+    identical title — produce two distinct `jobs` rows with identical
+    `company`/`title`, and a heuristic match cannot tell them apart. A row
+    with `job_id IS NULL` predates this link (created before it existed) and
+    is deliberately NOT matched by falling back to the heuristic — that would
+    just reopen the same hole for exactly the rows most likely to collide.
+    Validate-then-mutate, strictly in that order — never delete or flip
+    status on an unverified pair.
     """
     jid = body.id.strip()
     if not jid or not body.application_id:
@@ -111,7 +119,13 @@ def undo_apply(body: UndoBody):
         return JSONResponse(
             {"error": f"No application with id {body.application_id}."}, status_code=404
         )
-    if app.get("company") != rec.get("company") or app.get("role") != rec.get("title"):
+    if app.get("job_id") is None:
+        return JSONResponse(
+            {"error": f"Application {body.application_id} predates job linking "
+                      "and cannot be undone automatically."},
+            status_code=409,
+        )
+    if app.get("job_id") != jid:
         return JSONResponse(
             {"error": f"Application {body.application_id} does not belong to job {jid}."},
             status_code=409,

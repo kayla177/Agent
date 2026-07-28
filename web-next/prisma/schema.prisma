@@ -19,6 +19,7 @@ model applications {
   auto_detected  Int     @default(0)
   resume_job_id  String?
   resume_pdf_key String?
+  job_id         String?
 }
 
 model node_events {
