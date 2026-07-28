@@ -17,6 +17,12 @@ _JOB = {
     "status": "new", "country": "US", "fit_score": 80, "fit_reason": "matched: Python",
 }
 
+_JOB_B = {
+    "id": "Beta:greenhouse:2", "company": "Beta", "title": "Backend Intern",
+    "location": "Remote", "url": "https://beta.example/jobs/2",
+    "status": "new", "country": "US", "fit_score": 70, "fit_reason": "matched: Go",
+}
+
 
 def test_apply_records_resume_link(client):
     jobstore.replace_record(dict(_JOB))
@@ -76,3 +82,70 @@ def test_job_id_with_colons_is_not_mangled(client):
     jobstore.replace_record(dict(_JOB))
     res = client.post("/data/jobs/status", json={"id": "Acme:greenhouse:1", "status": "viewed"})
     assert res.status_code == 200
+
+
+def test_undo_apply_rejects_application_from_different_job(client):
+    """An application_id that belongs to a DIFFERENT job must be rejected —
+    not deleted, and neither job's status touched."""
+    jobstore.replace_record(dict(_JOB))
+    jobstore.replace_record(dict(_JOB_B))
+    app_a = client.post("/data/jobs/apply", json={"id": _JOB["id"]}).json()["application_id"]
+    app_b = client.post("/data/jobs/apply", json={"id": _JOB_B["id"]}).json()["application_id"]
+
+    # Try to undo job A's apply using job B's application id.
+    res = client.post("/data/jobs/undo-apply", json={"id": _JOB["id"], "application_id": app_b})
+    assert res.status_code == 409
+
+    apps = {a["id"]: a for a in appstore.load_all()}
+    assert app_a in apps
+    assert app_b in apps  # B's application was NOT deleted
+    assert jobstore.load_records()[_JOB["id"]]["status"] == "applied"
+    assert jobstore.load_records()[_JOB_B["id"]]["status"] == "applied"
+
+
+def test_undo_apply_nonexistent_application_404(client):
+    jobstore.replace_record(dict(_JOB))
+    client.post("/data/jobs/apply", json={"id": _JOB["id"]})
+
+    res = client.post("/data/jobs/undo-apply", json={"id": _JOB["id"], "application_id": 999999})
+    assert res.status_code == 404
+    assert jobstore.load_records()[_JOB["id"]]["status"] == "applied"
+
+
+def test_undo_apply_with_two_applications_only_deletes_correct_one(client):
+    jobstore.replace_record(dict(_JOB))
+    jobstore.replace_record(dict(_JOB_B))
+    app_a = client.post("/data/jobs/apply", json={"id": _JOB["id"]}).json()["application_id"]
+    app_b = client.post("/data/jobs/apply", json={"id": _JOB_B["id"]}).json()["application_id"]
+
+    res = client.post("/data/jobs/undo-apply", json={"id": _JOB["id"], "application_id": app_a})
+    assert res.status_code == 200
+
+    apps = {a["id"]: a for a in appstore.load_all()}
+    assert app_a not in apps
+    assert app_b in apps
+    assert jobstore.load_records()[_JOB["id"]]["status"] == "viewed"
+    assert jobstore.load_records()[_JOB_B["id"]]["status"] == "applied"
+
+
+def test_apply_twice_is_rejected(client):
+    jobstore.replace_record(dict(_JOB))
+    first = client.post("/data/jobs/apply", json={"id": _JOB["id"]})
+    assert first.status_code == 200
+
+    second = client.post("/data/jobs/apply", json={"id": _JOB["id"]})
+    assert second.status_code == 409
+
+    assert len(appstore.load_all()) == 1
+    assert jobstore.load_records()[_JOB["id"]]["status"] == "applied"
+
+
+def test_apply_after_undo_succeeds(client):
+    jobstore.replace_record(dict(_JOB))
+    app_id = client.post("/data/jobs/apply", json={"id": _JOB["id"]}).json()["application_id"]
+    client.post("/data/jobs/undo-apply", json={"id": _JOB["id"], "application_id": app_id})
+
+    res = client.post("/data/jobs/apply", json={"id": _JOB["id"]})
+    assert res.status_code == 200
+    assert len(appstore.load_all()) == 1
+    assert jobstore.load_records()[_JOB["id"]]["status"] == "applied"

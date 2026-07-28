@@ -61,6 +61,10 @@ def apply_to_job(body: ApplyBody):
     rec = _load(jid)
     if rec is None:
         return JSONResponse({"error": f"No job with id {jid}."}, status_code=404)
+    if rec.get("status") == "applied":
+        return JSONResponse(
+            {"error": f"Already applied to {jid}."}, status_code=409
+        )
 
     resume_job_id = (body.resume_job_id or "").strip() or None
     pdf_key = None
@@ -88,13 +92,37 @@ def undo_apply(body: UndoBody):
     means the user opened and read the posting, so `new` would wrongly present
     it as unread in a 130-row list — and `viewed` is exactly the state the row
     was in immediately before Apply was clicked.
+
+    There is no foreign key from `applications` back to `jobs.id`, so before
+    mutating anything this verifies the application actually belongs to this
+    job by matching the fields `apply` itself wrote: `company` and `role` vs.
+    the job's `company` and `title`. Validate-then-mutate, strictly in that
+    order — never delete or flip status on an unverified pair.
     """
     jid = body.id.strip()
     if not jid or not body.application_id:
         return JSONResponse({"error": "id and application_id are required."}, status_code=400)
-    if _load(jid) is None:
+    rec = _load(jid)
+    if rec is None:
         return JSONResponse({"error": f"No job with id {jid}."}, status_code=404)
-    appstore.delete_application(body.application_id)
+
+    app = next((a for a in appstore.load_all() if a["id"] == body.application_id), None)
+    if app is None:
+        return JSONResponse(
+            {"error": f"No application with id {body.application_id}."}, status_code=404
+        )
+    if app.get("company") != rec.get("company") or app.get("role") != rec.get("title"):
+        return JSONResponse(
+            {"error": f"Application {body.application_id} does not belong to job {jid}."},
+            status_code=409,
+        )
+
+    if not appstore.delete_application(body.application_id):
+        # Deleted out from under us between the lookup and here — do not
+        # touch the job's status for a delete that did not happen.
+        return JSONResponse(
+            {"error": f"No application with id {body.application_id}."}, status_code=404
+        )
     jobstore.set_status(jid, "viewed")
     return {"ok": True}
 
