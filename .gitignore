@@ -42,3 +42,6 @@ web-next/.env
 
 # Local dev tools (Tectonic LaTeX binary) — not committed
 /tools/
+
+# Compiled résumé PDFs (content-versioned cache; regenerable from the DB)
+data/resumes/
