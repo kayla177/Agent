@@ -17,6 +17,8 @@ A posting is a normalized dict:
      "country": str,            # US | CA | OTHER | UNKNOWN (locations.py)
      "fit_score": int,          # ALWAYS set (deterministic baseline, LLM-refined)
      "fit_reason": str,
+     "eligible": bool,          # rank.py: undergrad-eligible? False -> dropped.
+                                # NOT transient — it survives into the store.
      # transient pipeline tags (stripped before persistence):
      "_rescored": bool,   # re-injected backlog row; persisted, never announced
      "_skip_llm": bool,   # baseline score only; no inference spent on this row
@@ -44,8 +46,11 @@ class JobScraperState(TypedDict, total=False):
     # Non-fatal per-source problems, surfaced but never raised.
     warnings: list[str]
     # fetch: every posting id returned by any source this run. A stored posting
-    # absent from this set, whose company is in `fetched_ok`, has been delisted.
+    # absent from this set, whose (company, ats) is in `fetched_ok`, is delisted.
     observed_ids: set[str]
-    # fetch: companies whose EVERY configured source fetched without error. Only
-    # these can be trusted for a delisting decision.
-    fetched_ok: set[str]
+    # fetch: the `(company, ats)` BOARDS whose fetch this run can be trusted as
+    # a complete picture — no error, non-empty, and not truncated at the
+    # adapter's page cap. Only these can decide a delisting. Keyed per board,
+    # not per company, because every way of losing trust is a property of one
+    # board (see fetch.py).
+    fetched_ok: set[tuple[str, str]]

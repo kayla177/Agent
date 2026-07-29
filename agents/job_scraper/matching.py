@@ -10,6 +10,8 @@ from __future__ import annotations
 import datetime as dt
 import re
 
+import config
+
 # Role keywords. \b anchors avoid matching inside "internal", "international",
 # "internals", etc. Hyphen/space variants of co-op are handled explicitly.
 _ROLE_RE = re.compile(
@@ -55,6 +57,46 @@ def age_days(posted_at: str) -> int | None:
     except (ValueError, TypeError):
         return None
     return (dt.date.today() - d).days
+
+
+def stale_reason(posting: dict) -> str:
+    """Age/deadline/source staleness for one posting, or "" if it looks fine.
+
+    This is the half of the ghost decision that depends ONLY on the posting's
+    own stored fields, so it can be re-derived from the store at any time
+    without a live fetch. It deliberately excludes the "absent from a healthy
+    board" rule, which needs this run's fetch evidence and lives in
+    `freshness_node`.
+
+    It lives here (rather than in `freshness_node`) because it has TWO callers:
+    `freshness_node`, for postings passing through the pipeline, and
+    `store.sweep_ghosts`, which re-derives it for every stored `new`/`viewed`
+    row. A row that has converged (country + score + refined reason) is never
+    re-injected by `backfill_node`, so without that second caller a row could
+    age past `JOB_MAX_AGE_DAYS` and never be flagged — the audited symptom of a
+    row reading "🕒 90d ago" with no stale badge.
+
+    `age_days` is read from the posting when already computed (freshness sets
+    it) and derived from `posted_at` otherwise, so both callers agree.
+    """
+    age = posting.get("age_days")
+    if age is None:
+        age = age_days(posting.get("posted_at") or "")
+    if age is not None and age > config.JOB_MAX_AGE_DAYS:
+        return f"stale ({age}d old)"
+
+    deadline = (posting.get("deadline") or "")[:10]
+    if deadline:
+        try:
+            if dt.date.fromisoformat(deadline) < dt.date.today():
+                return f"deadline passed ({deadline})"
+        except ValueError:
+            pass
+
+    if posting.get("listed") is False:  # Ashby-only signal; absent elsewhere
+        return "delisted by source"
+
+    return ""
 
 
 # Canonical-location normalization. Deterministic rules that collapse the

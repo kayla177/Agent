@@ -34,6 +34,24 @@ _TIMEOUT = 20
 # Cap stored descriptions so the seen-store / LLM prompts stay small.
 _DESC_MAX = 1200
 
+# Page-size limits requested by the two adapters that ask for a bounded page and
+# then never paginate. A result whose length EQUALS its cap is very likely only
+# the FIRST page of a longer board, which makes it unusable as evidence that a
+# stored posting is gone: everything past the cap would look absent.
+#
+# The real long-term fix is PAGINATION (loop on `offset`/`page` until a short
+# page comes back) — deliberately out of scope here. Until then `fetch_node`
+# reads these caps and withholds delisting trust from any source that returned
+# exactly its cap, exactly as if that source had failed. Keep the numbers here
+# as the single source of truth for both the request body and that comparison,
+# so the two can never drift.
+WORKDAY_PAGE_LIMIT = 20
+SMARTRECRUITERS_PAGE_LIMIT = 100
+PAGE_CAPS: dict[str, int] = {
+    "workday": WORKDAY_PAGE_LIMIT,
+    "smartrecruiters": SMARTRECRUITERS_PAGE_LIMIT,
+}
+
 _TAG_RE = re.compile(r"<[^>]+>")
 _WS_RE = re.compile(r"[ \t]*\n[ \t]*")
 
@@ -203,9 +221,14 @@ def fetch_smartrecruiters(company: str, token: str) -> list[dict]:
     Public, keyless. `token` is the company identifier (e.g. "McDonaldsCorporation").
     The postings list has no full description, so `description` is left empty —
     title + location still drive matching and fit-ranking.
+
+    NOT PAGINATED: this asks for one page of `SMARTRECRUITERS_PAGE_LIMIT` and
+    stops. A big board is therefore TRUNCATED, so `fetch_node` withholds
+    delisting trust when the result comes back exactly at the cap (see
+    `PAGE_CAPS`). Adding real pagination is the proper fix.
     """
     url = f"https://api.smartrecruiters.com/v1/companies/{token}/postings"
-    resp = httpx.get(url, params={"limit": 100}, timeout=_TIMEOUT)
+    resp = httpx.get(url, params={"limit": SMARTRECRUITERS_PAGE_LIMIT}, timeout=_TIMEOUT)
     resp.raise_for_status()
     out: list[dict] = []
     for j in resp.json().get("content", []):
@@ -277,6 +300,12 @@ def fetch_workday(company: str, token: str) -> list[dict]:
     "tenant/wd/board" (e.g. "nvidia/wd5/NVIDIAExternalCareerSite"). Workday's
     postedOn field is a relative string ("Posted 5 Days Ago"), not a date, so
     `posted_at` is left empty.
+
+    NOT PAGINATED: this posts a single page of `WORKDAY_PAGE_LIMIT` at offset 0.
+    An Apple/NVIDIA-class board has thousands of reqs, so the result is almost
+    always TRUNCATED — which is why `fetch_node` withholds delisting trust from
+    a source that returned exactly its cap (see `PAGE_CAPS`). Looping on
+    `offset` until a short page returns is the proper fix.
     """
     try:
         tenant, wd, board = token.split("/", 2)
@@ -288,7 +317,7 @@ def fetch_workday(company: str, token: str) -> list[dict]:
     url = f"{host}/wday/cxs/{tenant}/{board}/jobs"
     resp = httpx.post(
         url,
-        json={"appliedFacets": {}, "limit": 20, "offset": 0, "searchText": ""},
+        json={"appliedFacets": {}, "limit": WORKDAY_PAGE_LIMIT, "offset": 0, "searchText": ""},
         headers={"Accept": "application/json"},
         timeout=_TIMEOUT,
     )
