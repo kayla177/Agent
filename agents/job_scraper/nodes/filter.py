@@ -19,8 +19,8 @@ def filter_node(state: JobScraperState) -> JobScraperState:
     kept: list[dict] = []
     for p in state.get("raw", []):
         title = p.get("title", "")
-        # Must be an early-career role AND not a senior / advanced-degree one.
-        if not is_target_role(title) or is_excluded(title):
+        # Early-career AND a software/ML/CS/AI field AND not senior/advanced-degree.
+        if not is_target_role(title) or not is_tech_role(title) or is_excluded(title):
             continue
         kept.append({**p, "country": country_of(p.get("location", ""))})
     return {"filtered": kept}

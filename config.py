@@ -94,10 +94,12 @@ def _apply_prefs() -> None:
     JOB_SOURCES = _pref("JOB_SOURCES", [])
 
     # Job scraper — freshness / ghost-job controls.
-    #   JOB_MAX_AGE_DAYS: postings older than this are flagged as stale/ghost.
-    #   JOB_DROP_GHOSTS:  when True, drop flagged roles instead of just tagging.
+    #   JOB_MAX_AGE_DAYS: postings older than this are dropped (hard freshness cap
+    #     for an active search — job boards list months-old roles otherwise).
+    #   JOB_DROP_GHOSTS:  drop flagged roles (stale > max-age, deadline passed,
+    #     delisted) instead of just tagging them. Default ON.
     JOB_MAX_AGE_DAYS = int(_pref("JOB_MAX_AGE_DAYS", 60))
-    JOB_DROP_GHOSTS = bool(_pref("JOB_DROP_GHOSTS", False))
+    JOB_DROP_GHOSTS = bool(_pref("JOB_DROP_GHOSTS", True))
 
     # Job scraper — LLM fit-ranking.
     #   JOB_PROFILE: free-text description of the candidate (drives fit scores).

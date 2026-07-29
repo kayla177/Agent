@@ -1,0 +1,7 @@
+# GitGuardian config.
+# agents/job_scraper/sources_seed.json holds PUBLIC ATS board tokens (company
+# careers-board slugs harvested from public apply URLs — e.g. greenhouse/ashby
+# board names). They are not secrets; some are high-entropy and tripped the
+# generic entropy detector as false positives. Exclude the file from scanning.
+paths-ignore:
+  - agents/job_scraper/sources_seed.json

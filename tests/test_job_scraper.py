@@ -64,7 +64,8 @@ def test_relevance() -> None:
         {"title": "Senior Software Engineer"},          # drop (not early-career)
         {"title": "ML Research Intern — PhD required"},  # drop (excluded: phd)
         {"title": "New Grad Software Engineer"},        # keep
-        {"title": "Staff Data Scientist"},              # drop (not early-career)
+        {"title": "Box Office Internship"},             # drop (not a tech field)
+        {"title": "Marketing Intern"},                  # drop (not a tech field)
     ]})["filtered"]
     titles = {p["title"] for p in out}
     assert titles == {"Software Engineer Intern", "New Grad Software Engineer"}, "filter keeps only undergrad-eligible early-career"
@@ -82,7 +83,7 @@ def test_freshness() -> None:
     old = (dt.date.today() - dt.timedelta(days=config.JOB_MAX_AGE_DAYS + 10)).isoformat()
     fresh = (dt.date.today() - dt.timedelta(days=3)).isoformat()
     past = (dt.date.today() - dt.timedelta(days=1)).isoformat()
-    out = freshness_node({"new": [
+    roles = [
         {"id": "1", "posted_at": old},
         {"id": "2", "posted_at": fresh},
         {"id": "3", "posted_at": fresh, "deadline": past},

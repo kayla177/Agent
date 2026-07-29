@@ -44,6 +44,11 @@ def is_target_role(title: str) -> bool:
     return bool(_ROLE_RE.search(title or ""))
 
 
+def is_tech_role(title: str) -> bool:
+    """True if the title is a software/ML/data/CS/AI role (vs a generic intern)."""
+    return bool(_FIELD_RE.search(title or ""))
+
+
 def is_excluded(title: str) -> bool:
     """True if the title names a senior/advanced-degree role an undergrad can't
     take (senior/staff/principal/lead/manager/director, or PhD/Master's/MBA)."""
