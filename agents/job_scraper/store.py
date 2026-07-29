@@ -263,8 +263,9 @@ def sweep_ghosts(
 
     Age/deadline re-derivation needs no fetch evidence at all, so it runs even
     when `observed_ids`/`fetched_ok` are empty (a run where every board failed).
-    The delisted/relisted passes require BOTH sets to be non-empty, so a run
-    that observed nothing can never conclude that everything vanished.
+    The delisted/relisted passes need a non-empty `observed_ids` — a run that
+    observed nothing can never conclude that everything vanished — plus, per row,
+    that row's own board in `fetched_ok`.
 
     Restricted to `new` / `viewed` rows. `applied` rows are deliberately
     excluded — a posting closing after you've already applied is normal, not
@@ -275,9 +276,17 @@ def sweep_ghosts(
     """
     store_db.init_db()
     counts = {"delisted": 0, "relisted": 0, "stale": 0, "unstale": 0}
-    # A run that saw nothing, or trusted no board, has no evidence for a
-    # delisting decision — but staleness is still re-derivable from the store.
-    board_evidence = bool(observed_ids) and bool(fetched_ok)
+    # A run that observed NOTHING cannot conclude that anything vanished, so the
+    # delisted/relisted passes are skipped entirely. (Staleness is still
+    # re-derivable — it needs no fetch evidence at all.)
+    #
+    # There is deliberately no separate `and fetched_ok` clause here: the
+    # per-row `(company, ats) in fetched_ok` test below already makes an empty
+    # `fetched_ok` flag nothing, so an extra check would be a guard no test could
+    # ever falsify. Both live guards ARE mutation-tested — see
+    # test_sweep_never_flags_when_nothing_was_observed and
+    # test_sweep_requires_a_trusted_board_before_flagging.
+    saw_something = bool(observed_ids)
     with store_db.connect() as conn:
         rows = conn.execute(
             "SELECT id, data FROM jobs WHERE status IN ('new', 'viewed')"
@@ -298,7 +307,7 @@ def sweep_ghosts(
             # A blank company or ats can never be matched back to a board, so it
             # must fall to the safe side: no board evidence for this row.
             trusted = (
-                board_evidence and bool(company) and bool(ats)
+                saw_something and bool(company) and bool(ats)
                 and (company, ats) in fetched_ok
             )
 
