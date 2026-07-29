@@ -4,30 +4,39 @@ dedupe drops every already-seen id before rank runs, so a posting scored once
 (or never) is frozen forever. This node re-injects stored rows that still need
 work, tagged `_rescored` so notify persists them WITHOUT announcing them as new
 finds. Because they then traverse freshness and rank like any other posting,
-one node fixes two separate defects at once:
+the fit_score backlog gets scored.
 
-  * the fit_score backlog gets scored,
-  * `ghost` is recomputed for rows that have since aged past JOB_MAX_AGE_DAYS.
+NOT done here — and this is the honest version of a claim this docstring used
+to overstate:
 
-NOT done here: true delisting detection (a posting that vanished from the
-source ATS entirely). `last_seen` is intentionally NOT bumped for `_rescored`
-rows (see store.upsert_records) — it means "observed in a live scrape", and a
-backlog row reprocessed here was NOT re-observed, only rescored. Delisting IS
-detected, just not by this node, and not only via the pipeline: `fetch_node`
-reports `observed_ids` (every id any source returned) and `fetched_ok`
-(companies whose every source succeeded AND returned postings — an empty
-result without an error is not "healthy"). `freshness_node` flags a posting
-that re-enters the pipeline (fresh, or `_rescored` by this node) as a ghost
-when it's absent from `observed_ids` for a `fetched_ok` company — but this
-node only re-selects a row that still lacks country/score/refinement, so a
-fully-processed row is never re-injected and `freshness_node` alone can never
-flag it. `store.sweep_delisted`, called from `notify_node`, closes that gap
-by checking every stored `new`/`viewed` row directly, independent of what
-passed through the pipeline this run.
+  * `ghost` is NOT this node's job. Selection is `_needs_country` /
+    `_lacks_score` / `_needs_llm_refinement`, all of which go False once a row
+    has a country, a score and a non-baseline reason, so a converged row is
+    never re-injected and its `ghost` could never be recomputed here.
+    `store.sweep_ghosts` (called from `notify_node`) owns every ghost decision
+    against the whole store instead, in both directions.
+  * Delisting detection. `fetch_node` reports `observed_ids` (every id any
+    source returned) and `fetched_ok` (the `(company, ats)` boards read
+    completely and without error); `freshness_node` applies that to postings
+    passing through the pipeline and `store.sweep_ghosts` to everything else.
+    `last_seen` is intentionally NOT bumped for `_rescored` rows (see
+    store.upsert_records) — it means "observed in a live scrape", and a backlog
+    row reprocessed here was NOT re-observed, only rescored.
+
+Convergence is real but PARTIAL, and the gap is load-bearing: a row selected
+because it lacks a country or a score stops being selected once those are
+filled, but a LIVE row whose reason is still the baseline can only earn a
+non-baseline reason from the LLM — and the LLM pass is gated on a candidate
+profile existing. With no profile set, the ~132 non-dismissed rows are
+therefore re-selected, re-scored by the deterministic baseline and re-upserted
+on EVERY run, including every interactive "run scraper" click. That is cheap
+(no inference, no network) but it is not free and it is not convergence. It
+resolves the moment a profile is set and a backfill run refines those rows.
 
 Cost control, measured 2026-07-25 at ~6.5s/job of local inference:
   * the deterministic half (country, baseline score) covers EVERY selected row —
-    it is free,
+    it is cheap, but see the convergence caveat above: with no profile set it
+    runs over the whole live backlog on every single run,
   * dismissed rows are never eligible for LLM refinement (392 of 523 rows are
     dismissed, so this alone saves ~42 minutes) — and once a dismissed row has
     BOTH a country and a score, it is done: it is never reselected again,

@@ -25,9 +25,10 @@ treated as `UNKNOWN`, which is never hidden (see locations.py: only `OTHER` is
 ever filtered out downstream, never `UNKNOWN`).
 
 After persisting, this node also refreshes `last_seen` (`store.touch_last_seen`)
-on everything observed this run, and sweeps the WHOLE store for delisted
-postings (`store.sweep_delisted`) — not just the rows that happened to pass
-through the pipeline this run. See `freshness.py`'s module docstring for why
+on everything observed this run, and re-derives the ghost flag across the WHOLE
+store (`store.sweep_ghosts`) — not just the rows that happened to pass through
+the pipeline this run. That sweep flags AND un-flags, so each of its four
+outcomes is logged separately. See `freshness.py`'s module docstring for why
 the pipeline-only check can't reach a fully-processed row on its own.
 """
 
@@ -37,7 +38,7 @@ import datetime as dt
 
 import config
 from agents.job_scraper.state import JobScraperState
-from agents.job_scraper.store import sweep_delisted, touch_last_seen, upsert_records
+from agents.job_scraper.store import sweep_ghosts, touch_last_seen, upsert_records
 from shell.discord_client import send_message
 
 
@@ -144,15 +145,28 @@ def make_notify_node(*, send: bool):
         # freshness_node only sees rows that re-enter the pipeline this run
         # (fresh finds, or backlog rows backfill re-injected because they
         # still needed work) — a fully-processed row is never re-selected by
-        # backfill and so can never be flagged there. This sweep checks the
-        # WHOLE store directly against observed_ids/fetched_ok, so a delisted
-        # posting is flagged even once it's fully scored and refined.
+        # backfill and so can never be flagged, or UN-flagged, there. This
+        # sweep re-derives the ghost state of every stored new/viewed row, so a
+        # delisted posting is flagged even once it's fully scored and refined,
+        # a delisting the board later contradicts is cleared, and a row that
+        # aged past JOB_MAX_AGE_DAYS since its last pass gets flagged.
+        #
+        # Each outcome is logged separately: "flagged 3" and "cleared 3" are
+        # very different events and a single net number would hide both.
         try:
-            swept = sweep_delisted(state.get("observed_ids") or set(), state.get("fetched_ok") or set())
-            if swept:
-                print(f"ℹ️ swept {swept} stored posting(s) as delisted (absent from a healthy board)")
+            counts = sweep_ghosts(
+                state.get("observed_ids") or set(), state.get("fetched_ok") or set()
+            )
+            if counts["delisted"]:
+                print(f"ℹ️ swept {counts['delisted']} stored posting(s) as delisted (absent from a healthy board)")
+            if counts["relisted"]:
+                print(f"ℹ️ cleared the delisted flag on {counts['relisted']} posting(s) seen on their board again")
+            if counts["stale"]:
+                print(f"ℹ️ flagged {counts['stale']} stored posting(s) as stale (age/deadline)")
+            if counts["unstale"]:
+                print(f"ℹ️ cleared a stale flag that no longer holds on {counts['unstale']} posting(s)")
         except Exception as exc:
-            print(f"⚠️ Could not sweep delisted postings: {exc}")
+            print(f"⚠️ Could not re-derive ghost flags: {exc}")
 
         if send:
             try:

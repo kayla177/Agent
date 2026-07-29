@@ -15,8 +15,16 @@ import json
 import sqlite3
 
 import store_db
+from agents.job_scraper.matching import stale_reason
 
 STATUSES = ("new", "viewed", "applied", "dismissed")
+
+# Prefix of every ghost_reason written by the "absent from a healthy board"
+# rule (freshness_node and the sweep below both produce it). The clear pass
+# matches on this prefix so it can ONLY ever undo a delisting call — a
+# `stale (...)`, `deadline passed (...)` or `delisted by source` flag comes from
+# a different rule and must not be cleared by board evidence.
+_DELISTED_PREFIX = "delisted ("
 
 
 def _today() -> str:
@@ -41,6 +49,11 @@ def _mirror(rec: dict) -> dict:
         "fit_score": rec.get("fit_score"),
         "fit_reason": rec.get("fit_reason"),
         "ghost": 1 if rec.get("ghost") else 0,
+        # Mirrored so the web UI can say WHY a row is flagged. Without it every
+        # ghost renders identically as "stale", and a posting detected as
+        # removed from its board — the whole point of the delisting sweep —
+        # displays as "stale 3d".
+        "ghost_reason": rec.get("ghost_reason") or "",
         "also_on": json.dumps(rec.get("also_on", [])),
         "country": rec.get("country", ""),
         "first_seen": rec.get("first_seen", ""),
@@ -51,16 +64,19 @@ def _mirror(rec: dict) -> dict:
 _INSERT = (
     "INSERT INTO jobs (id, company, title, location, url, status, ats, posted_at, "
     "remote, compensation, department, description, fit_score, fit_reason, ghost, "
-    "also_on, country, first_seen, last_seen, data) VALUES (:id, :company, :title, :location, "
+    "ghost_reason, also_on, country, first_seen, last_seen, data) "
+    "VALUES (:id, :company, :title, :location, "
     ":url, :status, :ats, :posted_at, :remote, :compensation, :department, "
-    ":description, :fit_score, :fit_reason, :ghost, :also_on, :country, :first_seen, "
+    ":description, :fit_score, :fit_reason, :ghost, :ghost_reason, :also_on, "
+    ":country, :first_seen, "
     ":last_seen, :data) ON CONFLICT(id) DO UPDATE SET "
     "company=excluded.company, title=excluded.title, location=excluded.location, "
     "url=excluded.url, status=excluded.status, ats=excluded.ats, "
     "posted_at=excluded.posted_at, remote=excluded.remote, "
     "compensation=excluded.compensation, department=excluded.department, "
     "description=excluded.description, fit_score=excluded.fit_score, "
-    "fit_reason=excluded.fit_reason, ghost=excluded.ghost, also_on=excluded.also_on, "
+    "fit_reason=excluded.fit_reason, ghost=excluded.ghost, "
+    "ghost_reason=excluded.ghost_reason, also_on=excluded.also_on, "
     "country=excluded.country, "
     "first_seen=excluded.first_seen, last_seen=excluded.last_seen, data=excluded.data"
 )
@@ -125,7 +141,14 @@ def upsert_records(postings: list[dict], *, status: str = "new") -> None:
 
 
 def set_status(pid: str, status: str) -> dict | None:
-    """Update one record's status; returns the record or None if absent."""
+    """Update one record's status; returns the record or None if absent.
+
+    `last_seen` is deliberately NOT touched. It means "observed in a live
+    scrape" — the sole basis for detecting a delisted posting — and this
+    function is the writer behind dismiss / apply / viewed-on-expand / Restore,
+    so stamping it here would let ordinary UI clicks forge an observation. Only
+    `touch_last_seen` (fed by `observed_ids`) may write it.
+    """
     if status not in STATUSES:
         raise ValueError(f"status must be one of {STATUSES}")
     store_db.init_db()
@@ -139,7 +162,6 @@ def set_status(pid: str, status: str) -> dict | None:
             record = {}
         record["id"] = pid
         record["status"] = status
-        record["last_seen"] = _today()
         _write(conn, record)
     return record
 
@@ -167,11 +189,6 @@ def load_seen() -> set[str]:
         return {r["id"] for r in rows}
     except sqlite3.OperationalError:
         return set()
-
-
-def add_seen(ids: list[str]) -> None:
-    """Record bare ids as seen (prefer upsert_records with full dicts)."""
-    upsert_records([{"id": pid} for pid in ids])
 
 
 def touch_last_seen(ids: list[str] | set[str]) -> int:
@@ -208,52 +225,100 @@ def touch_last_seen(ids: list[str] | set[str]) -> int:
     return touched
 
 
-def sweep_delisted(observed_ids: set[str], fetched_ok: set[str]) -> int:
-    """Flag `ghost`=True directly in the store on every delisted posting.
+def sweep_ghosts(
+    observed_ids: set[str], fetched_ok: set[tuple[str, str]]
+) -> dict[str, int]:
+    """Re-derive the `ghost` flag of every stored `new`/`viewed` row, BOTH ways.
 
     `freshness_node` only ever sees rows passing through the pipeline this run
     (freshly fetched, or re-injected by `backfill_node` because they still
     lack a country/score/refinement) — so a fully-processed row (country set,
     score set, already-refined reason) is never re-selected by backfill and
-    can never be flagged there, even though it is exactly the kind of
-    high-fit row someone would actually apply to. This sweep checks EVERY
-    stored row directly: for any row whose company fetched cleanly this run
-    (`fetched_ok`) and whose id was not seen (`observed_ids`), mark it
-    delisted with the same reason string `freshness` uses.
+    can never be flagged OR un-flagged there, even though it is exactly the
+    kind of high-fit row someone would actually apply to. Every ghost decision
+    is therefore made here as well, from the store, so it is RECOMPUTED on
+    every run instead of being written once and frozen.
+
+    Three outcomes, in strict precedence order:
+
+    * ``delisted`` — the row's own `(company, ats)` board was read completely
+      and successfully this run (`fetched_ok`) and its id was not in the
+      response (`observed_ids`). Direct observation, so it wins over any
+      heuristic.
+    * ``relisted`` — the same board WAS read and the id IS in the response,
+      while the stored reason is a delisting call. The board contradicts the
+      call, so undo it and fall back to the age/deadline rule. Only a reason
+      starting with ``"delisted ("`` is ever cleared this way: a
+      ``stale (...)``, ``deadline passed (...)`` or ``delisted by source``
+      flag comes from a different rule and is none of this pass's business.
+      Without this, one false positive stayed on the row forever — nothing in
+      the codebase could clear `ghost` for a converged row.
+    * ``stale`` / ``unstale`` — no trusted board evidence either way, so
+      re-derive `matching.stale_reason` (age past `JOB_MAX_AGE_DAYS`, a passed
+      deadline, or the source's own unlisted flag) and write it if it changed.
+      This is what makes a row that has *aged into* staleness get flagged, and
+      a row whose reason no longer holds get cleared. A row still carrying a
+      delisting call is left alone here — with no board evidence there is
+      nothing to overrule it with.
+
+    Age/deadline re-derivation needs no fetch evidence at all, so it runs even
+    when `observed_ids`/`fetched_ok` are empty (a run where every board failed).
+    The delisted/relisted passes require BOTH sets to be non-empty, so a run
+    that observed nothing can never conclude that everything vanished.
 
     Restricted to `new` / `viewed` rows. `applied` rows are deliberately
     excluded — a posting closing after you've already applied is normal, not
     a signal to relabel it. `dismissed` rows are irrelevant either way.
 
-    Guarded to a no-op when either set is empty. This also protects against
-    a source returning `[]` without raising (see `fetch_node`): such a
-    company is never added to `fetched_ok`, so an empty `fetched_ok` (e.g.
-    every source in this run came back empty or failed) sweeps nothing,
-    rather than mass-flagging every stored row.
+    Returns a count per outcome so `notify_node` can log each separately: a
+    bounded, destructive coverage change must never land silently.
     """
-    if not observed_ids or not fetched_ok:
-        return 0
     store_db.init_db()
-    swept = 0
-    placeholders = ",".join("?" for _ in fetched_ok)
+    counts = {"delisted": 0, "relisted": 0, "stale": 0, "unstale": 0}
+    # A run that saw nothing, or trusted no board, has no evidence for a
+    # delisting decision — but staleness is still re-derivable from the store.
+    board_evidence = bool(observed_ids) and bool(fetched_ok)
     with store_db.connect() as conn:
         rows = conn.execute(
-            f"SELECT id, data FROM jobs WHERE company IN ({placeholders}) "
-            "AND status IN ('new', 'viewed')",
-            tuple(fetched_ok),
+            "SELECT id, data FROM jobs WHERE status IN ('new', 'viewed')"
         ).fetchall()
         for row in rows:
             pid = row["id"]
-            if not pid or pid in observed_ids:
+            if not pid:
                 continue
             try:
                 record = json.loads(row["data"]) if row["data"] else {}
             except json.JSONDecodeError:
                 record = {}
             record["id"] = pid
-            company = record.get("company", "")
-            record["ghost"] = True
-            record["ghost_reason"] = f"delisted (not on {company}'s board)"
+            company = record.get("company") or ""
+            ats = record.get("ats") or ""
+            was_ghost = bool(record.get("ghost"))
+            was_reason = (record.get("ghost_reason") or "").strip()
+            # A blank company or ats can never be matched back to a board, so it
+            # must fall to the safe side: no board evidence for this row.
+            trusted = (
+                board_evidence and bool(company) and bool(ats)
+                and (company, ats) in fetched_ok
+            )
+
+            if trusted and pid not in observed_ids:
+                reason, outcome = f"{_DELISTED_PREFIX}not on {company}'s board)", "delisted"
+            elif trusted and was_reason.startswith(_DELISTED_PREFIX):
+                # Seen on the board again: the delisting call was wrong (or the
+                # posting was re-listed). Undo it, then re-derive staleness so
+                # an old-but-live posting still ends up correctly flagged.
+                reason, outcome = stale_reason(record), "relisted"
+            elif was_reason.startswith(_DELISTED_PREFIX):
+                continue  # no trusted evidence: never overrule a delisting call
+            else:
+                reason = stale_reason(record)
+                outcome = "stale" if reason else "unstale"
+
+            if bool(reason) == was_ghost and reason == was_reason:
+                continue  # already correct; don't rewrite the row
+            record["ghost"] = bool(reason)
+            record["ghost_reason"] = reason
             _write(conn, record)
-            swept += 1
-    return swept
+            counts[outcome] += 1
+    return counts
