@@ -1,20 +1,28 @@
-"""Offline tests for the gmail-sync agent (no network, no pytest).
+"""Offline tests for the gmail-sync agent (no network).
 
 Run:  .venv/bin/python -m pytest tests/test_gmail_sync.py
 
 Covers the pure matching/inference heuristics and the node's behavior against a
 canned email list + a temp SQLite store (fetch_job_emails is monkeypatched).
+
+Storage isolation comes from the shared `temp_db` fixture (tests/conftest.py).
+It used to come from `store_db.DB_PATH = Path(tempfile.mkdtemp()) / "test.db"` —
+a module-global rebind with NO restore, so any later test (or a collection
+ordering change) could find the storage layer still pointing wherever this file
+left it, and any failure before the rebind pointed it at the PRODUCTION
+database. This project already suffered one live-DB write from exactly that
+fault class, and this file was the last place it remained. `fetch_job_emails` is
+monkeypatched for the same reason: a bare `gnode.fetch_job_emails = ...` leaked
+a fake into every subsequent test in the session.
 """
 
 from __future__ import annotations
 
 import sys
-import tempfile
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-import store_db
 from agents.application_tracker import store as appstore
 from agents.gmail_sync import matching
 from agents.gmail_sync.nodes import scan_gmail as gnode
@@ -40,9 +48,7 @@ def test_matching() -> None:
     assert matching.should_apply("rejected", "interview") is False, "apply never revives rejected (interview)"
 
 
-def test_node_with_fake_gmail() -> None:
-    store_db.DB_PATH = Path(tempfile.mkdtemp()) / "test.db"
-    store_db.init_db()
+def test_node_with_fake_gmail(temp_db, monkeypatch) -> None:
     appstore.add_application("Stripe", "SWE Intern", status="applied")   # id 1
     appstore.add_application("Figma", "FE Intern", status="interview")   # id 2
     appstore.add_application("Notion", "PM Intern", status="applied")    # id 3
@@ -57,7 +63,8 @@ def test_node_with_fake_gmail() -> None:
         {"from_name": "Databricks Recruiting", "from_email": "x@databricks.com",
          "subject": "Databricks — next steps", "snippet": "Let's schedule a call."},
     ]
-    gnode.fetch_job_emails = lambda **_: fake_emails  # monkeypatch the name in node's namespace
+    # Patch the name in the node's namespace — via monkeypatch, so it is undone.
+    monkeypatch.setattr(gnode, "fetch_job_emails", lambda **_: fake_emails)
 
     result = gnode.scan_gmail_node({})
     apps = {a["company"]: a for a in appstore.load_all()}
@@ -70,25 +77,21 @@ def test_node_with_fake_gmail() -> None:
     assert "updated 2" in result["message"], "message mentions 2 updates"
 
 
-def test_node_not_authorized() -> None:
-    store_db.DB_PATH = Path(tempfile.mkdtemp()) / "test.db"
-    store_db.init_db()
+def test_node_not_authorized(temp_db, monkeypatch) -> None:
     appstore.add_application("Stripe", "SWE Intern", status="applied")
-    gnode.fetch_job_emails = lambda **_: None  # simulate no-auth
+    monkeypatch.setattr(gnode, "fetch_job_emails", lambda **_: None)  # simulate no-auth
     result = gnode.scan_gmail_node({})
     assert "not authorized" in result["message"].lower(), "returns auth hint"
     assert appstore.load_all()[0]["status"] == "applied", "no status change"
 
 
-def test_node_exception() -> None:
-    store_db.DB_PATH = Path(tempfile.mkdtemp()) / "test.db"
-    store_db.init_db()
+def test_node_exception(temp_db, monkeypatch) -> None:
     appstore.add_application("Stripe", "SWE Intern", status="applied")
 
     def _boom(**_):
         raise RuntimeError("gmail down")
 
-    gnode.fetch_job_emails = _boom
+    monkeypatch.setattr(gnode, "fetch_job_emails", _boom)
     result = gnode.scan_gmail_node({})
     assert "failed" in result["message"].lower(), "returns failure message"
     assert appstore.load_all()[0]["status"] == "applied", "no status change on error"

@@ -15,6 +15,14 @@ def test_jobs_has_country(temp_db):
         assert "country" in _cols(conn, "jobs")
 
 
+def test_jobs_has_ghost_reason(temp_db):
+    """ghost_reason must be a real column, not only a key in the `data` blob —
+    Prisma reads columns, so without it the UI cannot say WHY a row is flagged
+    and renders every ghost identically as "stale"."""
+    with store_db.connect() as conn:
+        assert "ghost_reason" in _cols(conn, "jobs")
+
+
 def test_applications_has_resume_pdf_key(temp_db):
     with store_db.connect() as conn:
         assert "resume_pdf_key" in _cols(conn, "applications")
@@ -44,7 +52,43 @@ def test_migrate_adds_columns_to_preexisting_tables(tmp_path, monkeypatch):
     store_db.init_db()
     with store_db.connect() as conn:
         assert "country" in _cols(conn, "jobs")
+        assert "ghost_reason" in _cols(conn, "jobs")
         assert "resume_pdf_key" in _cols(conn, "applications")
+
+
+def test_migrate_seeds_ghost_reason_from_the_existing_data_blob(tmp_path, monkeypatch):
+    """The blob has carried ghost_reason all along, so the new column is seeded
+    from it. Without that, all 222 already-flagged rows in the live DB would
+    render as a bare "stale" — the mirrored column contradicting the blob — until
+    something happened to rewrite each row."""
+    import json
+
+    db = tmp_path / "old.db"
+    monkeypatch.setattr(store_db, "DB_PATH", db)
+    blob = json.dumps({"id": "a", "ghost": True, "ghost_reason": "delisted (not on Acme's board)"})
+    with store_db.connect() as conn:
+        conn.execute(
+            "CREATE TABLE jobs (id TEXT PRIMARY KEY, status TEXT, company TEXT, "
+            "ghost INTEGER DEFAULT 0, data TEXT NOT NULL DEFAULT '{}')"
+        )
+        conn.execute("INSERT INTO jobs (id, status, ghost, data) VALUES ('a', 'new', 1, ?)", (blob,))
+        # A row with no reason in its blob must land as '' (the column is NOT NULL).
+        conn.execute("INSERT INTO jobs (id, status, ghost, data) VALUES ('b', 'new', 0, '{}')")
+        # A corrupt blob must not abort init_db, which runs on every server start.
+        conn.execute("INSERT INTO jobs (id, status, ghost, data) VALUES ('c', 'new', 1, 'not json')")
+
+    store_db.init_db()  # must not raise
+
+    with store_db.connect() as conn:
+        rows = {r["id"]: r["ghost_reason"] for r in conn.execute("SELECT id, ghost_reason FROM jobs")}
+    assert rows["a"] == "delisted (not on Acme's board)"
+    assert rows["b"] == ""
+    assert rows["c"] == ""
+
+    store_db.init_db()  # idempotent: the seed is inside the add-column branch
+    with store_db.connect() as conn:
+        assert conn.execute("SELECT ghost_reason FROM jobs WHERE id = 'a'").fetchone()[0] \
+            == "delisted (not on Acme's board)"
 
 
 def test_indexed_new_column_survives_a_preexisting_table(tmp_path, monkeypatch):

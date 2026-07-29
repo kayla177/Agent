@@ -43,6 +43,9 @@ def test_baseline_survives_null_llm_scores(monkeypatch):
         lambda *a, **k: '[{"i":0,"eligible":true,"score":null},{"i":1,"eligible":true,"score":null}]',
     )
     out = rank_node({"new": [dict(p) for p in _POSTINGS]})["new"]
+    # Without a length assertion, `all(...)` over an empty list is vacuously
+    # True — the test would pass even if rank_node dropped every posting.
+    assert len(out) == 2
     assert all(p["fit_score"] is not None for p in out)
     assert all(p["fit_reason"] for p in out)
 
@@ -56,8 +59,37 @@ def test_llm_score_overrides_baseline(monkeypatch):
                         '{"i":1,"eligible":true,"score":42,"reason":"weak"}]',
     )
     out = {p["id"]: p for p in rank_node({"new": [dict(p) for p in _POSTINGS]})["new"]}
+    assert len(out) == 2
     assert out["a"]["fit_score"] == 91
     assert out["a"]["fit_reason"] == "excellent match"
+
+
+def test_boolean_score_is_rejected_not_coerced_to_one(monkeypatch):
+    """`bool` subclasses `int`, so `int(True) == 1`. A reply of {"score": true}
+    used to be accepted as a fit score of 1 AND overwrite the baseline reason,
+    which makes is_baseline_reason() False — so backfill never re-selected the
+    row and the baseline was never recomputed either. ONE malformed reply pinned
+    a good job at the bottom of sort-by-fit permanently."""
+    monkeypatch.setattr(config, "JOB_PROFILE", "Python React SQL")
+    monkeypatch.setattr(config, "JOB_MIN_FIT", 0)
+    monkeypatch.setattr(
+        rank_mod, "llm",
+        lambda *a, **k: '[{"i":0,"eligible":true,"score":true,"reason":"yes"},'
+                        '{"i":1,"eligible":true,"score":false,"reason":"no"}]',
+    )
+    out = {p["id"]: p for p in rank_node({"new": [dict(p) for p in _POSTINGS]})["new"]}
+    assert len(out) == 2
+    for pid in ("a", "b"):
+        assert out[pid]["fit_score"] not in (0, 1), f"{pid}: a bool is not a score"
+        assert is_baseline_reason(out[pid]["fit_reason"]), \
+            f"{pid}: the baseline reason must survive so backfill can retry the row"
+
+
+def test_parse_rejects_bool_score_directly():
+    """Unit-level companion, so the guard is pinned even if _score_batch changes."""
+    parsed = rank_mod._parse('[{"i":0,"score":true},{"i":1,"score":0}]', 2)
+    assert parsed[0]["score"] is None, "true must not become 1"
+    assert parsed[1]["score"] == 0, "a real 0 is still a valid score"
 
 
 def test_ineligible_still_dropped(monkeypatch):

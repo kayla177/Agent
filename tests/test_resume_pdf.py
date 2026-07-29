@@ -104,3 +104,82 @@ def test_resume_with_its_own_latex_keeps_a_job_specific_key(temp_db, monkeypatch
     key, _ = resume_pdf.ensure_pdf("Acme:greenhouse:1")
     assert key.startswith("Acme_greenhouse_1-")
     assert not key.startswith("master")
+
+
+# --- cache integrity ----------------------------------------------------------
+
+
+def _master(monkeypatch, tmp_path, pdf=b"%PDF-1.5 fake"):
+    from agents.resume_generator import store as rstore
+
+    monkeypatch.setattr(resume_pdf, "PDF_DIR", tmp_path / "pdfs")
+    monkeypatch.setattr(resume_pdf, "compile_tex", lambda tex: pdf)
+    rstore.upsert_master_resume(None, latex="\\documentclass{article}\\begin{document}M\\end{document}")
+
+
+def test_a_truncated_cached_file_is_treated_as_a_miss(temp_db, monkeypatch, tmp_path):
+    """The key is content-versioned, so a file left half-written by a crash or a
+    full disk would be served as `200 application/pdf` FOREVER and pinned into
+    applications.resume_pdf_key — the cache could never self-heal. Anything not
+    starting with %PDF is a miss."""
+    _master(monkeypatch, tmp_path)
+    key, first = resume_pdf.ensure_pdf(None)
+    path = resume_pdf.PDF_DIR / f"{key}.pdf"
+    assert first.startswith(b"%PDF")
+
+    path.write_bytes(b"%PD")  # simulate a truncated write
+    monkeypatch.setattr(resume_pdf, "compile_tex", lambda tex: b"%PDF-1.5 recompiled")
+
+    key2, pdf = resume_pdf.ensure_pdf(None)
+    assert key2 == key
+    assert pdf == b"%PDF-1.5 recompiled", "a corrupt cache entry must be recompiled"
+    assert path.read_bytes() == b"%PDF-1.5 recompiled", "and repaired on disk"
+
+
+def test_an_empty_cached_file_is_treated_as_a_miss(temp_db, monkeypatch, tmp_path):
+    _master(monkeypatch, tmp_path)
+    key, _ = resume_pdf.ensure_pdf(None)
+    (resume_pdf.PDF_DIR / f"{key}.pdf").write_bytes(b"")
+    monkeypatch.setattr(resume_pdf, "compile_tex", lambda tex: b"%PDF-1.5 again")
+    assert resume_pdf.ensure_pdf(None)[1] == b"%PDF-1.5 again"
+
+
+def test_a_valid_cached_file_is_reused_without_recompiling(temp_db, monkeypatch, tmp_path):
+    """The other direction: a good cache entry must still be a hit, or the
+    provenance guarantee (identical bytes for an identical key) is lost."""
+    _master(monkeypatch, tmp_path)
+    key, _ = resume_pdf.ensure_pdf(None)
+
+    def must_not_compile(_tex):
+        raise AssertionError("recompiled despite a valid cache entry")
+
+    monkeypatch.setattr(resume_pdf, "compile_tex", must_not_compile)
+    key2, pdf = resume_pdf.ensure_pdf(None)
+    assert key2 == key
+    assert pdf == b"%PDF-1.5 fake"
+
+
+def test_a_failed_write_leaves_no_temp_file_and_no_partial_pdf(temp_db, monkeypatch, tmp_path):
+    """Writes go to a temp file inside PDF_DIR and are os.replace'd into place, so
+    a reader never observes a partial file — and a failure mid-write must not
+    litter PDF_DIR either."""
+    import os
+
+    _master(monkeypatch, tmp_path)
+
+    real_replace = os.replace
+
+    def boom(src, dst):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(resume_pdf.os, "replace", boom)
+    try:
+        resume_pdf.ensure_pdf(None)
+    except OSError:
+        pass
+    else:
+        raise AssertionError("expected the write failure to propagate")
+
+    monkeypatch.setattr(resume_pdf.os, "replace", real_replace)
+    leftovers = list(resume_pdf.PDF_DIR.iterdir())
+    assert leftovers == [], f"PDF_DIR must be clean, found {leftovers}"

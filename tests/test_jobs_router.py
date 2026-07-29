@@ -224,7 +224,157 @@ def test_undo_apply_legacy_row_without_job_id_is_rejected(client):
         "/data/jobs/undo-apply", json={"id": _JOB["id"], "application_id": legacy["id"]}
     )
     assert res.status_code == 409
+    # Assert on the MESSAGE, not just the code: the next check (job_id mismatch)
+    # also returns 409, so deleting the whole legacy-NULL branch left this test
+    # green while reopening the hole it exists to close.
+    assert "predates job linking" in res.json()["error"]
 
     apps = {a["id"]: a for a in appstore.load_all()}
     assert legacy["id"] in apps  # not deleted
     assert jobstore.load_records()[_JOB["id"]]["status"] == "new"  # unchanged
+
+
+def test_undo_apply_mismatch_message_is_distinct_from_the_legacy_one(client):
+    """Companion to the assertion above: the two 409 branches must be
+    distinguishable, otherwise pinning one of them proves nothing."""
+    jobstore.replace_record(dict(_JOB))
+    jobstore.replace_record(dict(_JOB_B))
+    client.post("/data/jobs/apply", json={"id": _JOB["id"]})
+    app_b = client.post("/data/jobs/apply", json={"id": _JOB_B["id"]}).json()["application_id"]
+
+    res = client.post("/data/jobs/undo-apply", json={"id": _JOB["id"], "application_id": app_b})
+    assert res.status_code == 409
+    assert "does not belong to job" in res.json()["error"]
+    assert "predates job linking" not in res.json()["error"]
+
+
+# --- apply: both writes must land, or neither ---------------------------------
+
+
+def test_apply_rolls_back_the_application_if_the_job_vanishes(client, monkeypatch):
+    """`set_status` returns None when the row is gone. Discarding that return
+    produced a 200 `{ok:true}` carrying an application_id for an application that
+    is orphaned — no `applied` flag on the job, so the tracker asserts something
+    that did not happen. `undo_apply`'s own docstring promises validate-then-
+    mutate; apply is held to the same standard."""
+    from server.routers import jobs as jobs_router
+
+    jobstore.replace_record(dict(_JOB))
+    monkeypatch.setattr(jobs_router.jobstore, "set_status", lambda *a, **k: None)
+
+    res = client.post("/data/jobs/apply", json={"id": _JOB["id"]})
+    assert res.status_code == 404
+    assert appstore.load_all() == [], "the tracker row must be rolled back, not orphaned"
+    assert jobstore.load_records()[_JOB["id"]]["status"] == "new"
+
+
+def test_apply_reports_a_pdf_failure_instead_of_claiming_plain_success(client, monkeypatch):
+    """A résumé PDF that cannot be produced must be REPORTED. It used to be
+    logged to stderr while the response said 200 and the UI showed a green
+    "Application logged." banner and opened a tab rendering a 422 JSON error.
+    Recording the application anyway is correct and deliberate."""
+    from agents.resume_generator.latex import CompileError
+    from server.routers import jobs as jobs_router
+
+    jobstore.replace_record(dict(_JOB))
+
+    def boom(_job_id):
+        raise CompileError("tectonic exploded", log="! Undefined control sequence.")
+
+    monkeypatch.setattr(jobs_router.resume_pdf, "ensure_pdf", boom)
+
+    res = client.post("/data/jobs/apply", json={"id": _JOB["id"]})
+    assert res.status_code == 200
+    body = res.json()
+    assert body["resume_pdf_key"] is None
+    assert "tectonic exploded" in body["pdf_error"]
+    # Still recorded — that behavior is correct.
+    assert len(appstore.load_all()) == 1
+    assert jobstore.load_records()[_JOB["id"]]["status"] == "applied"
+
+
+def test_apply_reports_no_pdf_error_on_the_happy_path(client, monkeypatch):
+    from server.routers import jobs as jobs_router
+
+    jobstore.replace_record(dict(_JOB))
+    monkeypatch.setattr(jobs_router.resume_pdf, "ensure_pdf", lambda j: ("k__1", b"%PDF-1.4"))
+
+    body = client.post("/data/jobs/apply", json={"id": _JOB["id"]}).json()
+    assert body["pdf_error"] is None
+    assert body["resume_pdf_key"] == "k__1"
+    assert appstore.load_all()[0]["resume_pdf_key"] == "k__1"
+
+
+# --- dismiss ------------------------------------------------------------------
+
+
+def test_dismiss_sets_the_status_in_column_and_blob(client):
+    jobstore.replace_record(dict(_JOB))
+    assert client.post("/data/jobs/dismiss", json={"id": _JOB["id"]}).status_code == 200
+    assert jobstore.load_records()[_JOB["id"]]["status"] == "dismissed"
+    with jobstore.store_db.connect() as conn:
+        row = conn.execute("SELECT status FROM jobs WHERE id = ?", (_JOB["id"],)).fetchone()
+    assert row["status"] == "dismissed"
+
+
+def test_dismiss_unknown_job_404(client):
+    res = client.post("/data/jobs/dismiss", json={"id": "nope"})
+    assert res.status_code == 404
+    assert "nope" in res.json()["error"]
+
+
+def test_dismiss_missing_id_400(client):
+    assert client.post("/data/jobs/dismiss", json={"id": "   "}).status_code == 400
+    assert client.post("/data/jobs/dismiss", json={}).status_code == 400
+
+
+# --- resume-pdf ---------------------------------------------------------------
+
+
+def test_resume_pdf_404_when_no_resume_exists(client):
+    """No master résumé set at all -> LookupError -> 404, not a 500."""
+    res = client.get("/data/jobs/resume-pdf")
+    assert res.status_code == 404
+    assert "error" in res.json()
+
+
+def test_resume_pdf_404_for_an_unknown_job(client):
+    res = client.get("/data/jobs/resume-pdf", params={"job_id": "Nope:greenhouse:1"})
+    assert res.status_code == 404
+    assert "Nope:greenhouse:1" in res.json()["error"]
+
+
+def test_resume_pdf_422_on_a_compile_failure_includes_the_log(client, monkeypatch):
+    """A LaTeX failure is a 422 carrying the engine log, so the UI can offer the
+    raw .tex rather than showing an opaque error."""
+    from agents.resume_generator import store as rstore
+    from agents.resume_generator.latex import CompileError
+    from server import resume_pdf as pdf_mod
+
+    rstore.upsert_master_resume(latex="\\documentclass{article}\\begin{document}x\\end{document}")
+
+    def boom(_tex, **_kw):
+        raise CompileError("latex failed", log="! Undefined control sequence.")
+
+    monkeypatch.setattr(pdf_mod, "compile_tex", boom)
+
+    res = client.get("/data/jobs/resume-pdf")
+    assert res.status_code == 422
+    body = res.json()
+    assert "latex failed" in body["error"]
+    assert "Undefined control sequence" in body["log"]
+
+
+def test_resume_pdf_serves_the_pdf_with_a_filename(client, monkeypatch, tmp_path):
+    from agents.resume_generator import store as rstore
+    from server import resume_pdf as pdf_mod
+
+    rstore.upsert_master_resume(latex="\\documentclass{article}\\begin{document}x\\end{document}")
+    # Never write into the real data/resumes/ from a test.
+    monkeypatch.setattr(pdf_mod, "PDF_DIR", tmp_path / "resumes")
+    monkeypatch.setattr(pdf_mod, "compile_tex", lambda _tex, **_kw: b"%PDF-1.4 fake")
+
+    res = client.get("/data/jobs/resume-pdf")
+    assert res.status_code == 200
+    assert res.headers["content-type"] == "application/pdf"
+    assert res.headers["content-disposition"].startswith('attachment; filename="master__')
