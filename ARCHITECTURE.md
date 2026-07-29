@@ -28,6 +28,9 @@ mutation is proxied to FastAPI, which writes through the Python stores.
 - `POST /experience/upload` — PDF/DOCX parse into the résumé experience pool
 - `POST|PATCH|DELETE /data/*` — all DB mutations (applications, jobs apply/dismiss,
   résumés, experience docs), wrapping the Python stores
+- `GET|PUT /data/profile` — applicant profile (typed autofill fields + fit-scoring summary)
+- `POST /data/jobs/{apply,dismiss,status,undo-apply}` — job status + application logging
+- `GET /data/jobs/resume-pdf` — compiled résumé PDF (content-versioned cache)
 - `GET|PUT /data/resume/master` — master résumé; `GET /data/resumes/{job_id}/versions`
 - `POST /data/render`, `POST /data/resume/pdf` — markdown render + LaTeX→PDF (Tectonic)
 - `GET /stocks/desk` — latest persisted `stock_analysis` (no model call on page load).
@@ -83,6 +86,14 @@ NOT EXISTS` from `schema.sql`; the drift-check guards the Prisma mirror.
 3. On completion the run is marked `success`/`error` with the final `output_message`.
 4. Agents' **domain writes** (applications/jobs/resumes) happen inside graph nodes via the
    per-agent `store.py`, separate from run bookkeeping.
+
+The job scraper's pipeline is a linear chain: `fetch → filter → dedupe → backfill →
+freshness → rank → notify`. It also accepts a `backfill` input flag (set via
+`scripts/run.py job_scraper --backfill`, and by the launchd schedule and the "score backlog"
+button) that, when true and a candidate profile exists, has `backfill_node` spend its bounded
+LLM refinement pass on backlog rows still missing a country/score/non-baseline reason —
+otherwise that node still re-injects those rows (so country and freshness still get
+recomputed) but skips the LLM pass entirely.
 
 The job scraper detects delisted postings directly rather than inferring it from age:
 `fetch_node` records `observed_ids` (every posting id any source returned) and `fetched_ok`
