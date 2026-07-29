@@ -65,6 +65,7 @@ model jobs {
   fit_score    Float?
   fit_reason   String?
   ghost        Int     @default(0)
+  ghost_reason String  @default("")
   also_on      String  @default("[]")
   country      String  @default("")
   first_seen   String  @default("")

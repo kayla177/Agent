@@ -78,3 +78,22 @@ def _migrate(conn: sqlite3.Connection) -> None:
     job_cols = {r[1] for r in conn.execute("PRAGMA table_info(jobs)")}
     if job_cols and "country" not in job_cols:
         conn.execute("ALTER TABLE jobs ADD COLUMN country TEXT NOT NULL DEFAULT ''")
+    # WHY a posting is flagged (delisted / stale / deadline). Previously written
+    # only into the `data` blob, so the UI rendered every ghost as "stale".
+    if job_cols and "ghost_reason" not in job_cols:
+        conn.execute("ALTER TABLE jobs ADD COLUMN ghost_reason TEXT NOT NULL DEFAULT ''")
+        # One-time seed from the blob, which HAS carried this value all along.
+        # Without it, every already-flagged row would render as a bare "stale"
+        # until something happened to rewrite it, so the mirrored column would
+        # contradict the blob for an unbounded time. `json_valid` keeps a single
+        # corrupt blob from aborting init_db (which runs on every server start
+        # and every agent run), and the whole thing is inside the add-column
+        # branch, so it can never run twice.
+        try:
+            conn.execute(
+                "UPDATE jobs SET ghost_reason = "
+                "COALESCE(json_extract(data, '$.ghost_reason'), '') "
+                "WHERE json_valid(data)"
+            )
+        except sqlite3.OperationalError as exc:  # no JSON1 support
+            print(f"⚠️ could not seed jobs.ghost_reason from the data blob: {exc}")

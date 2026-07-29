@@ -66,7 +66,7 @@ export default function SettingsForm({ prefs, secrets }: { prefs: Prefs; secrets
       <label>Flag postings older than (days)
         <input name="JOB_MAX_AGE_DAYS" defaultValue={prefs.JOB_MAX_AGE_DAYS} />
       </label>
-      <label>Countries to show (one code per line: US, CA, OTHER)
+      <label>Countries to show (one code per line: US, CA, OTHER, UNKNOWN)
         <textarea name="JOB_COUNTRIES" rows={3} defaultValue={prefs.JOB_COUNTRIES.join("\n")} />
       </label>
       <label className="checkbox-row">

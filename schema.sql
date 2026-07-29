@@ -46,6 +46,7 @@ CREATE TABLE IF NOT EXISTS jobs (
     fit_score    REAL,
     fit_reason   TEXT,
     ghost        INTEGER NOT NULL DEFAULT 0,
+    ghost_reason TEXT    NOT NULL DEFAULT '',   -- WHY it is flagged: "delisted (...)" | "stale (Nd old)" | "deadline passed (...)" | "delisted by source"
     also_on      TEXT    NOT NULL DEFAULT '[]',
     country      TEXT    NOT NULL DEFAULT '',  -- US | CA | OTHER | UNKNOWN (see locations.py)
     first_seen   TEXT    NOT NULL DEFAULT '',

@@ -84,6 +84,15 @@ def _parse(reply: str, size: int) -> dict[int, dict]:
         # Default eligible=True unless the model explicitly says false.
         eligible = it.get("eligible", True) is not False
         raw = it.get("score", None)
+        # `bool` subclasses `int`, so `int(True) == 1` — without this guard a
+        # reply of {"score": true} is silently accepted as a fit score of 1
+        # AND overwrites the baseline reason, which makes is_baseline_reason()
+        # False. The row is then never re-selected by backfill and never
+        # re-baselined, so ONE malformed reply pins a good job at the bottom of
+        # sort-by-fit permanently. A bool is not a score: treat it as absent
+        # and keep the deterministic baseline.
+        if isinstance(raw, bool):
+            raw = None
         try:
             score = None if raw is None else max(0, min(100, int(raw)))
         except (TypeError, ValueError):

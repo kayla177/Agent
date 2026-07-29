@@ -27,7 +27,11 @@ INT_KEYS = ("NEWS_MAX_ITEMS_PER_TOPIC",)
 BOOL_KEYS = ("JOB_DROP_GHOSTS",)
 LIST_KEYS = ("NEWS_TOPICS", "STOCK_WATCHLIST", "STOCK_HEADLINE_TOPICS")
 # JOB_SOURCES is a list of {company, ats, token} dicts, handled specially.
-_VALID_COUNTRIES = {"US", "CA", "OTHER"}
+# UNKNOWN is accepted even though it is never *hidden* (locations.py: an
+# unclassifiable posting is never dropped, and the board always shows it): it is
+# the one code a user can actually read off a badge, so rejecting it made the
+# form fail on a value the UI had just shown them.
+_VALID_COUNTRIES = {"US", "CA", "OTHER", "UNKNOWN"}
 
 _VALID_ATS = {"greenhouse", "lever", "ashby", "smartrecruiters", "workable", "workday"}
 

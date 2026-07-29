@@ -53,7 +53,16 @@ def apply_to_job(body: ApplyBody):
 
     The caller (the apply modal) opens the posting itself and offers Undo; this
     endpoint only writes. A PDF-compile failure is NOT fatal — the application
-    is still recorded, just without a pinned PDF key.
+    is still recorded, just without a pinned PDF key — but it IS reported, as
+    `pdf_error` on the 200 response. Swallowing it into a stderr log meant the
+    UI showed a green "Application logged." banner and then opened a tab
+    rendering a 422 JSON error, which is not an honest success.
+
+    Both writes are kept consistent: if the job row vanishes between the
+    validation above and the status flip, the application row just created is
+    deleted again, so the endpoint never returns 200 over an orphaned
+    application with no `applied` flag (`undo_apply` holds itself to the same
+    validate-then-mutate standard).
     """
     jid = body.id.strip()
     if not jid:
@@ -68,11 +77,15 @@ def apply_to_job(body: ApplyBody):
 
     resume_job_id = (body.resume_job_id or "").strip() or None
     pdf_key = None
+    pdf_error: str | None = None
     try:
         # resume_job_id=None selects the master résumé.
         pdf_key, _ = resume_pdf.ensure_pdf(resume_job_id)
     except (LookupError, CompileError) as exc:
-        # Not fatal: still log the application, just without a pinned PDF.
+        # Not fatal: still log the application, just without a pinned PDF. The
+        # caller is told, so it can skip opening a PDF tab that would only
+        # render an error and can say plainly that nothing was attached.
+        pdf_error = str(exc)
         print(f"⚠️ Could not prepare résumé PDF for {jid}: {exc}")
 
     app = appstore.add_application(
@@ -81,8 +94,18 @@ def apply_to_job(body: ApplyBody):
         resume_job_id=resume_job_id, resume_pdf_key=pdf_key,
         job_id=jid,
     )
-    jobstore.set_status(jid, "applied")
-    return {"ok": True, "application_id": int(app["id"]), "resume_pdf_key": pdf_key}
+    if jobstore.set_status(jid, "applied") is None:
+        # The job row disappeared between _load and here. Roll the tracker row
+        # back rather than leaving an application for a job that is not marked
+        # applied and can no longer be undone through the UI.
+        appstore.delete_application(int(app["id"]))
+        return JSONResponse({"error": f"No job with id {jid}."}, status_code=404)
+    return {
+        "ok": True,
+        "application_id": int(app["id"]),
+        "resume_pdf_key": pdf_key,
+        "pdf_error": pdf_error,
+    }
 
 
 @router.post("/data/jobs/undo-apply")

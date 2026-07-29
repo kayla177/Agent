@@ -8,12 +8,19 @@ exactly did this company receive?" answerable forever.
 
 Files land in data/resumes/ (gitignored). Nothing evicts them — a few dozen KB
 each is a price worth paying for an auditable record.
+
+Writes are atomic (temp file in the same directory + ``os.replace``) and every
+cache hit is checked for the ``%PDF`` magic before being served, because a
+content-versioned key means a half-written file would otherwise be handed out as
+a valid PDF forever, with no way for the cache to self-heal.
 """
 
 from __future__ import annotations
 
 import hashlib
+import os
 import re
+import tempfile
 
 import config
 from agents.resume_generator.latex import compile_tex
@@ -83,9 +90,30 @@ def ensure_pdf(job_id: str | None) -> tuple[str, bytes]:
     key = cache_key(key_job, updated_at)
     path = PDF_DIR / f"{key}.pdf"
     if path.exists():
-        return key, path.read_bytes()
+        cached = path.read_bytes()
+        # A cache hit is only a hit if the bytes are actually a PDF. The key is
+        # content-versioned, so a file truncated by a crash or a full disk would
+        # otherwise be served as `200 application/pdf` forever and get pinned
+        # into applications.resume_pdf_key — the cache could never self-heal.
+        # Treat a corrupt file as a miss and recompile over it.
+        if cached.startswith(b"%PDF"):
+            return key, cached
+        print(f"⚠️ cached PDF {path.name} is not a PDF ({len(cached)} bytes) — recompiling")
 
     pdf = compile_tex(tex)
     PDF_DIR.mkdir(parents=True, exist_ok=True)
-    path.write_bytes(pdf)
+    # Write-then-rename so a reader never observes a partial file: the temp file
+    # lives in PDF_DIR (same filesystem), which is what makes os.replace atomic.
+    fd, tmp = tempfile.mkstemp(dir=PDF_DIR, prefix=".tmp-", suffix=".pdf")
+    try:
+        with os.fdopen(fd, "wb") as fh:
+            fh.write(pdf)
+        os.replace(tmp, path)
+    except BaseException:
+        # Never leave a stray temp file behind on a failed write.
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
     return key, pdf
