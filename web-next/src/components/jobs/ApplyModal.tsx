@@ -16,7 +16,9 @@ export default function ApplyModal({
   resumes: ResumeRow[];
   hasMaster: boolean;
   onClose: () => void;
-  onApplied: (applicationId: number) => void;
+  // `pdfError` is non-null when the application WAS recorded but the résumé PDF
+  // could not be produced. The board shows it next to the green banner.
+  onApplied: (applicationId: number, pdfError: string | null) => void;
 }) {
   // "" means the master résumé.
   const tailored = resumes.find((r) => r.job_id === jobId) ?? null;
@@ -89,15 +91,23 @@ export default function ApplyModal({
         }
         return;
       }
-      const { application_id } = await res.json();
+      const { application_id, pdf_error } = await res.json();
 
-      // Hand over the exact PDF to upload, then open the posting. The posting is
-      // opened last so it's the one most likely to survive popup blocking.
-      const q = choice ? `?job_id=${encodeURIComponent(choice)}` : "";
-      window.open(`/data/jobs/resume-pdf${q}`, "_blank", "noopener");
+      // Hand over the exact PDF to upload, then open the posting. Ordering note:
+      // browsers block SUBSEQUENT popups from one user gesture, so it is the
+      // FIRST window.open that is most likely to survive — the PDF goes first
+      // deliberately, since the posting URL is also reachable from the row's
+      // "open full posting" link while the PDF is not.
+      //
+      // Skip the PDF tab entirely when the server already told us the compile
+      // failed: opening it would only render a 422 JSON error.
+      if (!pdf_error) {
+        const q = choice ? `?job_id=${encodeURIComponent(choice)}` : "";
+        window.open(`/data/jobs/resume-pdf${q}`, "_blank", "noopener");
+      }
       if (jobUrl) window.open(jobUrl, "_blank", "noopener");
 
-      onApplied(application_id);
+      onApplied(application_id, pdf_error ?? null);
     } catch {
       setError("Could not reach the agent service (is FastAPI on :8001 running?).");
     } finally {

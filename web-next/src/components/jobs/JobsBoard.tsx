@@ -1,15 +1,19 @@
 "use client";
 import { useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
-import { type Job, JOB_STATUSES, byPriority, byFitDesc, byDateDesc, bestMatch, inCountries, DEFAULT_COUNTRIES } from "@/lib/jobs";
+import { type Job, JOB_STATUSES, byPriority, byFitDesc, byDateDesc, bestMatch, inCountries, ALL_COUNTRIES, COUNTRY_LABEL } from "@/lib/jobs";
 import BestMatchHero from "./BestMatchHero";
 import JobRow from "./JobRow";
 import ApplyModal, { type ResumeRow } from "./ApplyModal";
 
 type SortKey = "priority" | "fit" | "date";
 
-export default function JobsBoard({ jobs, resumes, hasMaster }: {
+const OFFLINE = "Could not reach the agent service (is FastAPI on :8001 running?).";
+
+export default function JobsBoard({ jobs, resumes, hasMaster, initialCountries }: {
   jobs: Job[]; resumes: ResumeRow[]; hasMaster: boolean;
+  // The effective config.JOB_COUNTRIES (plus UNKNOWN), resolved server-side.
+  initialCountries: string[];
 }) {
   const router = useRouter();
   const [sort, setSort] = useState<SortKey>("priority");
@@ -18,12 +22,22 @@ export default function JobsBoard({ jobs, resumes, hasMaster }: {
   const [hideGhost, setHideGhost] = useState(false);
   const [expandedId, setExpandedId] = useState<string | null>(null);
   const [busyId, setBusyId] = useState<string | null>(null);
-  const [countries, setCountries] = useState<string[]>(DEFAULT_COUNTRIES);
+  const [showAllCountries, setShowAllCountries] = useState(false);
   const [applyFor, setApplyFor] = useState<Job | null>(null);
   const [undo, setUndo] = useState<{ jobId: string; applicationId: number } | null>(null);
   const [undoBusy, setUndoBusy] = useState(false);
   const [undoError, setUndoError] = useState<string | null>(null);
   const [undoBlocked, setUndoBlocked] = useState(false);
+  const [pdfError, setPdfError] = useState<string | null>(null);
+  const [rowError, setRowError] = useState<string | null>(null);
+
+  const countries = showAllCountries ? ALL_COUNTRIES : initialCountries;
+  // Label the preference option with what it actually contains, so the control
+  // stays honest if JOB_COUNTRIES is something other than US+CA. UNKNOWN is
+  // always in the list and is never a user-facing choice, so it isn't named.
+  const prefLabel =
+    initialCountries.filter((c) => c !== "UNKNOWN").map((c) => COUNTRY_LABEL[c] ?? c).join(" & ")
+    || "preferred countries";
 
   const counts = useMemo(() => {
     const c = { new: 0, applied: 0, dismissed: 0 };
@@ -48,34 +62,43 @@ export default function JobsBoard({ jobs, resumes, hasMaster }: {
     return l;
   }, [jobs, statusFilter, companyFilter, hideGhost, countries, sort]);
 
-  // A rejected fetch (backend unreachable) is treated exactly like a failed
-  // response: callers already handle `false` by clearing their busy flag
-  // without refreshing, and never touching the DB.
-  async function post(path: string, body: Record<string, unknown>) {
+  // A rejected fetch (backend unreachable) is distinguished from a failed
+  // response, because the two need different wording. Callers clear their busy
+  // flag either way and never refresh on failure.
+  async function post(path: string, body: Record<string, unknown>): Promise<"ok" | "failed" | "offline"> {
     try {
       const res = await fetch(path, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(body),
       });
-      return res.ok;
+      return res.ok ? "ok" : "failed";
     } catch {
-      return false;
+      return "offline";
     }
   }
 
-  async function dismiss(id: string) {
+  // dismiss/restore used to surface NOTHING on failure — the row simply didn't
+  // change, which reads as an unresponsive button. Undo already reports both
+  // failure modes; these now do the same.
+  async function mutateRow(id: string, path: string, body: Record<string, unknown>, verb: string) {
     setBusyId(id);
-    const ok = await post("/data/jobs/dismiss", { id });
+    setRowError(null);
+    const result = await post(path, body);
     setBusyId(null);
-    if (ok) router.refresh();
+    if (result === "ok") {
+      router.refresh();
+      return;
+    }
+    setRowError(result === "offline" ? OFFLINE : `Could not ${verb} that role. Try again.`);
   }
 
-  async function restore(id: string) {
-    setBusyId(id);
-    const ok = await post("/data/jobs/status", { id, status: "new" });
-    setBusyId(null);
-    if (ok) router.refresh();
+  function dismiss(id: string) {
+    return mutateRow(id, "/data/jobs/dismiss", { id }, "dismiss");
+  }
+
+  function restore(id: string) {
+    return mutateRow(id, "/data/jobs/status", { id, status: "new" }, "restore");
   }
 
   // Expanding a row marks it viewed so you stop re-reading the same postings.
@@ -128,7 +151,7 @@ export default function JobsBoard({ jobs, resumes, hasMaster }: {
       }
       setUndoError("Could not undo the application. Try again.");
     } catch {
-      setUndoError("Could not reach the agent service (is FastAPI on :8001 running?).");
+      setUndoError(OFFLINE);
     } finally {
       setUndoBusy(false);
     }
@@ -144,7 +167,17 @@ export default function JobsBoard({ jobs, resumes, hasMaster }: {
           </button>
         </div>
       ) : null}
+      {/* Shown ALONGSIDE the green banner, never instead of it: the application
+          really was logged, but claiming unqualified success while the résumé
+          PDF failed (and opening a tab that renders a 422) was dishonest. */}
+      {pdfError ? (
+        <p className="banner err">
+          The application was logged, but your résumé PDF could not be prepared, so
+          nothing was attached: {pdfError}
+        </p>
+      ) : null}
       {undoError ? <p className="banner err">{undoError}</p> : null}
+      {rowError ? <p className="banner err">{rowError}</p> : null}
 
       {applyFor ? (
         <ApplyModal
@@ -155,11 +188,12 @@ export default function JobsBoard({ jobs, resumes, hasMaster }: {
           resumes={resumes}
           hasMaster={hasMaster}
           onClose={() => setApplyFor(null)}
-          onApplied={(applicationId) => {
+          onApplied={(applicationId, applyPdfError) => {
             setApplyFor(null);
             setUndo({ jobId: applyFor.id, applicationId });
             setUndoError(null);
             setUndoBlocked(false);
+            setPdfError(applyPdfError);
             router.refresh();
           }}
         />
@@ -188,10 +222,10 @@ export default function JobsBoard({ jobs, resumes, hasMaster }: {
           {companies.map((c) => <option key={c} value={c}>{c}</option>)}
         </select>
         <select
-          value={countries.includes("OTHER") ? "all" : "na"}
-          onChange={(e) => setCountries(e.target.value === "all" ? ["US", "CA", "OTHER", "UNKNOWN"] : DEFAULT_COUNTRIES)}
+          value={showAllCountries ? "all" : "pref"}
+          onChange={(e) => setShowAllCountries(e.target.value === "all")}
         >
-          <option value="na">US &amp; Canada</option>
+          <option value="pref">{prefLabel}</option>
           <option value="all">all countries</option>
         </select>
         <label>

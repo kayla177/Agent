@@ -1,5 +1,5 @@
 import type { Job } from "@/lib/jobs";
-import { fitTier, FIT_COLOR, JOB_STATUS_META, ageDays, parseAlsoOn, COUNTRY_LABEL } from "@/lib/jobs";
+import { fitTier, FIT_COLOR, JOB_STATUS_META, ageDays, parseAlsoOn, COUNTRY_LABEL, ghostLabel } from "@/lib/jobs";
 
 type Props = {
   job: Job;
@@ -42,7 +42,14 @@ export default function JobRow({ job, expanded, busy, onToggle, onApply, onDismi
               <span className="job-badge">{COUNTRY_LABEL[job.country] ?? job.country}</span>
             ) : null}
             {alsoOn.length ? <span className="job-badge">also on {alsoOn.length}</span> : null}
-            {job.ghost === 1 ? <span className="job-badge stale">⚠ stale{age !== null ? ` ${age}d` : ""}</span> : null}
+            {/* Say WHY it is flagged. Rendering every ghost as "stale" made a
+                posting detected as removed from its board read as "stale 3d",
+                which buried the headline fix of this whole branch. */}
+            {job.ghost === 1 ? (
+              <span className="job-badge stale" title={job.ghost_reason || undefined}>
+                ⚠ {ghostLabel(job, age)}
+              </span>
+            ) : null}
           </div>
         </div>
         <div className="job-actions">

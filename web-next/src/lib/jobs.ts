@@ -23,9 +23,10 @@ export type Job = {
   description: string | null;
   fit_score: number | null;
   fit_reason: string | null;
-  ghost: number;      // 0 | 1
-  also_on: string;    // JSON array string
-  country: string;    // US | CA | OTHER | UNKNOWN
+  ghost: number;         // 0 | 1
+  ghost_reason: string;  // WHY it is flagged; "" when it is not
+  also_on: string;       // JSON array string
+  country: string;       // US | CA | OTHER | UNKNOWN
 };
 
 export type FitTier = "hi" | "mid" | "lo" | "none";
@@ -101,10 +102,36 @@ export const COUNTRY_LABEL: Record<string, string> = {
   US: "US", CA: "Canada", OTHER: "intl", UNKNOWN: "?",
 };
 
-// Countries shown by default. Non-North-America roles stay in the DB (so a
-// misclassification is auditable) and are hidden here instead.
-export const DEFAULT_COUNTRIES = ["US", "CA", "UNKNOWN"];
+export const ALL_COUNTRIES = ["US", "CA", "OTHER", "UNKNOWN"];
+
+// Mirrors config.JOB_COUNTRIES's default EXACTLY, used only when the effective
+// pref cannot be read. UNKNOWN is deliberately absent here because
+// `visibleCountries` adds it unconditionally — the two lists used to disagree
+// (config said ["US","CA"], this said ["US","CA","UNKNOWN"]).
+export const DEFAULT_COUNTRIES = ["US", "CA"];
+
+// The board's initial country filter, from the effective JOB_COUNTRIES pref.
+// UNKNOWN is ALWAYS included regardless of the pref: an unclassifiable location
+// is never dropped by the scraper (see locations.py) and must never be silently
+// hidden either, or a real US role with a location string like "2 Locations"
+// would vanish from the board with no way to find it. An empty pref means
+// "no filtering" everywhere else in this repo (JOB_SOURCES, STOCK_WATCHLIST),
+// so it falls back to the default rather than showing nothing.
+export function visibleCountries(pref: string[] | null | undefined): string[] {
+  const base = pref && pref.length ? pref : DEFAULT_COUNTRIES;
+  return Array.from(new Set([...base, "UNKNOWN"]));
+}
 
 export function inCountries(job: Job, allowed: string[]): boolean {
   return allowed.includes(job.country || "UNKNOWN");
+}
+
+// Short badge label for a flagged posting. `ghost_reason` is written by
+// freshness_node / store.sweep_ghosts; the full string is shown on hover. Rows
+// flagged before ghost_reason was mirrored fall back to the old "stale Nd".
+export function ghostLabel(job: Job, age: number | null): string {
+  const r = (job.ghost_reason || "").trim();
+  if (r.startsWith("delisted")) return "removed from board";
+  if (r.startsWith("deadline passed")) return "deadline passed";
+  return age !== null ? `stale ${age}d` : "stale";
 }
