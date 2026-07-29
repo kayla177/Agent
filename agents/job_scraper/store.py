@@ -27,6 +27,28 @@ STATUSES = ("new", "viewed", "applied", "dismissed")
 _DELISTED_PREFIX = "delisted ("
 
 
+def _reason_kind(reason: str) -> str:
+    """The RULE a `ghost_reason` came from, stripped of its parenthetical detail.
+
+        "stale (61d old)"              -> "stale"
+        "deadline passed (2020-01-01)" -> "deadline passed"
+        "delisted (not on Acme's board)" -> "delisted"
+        "delisted by source"           -> "delisted by source"  (no parenthetical)
+        ""                             -> ""
+
+    Why this exists: `matching.stale_reason` derives age LIVE from `posted_at`, so
+    a stale row's reason text changes every single day — "stale (61d old)" ->
+    "stale (62d old)". The refreshed string is still written (the stored reason
+    must agree with the age the UI computes client-side), but a pure day-count
+    refresh is not an EVENT. Counting it as one would make ~108 live rows report a
+    transition on every run, and "flagged 108 stale" every morning would train the
+    reader to ignore the only log line that reports real coverage changes. So
+    `sweep_ghosts` writes on any text change but counts only when the `ghost`
+    boolean flipped or the KIND changed.
+    """
+    return (reason or "").split(" (", 1)[0].strip()
+
+
 def _today() -> str:
     return dt.date.today().isoformat()
 
@@ -261,6 +283,14 @@ def sweep_ghosts(
       delisting call is left alone here — with no board evidence there is
       nothing to overrule it with.
 
+    Writing and COUNTING are deliberately separated. `stale_reason` derives age
+    live from `posted_at`, so a stale row's reason text changes every day; the
+    refreshed text is always written (the stored reason must agree with the age
+    `JobRow` computes client-side) but is only counted when the `ghost` boolean
+    flipped or the reason changed KIND (see `_reason_kind`). Otherwise every run
+    would report a transition for every stale row and the log would stop meaning
+    anything.
+
     Age/deadline re-derivation needs no fetch evidence at all, so it runs even
     when `observed_ids`/`fetched_ok` are empty (a run where every board failed).
     The delisted/relisted passes need a non-empty `observed_ids` — a run that
@@ -271,8 +301,8 @@ def sweep_ghosts(
     excluded — a posting closing after you've already applied is normal, not
     a signal to relabel it. `dismissed` rows are irrelevant either way.
 
-    Returns a count per outcome so `notify_node` can log each separately: a
-    bounded, destructive coverage change must never land silently.
+    Returns a count of TRANSITIONS per outcome so `notify_node` can log each
+    separately: a bounded, destructive coverage change must never land silently.
     """
     store_db.init_db()
     counts = {"delisted": 0, "relisted": 0, "stale": 0, "unstale": 0}
@@ -329,5 +359,11 @@ def sweep_ghosts(
             record["ghost"] = bool(reason)
             record["ghost_reason"] = reason
             _write(conn, record)
-            counts[outcome] += 1
+            # WRITE on any change (so the stored reason keeps agreeing with the
+            # age the UI derives client-side), but COUNT only a real event: the
+            # ghost boolean flipping, or the reason changing KIND. A day-count
+            # refresh ("stale (61d old)" -> "stale (62d old)") is neither. See
+            # _reason_kind.
+            if bool(reason) != was_ghost or _reason_kind(reason) != _reason_kind(was_reason):
+                counts[outcome] += 1
     return counts

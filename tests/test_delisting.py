@@ -25,6 +25,7 @@ import json
 
 import config
 from agents.job_scraper import store as jobstore
+from agents.job_scraper.matching import stale_reason
 from agents.job_scraper.nodes.fetch import fetch_node
 from agents.job_scraper.nodes.freshness import freshness_node
 
@@ -403,8 +404,10 @@ def test_sweep_clear_pass_only_undoes_delisting_flags(temp_db, monkeypatch):
     monkeypatch.setattr(config, "JOB_MAX_AGE_DAYS", 60)
     old = (dt.date.today() - dt.timedelta(days=400)).isoformat()
     jobstore.replace_record({
+        # Frozen snapshot deliberately wrong and BELOW the threshold: preferring
+        # it would un-flag a genuinely 400-day-old posting.
         "id": "Acme:greenhouse:stale", "company": "Acme", "ats": "greenhouse",
-        "status": "new", "posted_at": old,
+        "status": "new", "posted_at": old, "age_days": 5,
         "ghost": True, "ghost_reason": "stale (400d old)",
     })
     jobstore.replace_record({
@@ -433,38 +436,88 @@ def test_sweep_flags_a_converged_row_that_aged_into_staleness(temp_db, monkeypat
     recomputed as rows age past JOB_MAX_AGE_DAYS, but backfill never re-selects
     a converged row so nothing recomputed it. That reproduced the audited
     symptom of a row reading "🕒 90d ago" with NO stale badge, because JobRow
-    computes age client-side while ghost was frozen in the DB."""
+    computes age client-side while ghost was frozen in the DB.
+
+    The stored `age_days` here is DELIBERATELY WRONG (10 on a row posted 90 days
+    ago). That is not a contrived value: `age_days` is written only by
+    `freshness_node` and persisted into the blob, and nothing refreshes it — so a
+    converged row, which is precisely the population this sweep exists to serve,
+    carries a snapshot frozen at its last pipeline pass. 108 of the 132
+    sweep-eligible rows in the live DB already have one. If `stale_reason`
+    preferred that snapshot over `posted_at` (it used to), 10 <= 60 and this row
+    would NOT be flagged — the exact audit symptom, reproduced through the very
+    code path meant to fix it. Without an `age_days` key this test passed
+    vacuously and pinned the defect's absence rather than the defect.
+    """
     monkeypatch.setattr(config, "JOB_MAX_AGE_DAYS", 60)
     posted = (dt.date.today() - dt.timedelta(days=90)).isoformat()
     jobstore.replace_record({
         "id": "Acme:greenhouse:1", "company": "Acme", "ats": "greenhouse",
         "status": "new", "country": "US", "fit_score": 91,
         "fit_reason": "matched: python, react", "posted_at": posted,
-        "ghost": False, "ghost_reason": "",
+        "age_days": 10, "ghost": False, "ghost_reason": "",
     })
     # No board evidence at all this run — staleness needs none.
     counts = jobstore.sweep_ghosts(set(), set())
     assert counts["stale"] == 1
     rec = jobstore.load_records()["Acme:greenhouse:1"]
     assert rec["ghost"] is True
-    assert rec["ghost_reason"] == "stale (90d old)"
+    assert rec["ghost_reason"] == "stale (90d old)", \
+        "age must come from posted_at, not the frozen age_days snapshot"
 
 
 def test_sweep_clears_a_stale_flag_that_no_longer_holds(temp_db, monkeypatch):
     """Symmetry: raising JOB_MAX_AGE_DAYS (or a posting being re-dated by a
-    fresh fetch) must un-flag a row, not leave a permanent warning badge."""
+    fresh fetch) must un-flag a row, not leave a permanent warning badge.
+
+    The frozen snapshot is wrong in the OTHER direction here (500 on a row posted
+    90 days ago, against a 365-day threshold): preferring it would keep the row
+    flagged forever, so this pins the precedence bidirectionally.
+    """
     monkeypatch.setattr(config, "JOB_MAX_AGE_DAYS", 365)
     posted = (dt.date.today() - dt.timedelta(days=90)).isoformat()
     jobstore.replace_record({
         "id": "Acme:greenhouse:1", "company": "Acme", "ats": "greenhouse",
-        "status": "new", "posted_at": posted,
-        "ghost": True, "ghost_reason": "stale (90d old)",
+        "status": "new", "posted_at": posted, "age_days": 500,
+        "ghost": True, "ghost_reason": "stale (500d old)",
     })
     counts = jobstore.sweep_ghosts(set(), set())
     assert counts["unstale"] == 1
     rec = jobstore.load_records()["Acme:greenhouse:1"]
     assert rec["ghost"] is False
     assert rec["ghost_reason"] == ""
+
+
+def test_stale_reason_prefers_posted_at_over_a_frozen_age_days():
+    """Unit-level companion, so the precedence is pinned even if the sweep
+    changes shape."""
+    monkey = {"posted_at": (dt.date.today() - dt.timedelta(days=90)).isoformat(),
+              "age_days": 10}
+    assert stale_reason(monkey) == "stale (90d old)"
+    fresh = {"posted_at": (dt.date.today() - dt.timedelta(days=1)).isoformat(),
+             "age_days": 9999}
+    assert stale_reason(fresh) == "", "a stale snapshot must not flag a fresh posting"
+
+
+def test_stale_reason_falls_back_to_age_days_without_a_usable_posted_at():
+    """The fallback is not dead code: `freshness_node` passes postings whose
+    `posted_at` an ATS left empty (Workday's is a relative string), and a caller
+    that computed an age some other way should still be honoured."""
+    assert stale_reason({"posted_at": "", "age_days": 500}) == "stale (500d old)"
+    assert stale_reason({"posted_at": "Posted 5 Days Ago", "age_days": 500}) == "stale (500d old)"
+    assert stale_reason({"posted_at": "", "age_days": None}) == ""
+    assert stale_reason({}) == ""
+
+
+def test_stale_reason_agrees_with_freshness_nodes_own_snapshot():
+    """The pipeline path must be unaffected by the precedence change: whenever
+    freshness_node's snapshot exists and came from a parseable posted_at, both
+    orders yield the same number, because both use matching.age_days()."""
+    posted = (dt.date.today() - dt.timedelta(days=90)).isoformat()
+    out = freshness_node({"new": [{"id": "x", "company": "Acme", "ats": "greenhouse",
+                                   "posted_at": posted}]})["new"][0]
+    assert out["age_days"] == 90
+    assert out["ghost_reason"] == stale_reason({"posted_at": posted, "age_days": 90})
 
 
 def test_sweep_never_overrules_a_delisting_without_board_evidence(temp_db, monkeypatch):
@@ -482,6 +535,66 @@ def test_sweep_never_overrules_a_delisting_without_board_evidence(temp_db, monke
     rec = jobstore.load_records()["Acme:greenhouse:1"]
     assert rec["ghost"] is True
     assert rec["ghost_reason"] == "delisted (not on Acme's board)"
+
+
+def test_a_day_count_refresh_is_written_but_not_counted(temp_db, monkeypatch):
+    """Age is derived live, so a stale row's reason text changes EVERY day
+    ("stale (61d old)" -> "stale (62d old)"). The refreshed string must still be
+    written — the stored reason has to agree with the age JobRow derives
+    client-side, or the badge and the DB disagree again — but it is NOT an event:
+    counting it would make ~108 live rows report a transition on every run, and
+    "flagged 108 stale" every morning trains the reader to ignore the one log line
+    that reports real coverage changes."""
+    monkeypatch.setattr(config, "JOB_MAX_AGE_DAYS", 60)
+    posted = (dt.date.today() - dt.timedelta(days=90)).isoformat()
+    jobstore.replace_record({
+        "id": "Acme:greenhouse:1", "company": "Acme", "ats": "greenhouse",
+        "status": "new", "posted_at": posted,
+        "ghost": True, "ghost_reason": "stale (61d old)",  # yesterday's text
+    })
+    counts = jobstore.sweep_ghosts(set(), set())
+    assert counts == {"delisted": 0, "relisted": 0, "stale": 0, "unstale": 0}, \
+        "a pure day-count refresh is not a transition"
+
+    # ...but the stored reason WAS refreshed, in both the column and the blob.
+    assert jobstore.load_records()["Acme:greenhouse:1"]["ghost_reason"] == "stale (90d old)"
+    with jobstore.store_db.connect() as conn:
+        row = conn.execute(
+            "SELECT ghost, ghost_reason FROM jobs WHERE id = 'Acme:greenhouse:1'"
+        ).fetchone()
+    assert row["ghost"] == 1
+    assert row["ghost_reason"] == "stale (90d old)"
+
+
+def test_a_kind_change_IS_counted(temp_db, monkeypatch):
+    """The other side of the rule: only the parenthetical detail is exempt. A
+    change of RULE — the text before the parenthetical — is a real event and must
+    be counted, or a row switching from a stale call to a deadline call would
+    slip through the log."""
+    monkeypatch.setattr(config, "JOB_MAX_AGE_DAYS", 60)
+    jobstore.replace_record({
+        "id": "Acme:greenhouse:1", "company": "Acme", "ats": "greenhouse",
+        "status": "new", "posted_at": _yesterday(), "deadline": "2020-01-01",
+        "ghost": True, "ghost_reason": "stale (90d old)",
+    })
+    counts = jobstore.sweep_ghosts(set(), set())
+    assert counts["stale"] == 1
+    assert jobstore.load_records()["Acme:greenhouse:1"]["ghost_reason"] \
+        == "deadline passed (2020-01-01)"
+
+
+def test_reason_kind_separates_the_rule_from_its_detail():
+    kind = jobstore._reason_kind
+    assert kind("stale (61d old)") == "stale"
+    assert kind("stale (62d old)") == "stale"
+    assert kind("deadline passed (2020-01-01)") == "deadline passed"
+    assert kind("delisted (not on Acme's board)") == "delisted"
+    # No parenthetical, and a DIFFERENT rule from the board-absence one, so the
+    # two must not collapse into one kind.
+    assert kind("delisted by source") == "delisted by source"
+    assert kind("delisted by source") != kind("delisted (not on Acme's board)")
+    assert kind("") == ""
+    assert kind(None) == ""
 
 
 def test_sweep_is_idempotent(temp_db):

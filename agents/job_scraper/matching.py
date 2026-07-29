@@ -76,12 +76,28 @@ def stale_reason(posting: dict) -> str:
     age past `JOB_MAX_AGE_DAYS` and never be flagged — the audited symptom of a
     row reading "🕒 90d ago" with no stale badge.
 
-    `age_days` is read from the posting when already computed (freshness sets
-    it) and derived from `posted_at` otherwise, so both callers agree.
+    Age is derived from `posted_at` FIRST and only falls back to a stored
+    `age_days`. Preferring the stored value silently broke the whole point of the
+    second caller: `age_days` is written only by `freshness_node` and then
+    persisted into the `data` blob, and neither `touch_last_seen` nor
+    `sweep_ghosts` refreshes it — so for a converged row (the exact population
+    the sweep exists to serve) it is frozen at that row's last pipeline pass, and
+    the sweep would judge staleness against a stale number. That reproduces the
+    original audit symptom verbatim, because `JobRow` computes age client-side
+    from `posted_at`: the row reads "🕒 90d ago" with no stale badge. Live
+    reachability, measured 2026-07-29: 108 of the 132 sweep-eligible rows already
+    carry `age_days` in their blob.
+
+    The pipeline path is unaffected: `freshness_node` computes `age_days` with
+    this same `age_days()` helper, which returns non-None only when `posted_at`
+    parsed — so whenever the snapshot exists and is trustworthy, deriving from
+    `posted_at` yields exactly the same number. The fallback therefore only ever
+    matters for a caller that supplies `age_days` WITHOUT a usable `posted_at`.
     """
-    age = posting.get("age_days")
+    age = age_days(posting.get("posted_at") or "")
     if age is None:
-        age = age_days(posting.get("posted_at") or "")
+        # No usable posted_at: honour a caller-supplied age if there is one.
+        age = posting.get("age_days")
     if age is not None and age > config.JOB_MAX_AGE_DAYS:
         return f"stale ({age}d old)"
 
