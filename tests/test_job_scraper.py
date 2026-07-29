@@ -79,7 +79,14 @@ def test_rank_eligibility() -> None:
     assert _parse('[{"i":0,"eligible":true,"score":null}]', 1)[0]["score"] is None, "null score -> None"
 
 
-def test_freshness() -> None:
+def test_freshness(monkeypatch) -> None:
+    """Both halves of the freshness node, across the two JOB_DROP_GHOSTS modes.
+
+    `JOB_DROP_GHOSTS` now defaults to True (the Phase-2 hard 60-day cap), so the
+    tagging assertions must pin it False explicitly — otherwise the flagged rows
+    are dropped and every lookup below KeyErrors. `monkeypatch` restores it after
+    the test, unlike the save/restore-by-hand this replaced.
+    """
     old = (dt.date.today() - dt.timedelta(days=config.JOB_MAX_AGE_DAYS + 10)).isoformat()
     fresh = (dt.date.today() - dt.timedelta(days=3)).isoformat()
     past = (dt.date.today() - dt.timedelta(days=1)).isoformat()
@@ -88,13 +95,21 @@ def test_freshness() -> None:
         {"id": "2", "posted_at": fresh},
         {"id": "3", "posted_at": fresh, "deadline": past},
         {"id": "4", "posted_at": fresh, "listed": False},
-    ]})["new"]
-    by = {p["id"]: p for p in out}
+    ]
+
+    # Tagging behaviour: drop OFF, so the flags stay inspectable.
+    monkeypatch.setattr(config, "JOB_DROP_GHOSTS", False)
+    by = {p["id"]: p for p in freshness_node({"new": roles})["new"]}
     assert by["1"]["ghost"] is True and "stale" in by["1"]["ghost_reason"], "stale flagged ghost"
     assert by["2"]["ghost"] is False, "fresh not ghost"
     assert by["3"]["ghost"] is True and "deadline" in by["3"]["ghost_reason"], "past deadline flagged"
     assert by["4"]["ghost"] is True and "delist" in by["4"]["ghost_reason"], "delisted flagged"
     assert by["2"]["age_days"] == 3, "age_days attached"
+
+    # Hard-cap behaviour: drop ON removes stale/expired/delisted NEW postings.
+    monkeypatch.setattr(config, "JOB_DROP_GHOSTS", True)
+    kept = {p["id"] for p in freshness_node({"new": roles})["new"]}
+    assert kept == {"2"}, "drop>maxage removes stale/expired/delisted"
 
 
 def test_rescored_ghost_survives_hard_drop(monkeypatch) -> None:

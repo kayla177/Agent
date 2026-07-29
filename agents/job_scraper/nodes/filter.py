@@ -11,7 +11,7 @@ a toggle rather than a re-scrape. The only drops are the role filters.
 from __future__ import annotations
 
 from agents.job_scraper.locations import country_of
-from agents.job_scraper.matching import is_excluded, is_target_role
+from agents.job_scraper.matching import is_excluded, is_target_role, is_tech_role
 from agents.job_scraper.state import JobScraperState
 
 
