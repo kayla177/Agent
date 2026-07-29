@@ -25,14 +25,27 @@ export default function ApplyModal({
   const [genPhase, setGenPhase] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
+  // Only the fetch + run_id parse are guarded here — once the EventSource is
+  // open, genPhase legitimately stays non-null while nodes report progress,
+  // and the done/failed listeners below are what clear it. A `finally`
+  // spanning the whole function would wipe that progress indicator the
+  // instant the stream opened, so the reset lives in each early-return branch
+  // instead (matching GenerateForm.tsx's identical fetch -> !res.ok -> SSE shape).
   async function generateTailored() {
     setGenPhase("starting");
     setError(null);
-    const res = await fetch("/agents/resume_generator/run", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ input: { job_id: jobId } }),
-    });
+    let res: Response;
+    try {
+      res = await fetch("/agents/resume_generator/run", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ input: { job_id: jobId } }),
+      });
+    } catch {
+      setGenPhase(null);
+      setError("Could not reach the agent service (is FastAPI on :8001 running?).");
+      return;
+    }
     if (!res.ok) {
       setGenPhase(null);
       setError("Could not start résumé generation.");
