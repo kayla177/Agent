@@ -92,15 +92,31 @@ def test_parse_rejects_bool_score_directly():
     assert parsed[1]["score"] == 0, "a real 0 is still a valid score"
 
 
-def test_ineligible_still_dropped(monkeypatch):
+def test_ineligible_is_tagged_not_dropped(monkeypatch):
+    """Replaces `test_ineligible_still_dropped`, whose behaviour was the bug.
+
+    Dropping happened before `notify` persisted, so an ineligible posting never
+    entered the database, could not be audited or overridden, and was re-fetched
+    and re-dropped every run. Measured 2026-07-30 across two independent samples:
+    33-44% of postings with plainly undergrad-eligible titles ("Software
+    Engineering Intern", "Data Science Intern") were judged ineligible, so the
+    gate is nowhere near accurate enough to be trusted with silent deletion.
+    """
     monkeypatch.setattr(config, "JOB_PROFILE", "Python")
     monkeypatch.setattr(config, "JOB_MIN_FIT", 0)
     monkeypatch.setattr(
         rank_mod, "llm",
-        lambda *a, **k: '[{"i":0,"eligible":false,"score":90},{"i":1,"eligible":true,"score":50}]',
+        lambda *a, **k: '[{"i":0,"eligible":false,"reason":"needs PhD","score":90},'
+                        '{"i":1,"eligible":true,"score":50}]',
     )
     out = rank_node({"new": [dict(p) for p in _POSTINGS]})["new"]
-    assert [p["id"] for p in out] == ["b"]
+
+    assert sorted(p["id"] for p in out) == ["a", "b"], "nothing may be dropped"
+    by_id = {p["id"]: p for p in out}
+    assert by_id["a"]["eligible"] is False
+    assert by_id["a"]["eligible_reason"] == "needs PhD", "must record WHY it was screened out"
+    assert by_id["b"]["eligible"] is True
+    assert by_id["b"]["eligible_reason"] == "", "an eligible row carries no reason"
 
 
 def test_no_profile_and_llm_failure_still_reads_as_baseline(monkeypatch):
