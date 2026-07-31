@@ -49,6 +49,12 @@ CREATE TABLE IF NOT EXISTS jobs (
     ghost_reason TEXT    NOT NULL DEFAULT '',   -- WHY it is flagged: "delisted (...)" | "stale (Nd old)" | "deadline passed (...)" | "delisted by source"
     also_on      TEXT    NOT NULL DEFAULT '[]',
     country      TEXT    NOT NULL DEFAULT '',  -- US | CA | OTHER | UNKNOWN (see locations.py)
+    -- Undergrad-eligibility screen (rank.py). TAG, never a drop: these rows are
+    -- stored and hidden by default in the UI, exactly like an out-of-country row.
+    -- DEFAULT 1 so a posting is only ever hidden by an explicit judgement —
+    -- nothing is hidden by a missing value, a failed model call, or a migration.
+    eligible        INTEGER NOT NULL DEFAULT 1,
+    eligible_reason TEXT    NOT NULL DEFAULT '',  -- WHY the screen said no; '' when eligible
     first_seen   TEXT    NOT NULL DEFAULT '',
     last_seen    TEXT    NOT NULL DEFAULT '',
     data         TEXT    NOT NULL DEFAULT '{}'   -- full enriched posting (round-trip source of truth)

@@ -68,6 +68,11 @@ model jobs {
   ghost_reason String  @default("")
   also_on      String  @default("[]")
   country      String  @default("")
+  // Undergrad-eligibility screen. Tagged, never dropped — hidden by default in
+  // the UI like an out-of-country row. Default 1: only an explicit judgement
+  // hides a posting.
+  eligible        Int    @default(1)
+  eligible_reason String @default("")
   first_seen   String  @default("")
   last_seen    String  @default("")
   data         String  @default("{}")

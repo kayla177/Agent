@@ -97,3 +97,25 @@ def _migrate(conn: sqlite3.Connection) -> None:
             )
         except sqlite3.OperationalError as exc:  # no JSON1 support
             print(f"⚠️ could not seed jobs.ghost_reason from the data blob: {exc}")
+
+    # Undergrad-eligibility screen. `rank_node` used to DROP an ineligible
+    # posting outright, before notify persisted anything — so it never entered
+    # the database, was never visible, and was re-fetched and re-dropped every
+    # run. Measured: 33-44% of postings with plainly eligible titles ("Software
+    # Engineering Intern", "Data Science Intern") were dropped this way. Now the
+    # judgement is stored and the UI hides it by default, matching how `country`
+    # already works: auditable and reversible.
+    #
+    # DEFAULT 1 on both, so adding these columns can never hide an existing row.
+    # There is deliberately NO seed from the `data` blob here (unlike
+    # ghost_reason): `eligible` HAS been written into the blob by rank_node all
+    # along, but only ever as True — every False was dropped before it could be
+    # persisted. Seeding would therefore copy 551 meaningless `true`s, and any
+    # blob value of False would be a row that predates this and is better
+    # re-judged on the next run than resurrected as hidden.
+    if job_cols and "eligible" not in job_cols:
+        conn.execute("ALTER TABLE jobs ADD COLUMN eligible INTEGER NOT NULL DEFAULT 1")
+    if job_cols and "eligible_reason" not in job_cols:
+        conn.execute(
+            "ALTER TABLE jobs ADD COLUMN eligible_reason TEXT NOT NULL DEFAULT ''"
+        )
