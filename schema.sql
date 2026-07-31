@@ -21,7 +21,10 @@ CREATE TABLE IF NOT EXISTS applications (
     applied_date  TEXT    NOT NULL,
     updated_date  TEXT    NOT NULL,
     notes         TEXT    NOT NULL DEFAULT '',
-    auto_detected INTEGER NOT NULL DEFAULT 0
+    auto_detected INTEGER NOT NULL DEFAULT 0,
+    resume_job_id TEXT,            -- which generated resume was used to apply (-> resumes.job_id); NULL if none
+    resume_pdf_key TEXT,          -- pins the exact cached PDF sent (see server/resume_pdf.py); NULL if none
+    job_id        TEXT           -- which jobs.id this application is for; NULL on legacy pre-link rows
 );
 
 -- ---------------------------------------------------------------------------
@@ -43,7 +46,15 @@ CREATE TABLE IF NOT EXISTS jobs (
     fit_score    REAL,
     fit_reason   TEXT,
     ghost        INTEGER NOT NULL DEFAULT 0,
+    ghost_reason TEXT    NOT NULL DEFAULT '',   -- WHY it is flagged: "delisted (...)" | "stale (Nd old)" | "deadline passed (...)" | "delisted by source"
     also_on      TEXT    NOT NULL DEFAULT '[]',
+    country      TEXT    NOT NULL DEFAULT '',  -- US | CA | OTHER | UNKNOWN (see locations.py)
+    -- Undergrad-eligibility screen (rank.py). TAG, never a drop: these rows are
+    -- stored and hidden by default in the UI, exactly like an out-of-country row.
+    -- DEFAULT 1 so a posting is only ever hidden by an explicit judgement —
+    -- nothing is hidden by a missing value, a failed model call, or a migration.
+    eligible        INTEGER NOT NULL DEFAULT 1,
+    eligible_reason TEXT    NOT NULL DEFAULT '',  -- WHY the screen said no; '' when eligible
     first_seen   TEXT    NOT NULL DEFAULT '',
     last_seen    TEXT    NOT NULL DEFAULT '',
     data         TEXT    NOT NULL DEFAULT '{}'   -- full enriched posting (round-trip source of truth)
@@ -93,8 +104,80 @@ CREATE TABLE IF NOT EXISTS resumes (
     company     TEXT NOT NULL DEFAULT '',
     role        TEXT NOT NULL DEFAULT '',
     markdown    TEXT NOT NULL DEFAULT '',
+    latex       TEXT NOT NULL DEFAULT '',        -- tailored LaTeX (their template); '' until generated
     keywords    TEXT NOT NULL DEFAULT '[]',      -- JSON array of strings
     status      TEXT NOT NULL DEFAULT 'draft',   -- draft | final
     created_at  TEXT NOT NULL DEFAULT '',
     updated_at  TEXT NOT NULL DEFAULT ''
+);
+
+-- The one canonical "master" resume the tailored drafts start from. Single row
+-- (id is always 1, enforced by the store). `latex` holds the user's real .tex
+-- résumé (their template) — the source of truth for format + content; `markdown`
+-- is legacy/optional grounding text.
+CREATE TABLE IF NOT EXISTS master_resume (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    markdown    TEXT NOT NULL DEFAULT '',
+    latex       TEXT NOT NULL DEFAULT '',        -- the user's .tex résumé (template + content)
+    keywords    TEXT NOT NULL DEFAULT '[]',      -- JSON array of strings
+    updated_at  TEXT NOT NULL DEFAULT ''
+);
+
+-- Version history: a snapshot of a resume's Markdown is appended here before it
+-- is overwritten (on regenerate or manual save), so past drafts are never lost.
+CREATE TABLE IF NOT EXISTS resume_versions (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    job_id      TEXT NOT NULL,
+    markdown    TEXT NOT NULL DEFAULT '',
+    keywords    TEXT NOT NULL DEFAULT '[]',      -- JSON array of strings
+    status      TEXT NOT NULL DEFAULT 'draft',   -- status at snapshot time
+    created_at  TEXT NOT NULL DEFAULT ''
+);
+CREATE INDEX IF NOT EXISTS idx_resume_versions_job ON resume_versions(job_id);
+
+-- ---------------------------------------------------------------------------
+-- Stock digest — persisted analysis snapshots (one row per symbol per run, plus
+-- a single '__market__' row holding the overview). Lets the /stocks desk serve
+-- the last LLM-written analysis without re-running the model on every page load.
+-- `data` holds the full beginner report (summary, explained signals, risks,
+-- catalysts, learn note) or, for '__market__', {overview, read}.
+-- ---------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS stock_analysis (
+    symbol   TEXT    NOT NULL,
+    run_at   TEXT    NOT NULL,               -- ISO8601 UTC; all rows of one run share this
+    verdict  TEXT    NOT NULL DEFAULT '',    -- bullish | neutral | bearish
+    score    INTEGER,                         -- -2..+2 (bearish..bullish)
+    signal   TEXT    NOT NULL DEFAULT '',    -- buy | sell | hold (transparent heuristic)
+    price    REAL,
+    pct      REAL,
+    data     TEXT    NOT NULL DEFAULT '{}',  -- full report JSON
+    PRIMARY KEY (run_at, symbol)
+);
+CREATE INDEX IF NOT EXISTS idx_stock_analysis_run ON stock_analysis(run_at DESC);
+
+CREATE INDEX IF NOT EXISTS idx_jobs_country ON jobs(country);
+
+-- ---------------------------------------------------------------------------
+-- Applicant profile — one row (id is always 1, enforced by profile_store).
+-- Typed fields exist so NO LLM ever invents a phone number or a work-
+-- authorization answer into a submitted application form. `summary` is the
+-- free-text candidate description that drives job fit scoring.
+-- ---------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS applicant_profile (
+    id                INTEGER PRIMARY KEY AUTOINCREMENT,
+    full_name         TEXT    NOT NULL DEFAULT '',
+    email             TEXT    NOT NULL DEFAULT '',
+    phone             TEXT    NOT NULL DEFAULT '',
+    location          TEXT    NOT NULL DEFAULT '',
+    linkedin_url      TEXT    NOT NULL DEFAULT '',
+    github_url        TEXT    NOT NULL DEFAULT '',
+    portfolio_url     TEXT    NOT NULL DEFAULT '',
+    school            TEXT    NOT NULL DEFAULT '',
+    degree            TEXT    NOT NULL DEFAULT '',
+    grad_date         TEXT    NOT NULL DEFAULT '',   -- ISO YYYY-MM
+    us_work_auth      TEXT    NOT NULL DEFAULT '',   -- citizen|permanent_resident|f1_opt|tn_eligible|needs_sponsorship
+    ca_work_auth      TEXT    NOT NULL DEFAULT '',
+    needs_sponsorship INTEGER NOT NULL DEFAULT 0,
+    summary           TEXT    NOT NULL DEFAULT '',
+    updated_at        TEXT    NOT NULL DEFAULT ''
 );

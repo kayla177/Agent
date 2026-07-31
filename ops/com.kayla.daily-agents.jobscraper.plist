@@ -6,19 +6,18 @@
     <key>Label</key>
     <string>com.kayla.daily-agents.jobscraper</string>
 
-    <!-- Run: uv run python scripts/run_job_scraper.py --send  -->
+    <!-- Run: .venv/bin/python scripts/run.py job_scraper --send --backfill -->
     <key>ProgramArguments</key>
     <array>
-        <string>/Users/kayla.li/.local/bin/uv</string>
-        <string>run</string>
-        <string>python</string>
+        <string>/Users/kayla.li/.superset/Agent/.venv/bin/python</string>
         <string>scripts/run.py</string>
         <string>job_scraper</string>
         <string>--send</string>
+        <string>--backfill</string>
     </array>
 
     <key>WorkingDirectory</key>
-    <string>/Users/kayla.li/dev/daily-agents</string>
+    <string>/Users/kayla.li/.superset/Agent</string>
 
     <!-- Fire twice daily: 08:00 and 17:00 local time. -->
     <key>StartCalendarInterval</key>
@@ -38,9 +37,9 @@
     </array>
 
     <key>StandardOutPath</key>
-    <string>/Users/kayla.li/dev/daily-agents/jobscraper.log</string>
+    <string>/Users/kayla.li/.superset/Agent/jobscraper.log</string>
     <key>StandardErrorPath</key>
-    <string>/Users/kayla.li/dev/daily-agents/jobscraper.error.log</string>
+    <string>/Users/kayla.li/.superset/Agent/jobscraper.error.log</string>
 
     <key>RunAtLoad</key>
     <false/>

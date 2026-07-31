@@ -1,34 +1,26 @@
-"""Filter node — keep only early-career SOFTWARE/ML/CS/AI roles.
+"""Filter node — keep only co-op/intern/new-grad roles, and tag every posting
+with a country.
 
-A role is kept when its title is (a) co-op/intern/new-grad, (b) a software/ML/
-data/CS/AI field (not a generic "Box Office Internship"), and (c) not senior /
-advanced-degree. Location is a SOFT preference: by default we do NOT exclude on
-location. Set PREFER_LOCATIONS_ONLY = True to hard-filter to the preferred set.
+Location NEVER drops a posting here. Every posting is classified (US | CA |
+OTHER | UNKNOWN) and stored, and visibility is decided later — the board filters
+to config.JOB_COUNTRIES and the digest omits non-matching rows. That keeps a
+misclassification auditable in the database and makes "actually show me London"
+a toggle rather than a re-scrape. The only drops are the role filters.
 """
 
 from __future__ import annotations
 
-from agents.job_scraper.matching import (
-    is_excluded,
-    is_preferred_location,
-    is_target_role,
-    is_tech_role,
-)
+from agents.job_scraper.locations import country_of
+from agents.job_scraper.matching import is_excluded, is_target_role, is_tech_role
 from agents.job_scraper.state import JobScraperState
-
-# Config flag. Default OFF: keep every matching role regardless of location.
-PREFER_LOCATIONS_ONLY = False
 
 
 def filter_node(state: JobScraperState) -> JobScraperState:
-    raw = state.get("raw", [])
     kept: list[dict] = []
-    for p in raw:
+    for p in state.get("raw", []):
         title = p.get("title", "")
         # Early-career AND a software/ML/CS/AI field AND not senior/advanced-degree.
         if not is_target_role(title) or not is_tech_role(title) or is_excluded(title):
             continue
-        if PREFER_LOCATIONS_ONLY and not is_preferred_location(p.get("location", "")):
-            continue
-        kept.append(p)
+        kept.append({**p, "country": country_of(p.get("location", ""))})
     return {"filtered": kept}

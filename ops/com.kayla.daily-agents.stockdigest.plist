@@ -6,19 +6,17 @@
     <key>Label</key>
     <string>com.kayla.daily-agents.stockdigest</string>
 
-    <!-- Run: uv run python scripts/run_stock_digest.py --send  -->
+    <!-- Run: .venv/bin/python scripts/run.py stock_digest --send -->
     <key>ProgramArguments</key>
     <array>
-        <string>/Users/kayla.li/.local/bin/uv</string>
-        <string>run</string>
-        <string>python</string>
+        <string>/Users/kayla.li/.superset/Agent/.venv/bin/python</string>
         <string>scripts/run.py</string>
         <string>stock_digest</string>
         <string>--send</string>
     </array>
 
     <key>WorkingDirectory</key>
-    <string>/Users/kayla.li/dev/daily-agents</string>
+    <string>/Users/kayla.li/.superset/Agent</string>
 
     <!-- Fire at 08:30 local time, Monday-Friday (markets are closed weekends). -->
     <key>StartCalendarInterval</key>
@@ -66,9 +64,9 @@
     </array>
 
     <key>StandardOutPath</key>
-    <string>/Users/kayla.li/dev/daily-agents/stockdigest.log</string>
+    <string>/Users/kayla.li/.superset/Agent/stockdigest.log</string>
     <key>StandardErrorPath</key>
-    <string>/Users/kayla.li/dev/daily-agents/stockdigest.error.log</string>
+    <string>/Users/kayla.li/.superset/Agent/stockdigest.error.log</string>
 
     <key>RunAtLoad</key>
     <false/>

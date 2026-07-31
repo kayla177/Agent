@@ -34,6 +34,16 @@ HEADLINE_TOPICS: list[str] = config.STOCK_HEADLINE_TOPICS or _DEFAULT_HEADLINE_T
 # How many headlines to pull per topic before summarizing.
 HEADLINES_PER_TOPIC: int = 4
 
+# Market-overview index proxies (ETFs resolve on both Twelve Data and the keyless
+# CNBC fallback). Friendly names are what the beginner sees on the tiles. VIX is
+# the market's "fear gauge"; if a symbol can't be fetched it's silently skipped.
+INDEX_SYMBOLS: list[tuple[str, str]] = [
+    ("SPY", "S&P 500"),
+    ("QQQ", "Nasdaq 100"),
+    ("DIA", "Dow Jones"),
+    ("VIX", "Volatility (VIX)"),
+]
+
 
 # Live getters — read config at CALL time so a web settings save (followed by
 # config.refresh()) is reflected on the next run without restarting the process.
@@ -47,3 +57,8 @@ def get_headline_topics() -> list[str]:
 
 def get_headlines_per_topic() -> int:
     return HEADLINES_PER_TOPIC
+
+
+def get_index_symbols() -> list[tuple[str, str]]:
+    """(symbol, friendly-name) pairs for the market-overview strip."""
+    return INDEX_SYMBOLS

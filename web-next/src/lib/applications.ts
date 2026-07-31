@@ -15,6 +15,7 @@ export type Application = {
   updated_date: string;
   notes: string;
   auto_detected: number; // SQLite int, 0 | 1
+  resume_job_id: string | null; // which generated résumé was used to apply
 };
 
 // Per-status tint for the pill. The status WORD is always rendered beside it, so

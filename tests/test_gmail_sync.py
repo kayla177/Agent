@@ -1,57 +1,54 @@
-"""Offline tests for the gmail-sync agent (no network, no pytest).
+"""Offline tests for the gmail-sync agent (no network).
 
-Run:  uv run python tests/test_gmail_sync.py
+Run:  .venv/bin/python -m pytest tests/test_gmail_sync.py
 
 Covers the pure matching/inference heuristics and the node's behavior against a
 canned email list + a temp SQLite store (fetch_job_emails is monkeypatched).
+
+Storage isolation comes from the shared `temp_db` fixture (tests/conftest.py).
+It used to come from `store_db.DB_PATH = Path(tempfile.mkdtemp()) / "test.db"` —
+a module-global rebind with NO restore, so any later test (or a collection
+ordering change) could find the storage layer still pointing wherever this file
+left it, and any failure before the rebind pointed it at the PRODUCTION
+database. This project already suffered one live-DB write from exactly that
+fault class, and this file was the last place it remained. `fetch_job_emails` is
+monkeypatched for the same reason: a bare `gnode.fetch_job_emails = ...` leaked
+a fake into every subsequent test in the session.
 """
 
 from __future__ import annotations
 
 import sys
-import tempfile
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-import store_db
 from agents.application_tracker import store as appstore
 from agents.gmail_sync import matching
 from agents.gmail_sync.nodes import scan_gmail as gnode
 
-_failures: list[str] = []
-
-
-def check(name: str, cond: bool) -> None:
-    print(("  ✓ " if cond else "  ✗ ") + name)
-    if not cond:
-        _failures.append(name)
 
 
 def test_matching() -> None:
-    print("matching heuristics")
-    check("normalize strips suffix+punct", matching.normalize_company("Stripe, Inc.") == "stripe")
-    check("company match in subject", matching.company_matches("Stripe", "Re: your application to Stripe"))
-    check("company match via sender name", matching.company_matches("Notion", "Notion Recruiting <x@greenhouse.io>"))
-    check("no match unrelated", matching.company_matches("Figma", "Weekly newsletter from Medium") is False)
-    check("short key guarded", matching.company_matches("AB", "AB Corp interview") is False)
-    check("infer rejected", matching.infer_status("Unfortunately we decided not to move forward") == "rejected")
-    check("infer offer", matching.infer_status("We are pleased to offer you the role") == "offer")
-    check("infer interview", matching.infer_status("Let's schedule a call for next steps") == "interview")
-    check("infer none", matching.infer_status("Your weekly digest") is None)
-    check("rank rejected>offer>interview", matching.rank_status("rejected") > matching.rank_status("offer") > matching.rank_status("interview"))
-    check("apply advances", matching.should_apply("applied", "interview") is True)
-    check("apply no regress", matching.should_apply("offer", "interview") is False)
-    check("apply rejection always", matching.should_apply("offer", "rejected") is True)
-    check("apply rejection idempotent", matching.should_apply("rejected", "rejected") is False)
-    check("apply never revives rejected (offer)", matching.should_apply("rejected", "offer") is False)
-    check("apply never revives rejected (interview)", matching.should_apply("rejected", "interview") is False)
+    assert matching.normalize_company("Stripe, Inc.") == "stripe", "normalize strips suffix+punct"
+    assert matching.company_matches("Stripe", "Re: your application to Stripe"), "company match in subject"
+    assert matching.company_matches("Notion", "Notion Recruiting <x@greenhouse.io>"), "company match via sender name"
+    assert matching.company_matches("Figma", "Weekly newsletter from Medium") is False, "no match unrelated"
+    assert matching.company_matches("AB", "AB Corp interview") is False, "short key guarded"
+    assert matching.infer_status("Unfortunately we decided not to move forward") == "rejected", "infer rejected"
+    assert matching.infer_status("We are pleased to offer you the role") == "offer", "infer offer"
+    assert matching.infer_status("Let's schedule a call for next steps") == "interview", "infer interview"
+    assert matching.infer_status("Your weekly digest") is None, "infer none"
+    assert matching.rank_status("rejected") > matching.rank_status("offer") > matching.rank_status("interview"), "rank rejected>offer>interview"
+    assert matching.should_apply("applied", "interview") is True, "apply advances"
+    assert matching.should_apply("offer", "interview") is False, "apply no regress"
+    assert matching.should_apply("offer", "rejected") is True, "apply rejection always"
+    assert matching.should_apply("rejected", "rejected") is False, "apply rejection idempotent"
+    assert matching.should_apply("rejected", "offer") is False, "apply never revives rejected (offer)"
+    assert matching.should_apply("rejected", "interview") is False, "apply never revives rejected (interview)"
 
 
-def test_node_with_fake_gmail() -> None:
-    print("scan_gmail node (monkeypatched fetch + temp DB)")
-    store_db.DB_PATH = Path(tempfile.mkdtemp()) / "test.db"
-    store_db.init_db()
+def test_node_with_fake_gmail(temp_db, monkeypatch) -> None:
     appstore.add_application("Stripe", "SWE Intern", status="applied")   # id 1
     appstore.add_application("Figma", "FE Intern", status="interview")   # id 2
     appstore.add_application("Notion", "PM Intern", status="applied")    # id 3
@@ -66,55 +63,35 @@ def test_node_with_fake_gmail() -> None:
         {"from_name": "Databricks Recruiting", "from_email": "x@databricks.com",
          "subject": "Databricks — next steps", "snippet": "Let's schedule a call."},
     ]
-    gnode.fetch_job_emails = lambda **_: fake_emails  # monkeypatch the name in node's namespace
+    # Patch the name in the node's namespace — via monkeypatch, so it is undone.
+    monkeypatch.setattr(gnode, "fetch_job_emails", lambda **_: fake_emails)
 
     result = gnode.scan_gmail_node({})
     apps = {a["company"]: a for a in appstore.load_all()}
-    check("Stripe advanced applied→interview", apps["Stripe"]["status"] == "interview")
-    check("Stripe flagged auto_detected", apps["Stripe"]["auto_detected"] is True)
-    check("Figma interview→rejected", apps["Figma"]["status"] == "rejected")
-    check("Notion unchanged (no email)", apps["Notion"]["status"] == "applied")
-    check("Notion not auto_detected", apps["Notion"]["auto_detected"] is False)
-    check("rejected app not revived by matching email", apps["Databricks"]["status"] == "rejected")
-    check("message mentions 2 updates", "updated 2" in result["message"])
+    assert apps["Stripe"]["status"] == "interview", "Stripe advanced applied→interview"
+    assert apps["Stripe"]["auto_detected"] is True, "Stripe flagged auto_detected"
+    assert apps["Figma"]["status"] == "rejected", "Figma interview→rejected"
+    assert apps["Notion"]["status"] == "applied", "Notion unchanged (no email)"
+    assert apps["Notion"]["auto_detected"] is False, "Notion not auto_detected"
+    assert apps["Databricks"]["status"] == "rejected", "rejected app not revived by matching email"
+    assert "updated 2" in result["message"], "message mentions 2 updates"
 
 
-def test_node_not_authorized() -> None:
-    print("scan_gmail node (not authorized → graceful)")
-    store_db.DB_PATH = Path(tempfile.mkdtemp()) / "test.db"
-    store_db.init_db()
+def test_node_not_authorized(temp_db, monkeypatch) -> None:
     appstore.add_application("Stripe", "SWE Intern", status="applied")
-    gnode.fetch_job_emails = lambda **_: None  # simulate no-auth
+    monkeypatch.setattr(gnode, "fetch_job_emails", lambda **_: None)  # simulate no-auth
     result = gnode.scan_gmail_node({})
-    check("returns auth hint", "not authorized" in result["message"].lower())
-    check("no status change", appstore.load_all()[0]["status"] == "applied")
+    assert "not authorized" in result["message"].lower(), "returns auth hint"
+    assert appstore.load_all()[0]["status"] == "applied", "no status change"
 
 
-def test_node_exception() -> None:
-    print("scan_gmail node (fetch raises → graceful)")
-    store_db.DB_PATH = Path(tempfile.mkdtemp()) / "test.db"
-    store_db.init_db()
+def test_node_exception(temp_db, monkeypatch) -> None:
     appstore.add_application("Stripe", "SWE Intern", status="applied")
 
     def _boom(**_):
         raise RuntimeError("gmail down")
 
-    gnode.fetch_job_emails = _boom
+    monkeypatch.setattr(gnode, "fetch_job_emails", _boom)
     result = gnode.scan_gmail_node({})
-    check("returns failure message", "failed" in result["message"].lower())
-    check("no status change on error", appstore.load_all()[0]["status"] == "applied")
-
-
-def main() -> int:
-    for fn in (test_matching, test_node_with_fake_gmail, test_node_not_authorized, test_node_exception):
-        fn()
-    print()
-    if _failures:
-        print(f"FAILED ({len(_failures)}): " + ", ".join(_failures))
-        return 1
-    print("all gmail-sync tests passed")
-    return 0
-
-
-if __name__ == "__main__":
-    sys.exit(main())
+    assert "failed" in result["message"].lower(), "returns failure message"
+    assert appstore.load_all()[0]["status"] == "applied", "no status change on error"

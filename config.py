@@ -25,6 +25,11 @@ load_dotenv(PROJECT_ROOT / ".env")
 # The one and only SQLite location — every store and the server layer use this.
 DB_PATH = PROJECT_ROOT / "data" / "control_center.db"
 
+# Tectonic LaTeX engine for résumé PDF export. The vendored binary in tools/ is
+# gitignored (~20 MB); fall back to whatever `tectonic` is on PATH.
+_TECTONIC_LOCAL = PROJECT_ROOT / "tools" / "tectonic"
+TECTONIC_BIN = str(_TECTONIC_LOCAL) if _TECTONIC_LOCAL.exists() else os.getenv("TECTONIC_BIN", "tectonic")
+
 
 # --------------------------------------------------------------------------
 # Preferences overlay (data/prefs.json), written by the web settings page.
@@ -61,7 +66,7 @@ def _apply_prefs() -> None:
     global COMMUTE_ORIGIN, COMMUTE_DESTINATION
     global NEWS_TOPICS, NEWS_MAX_ITEMS_PER_TOPIC
     global STOCK_WATCHLIST, STOCK_HEADLINE_TOPICS, JOB_SOURCES
-    global JOB_MAX_AGE_DAYS, JOB_DROP_GHOSTS, JOB_PROFILE, JOB_MIN_FIT
+    global JOB_MAX_AGE_DAYS, JOB_DROP_GHOSTS, JOB_PROFILE, JOB_MIN_FIT, JOB_COUNTRIES
 
     # Weather location (Open-Meteo, no API key). Waterloo, Ontario.
     WEATHER_LATITUDE = float(os.getenv("WEATHER_LATITUDE", _pref("WEATHER_LATITUDE", 43.4643)))
@@ -102,6 +107,11 @@ def _apply_prefs() -> None:
     JOB_PROFILE = _pref("JOB_PROFILE", "")
     JOB_MIN_FIT = int(_pref("JOB_MIN_FIT", 0))
 
+    # Job scraper — which countries the board and digest show. Postings are
+    # always classified and stored (see locations.py); this only controls
+    # visibility, so narrowing it never loses data.
+    JOB_COUNTRIES = _pref("JOB_COUNTRIES", ["US", "CA"])
+
 
 def refresh() -> None:
     """Re-read ``data/prefs.json`` and reapply the editable prefs in place.
@@ -132,6 +142,23 @@ MODEL_ROLES = {
 
 # Base URL for the local Ollama server (LiteLLM reads this for ollama/* models).
 OLLAMA_API_BASE = os.getenv("OLLAMA_API_BASE", "http://localhost:11434")
+
+# Context window (in TOKENS) pinned on every ollama/* request — see
+# `shell/model_router.llm`. Explicit because Ollama's own default is neither
+# documented nor stable: measured 2026-07-30 on ollama 0.30.11 the server chose
+# 32768 for llama3.1:8b, older versions defaulted to 2048, and the auto-sized
+# value depends on how much VRAM is free at load time — so the same prompt can
+# silently fit on one run and be truncated on the next.
+#
+# 32768 is 4x the largest prompt+output any local caller can currently build
+# (measured: resume `draft` needs 8,124 tokens, `latexify` 7,558 with the real
+# 9,108-char master résumé, job `rank` 2,622), and well under the model's own
+# llama.context_length of 131,072. Observed footprint at this size: 7.0 GB
+# resident, fully in VRAM with no CPU offload.
+#
+# Lower it via the env var on a memory-tighter machine — but keep it above
+# ~10,000 or the résumé nodes will start losing the end of the master template.
+OLLAMA_NUM_CTX = int(os.getenv("OLLAMA_NUM_CTX", "32768"))
 
 
 # --------------------------------------------------------------------------

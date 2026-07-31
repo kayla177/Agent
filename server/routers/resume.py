@@ -11,12 +11,14 @@ from __future__ import annotations
 import tempfile
 from pathlib import Path
 
-from fastapi import APIRouter, File, Form, UploadFile
+from fastapi import APIRouter, File, Form, Response, UploadFile
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
 from agents.resume_generator import parse_upload
 from agents.resume_generator import store as resume_store
+from agents.resume_generator.latex import CompileError, compile_tex
+from server.markdown import render_markdown
 
 router = APIRouter()
 
@@ -49,6 +51,30 @@ async def upload_experience(file: UploadFile = File(...), kind: str = Form("resu
 
     doc_id = resume_store.add_experience_doc(filename, text, kind=kind)
     return JSONResponse({"id": doc_id, "chars": len(text)}, status_code=201)
+
+
+@router.post("/experience/parse")
+async def parse_experience(file: UploadFile = File(...)):
+    """Extract text from an uploaded file WITHOUT storing it — used to seed the
+    master résumé editor from an existing PDF/DOCX/TXT/MD."""
+    filename = file.filename or "upload"
+    suffix = Path(filename).suffix.lower()
+    if suffix not in parse_upload.SUPPORTED:
+        return JSONResponse(
+            {"error": f"unsupported file type '{suffix}' (supported: {', '.join(parse_upload.SUPPORTED)})"},
+            status_code=400,
+        )
+    data = await file.read()
+    with tempfile.NamedTemporaryFile(suffix=suffix, delete=True) as tmp:
+        tmp.write(data)
+        tmp.flush()
+        try:
+            text = parse_upload.extract_text(tmp.name)
+        except (ValueError, OSError) as exc:
+            return JSONResponse({"error": f"could not parse file: {exc}"}, status_code=400)
+    if not text.strip():
+        return JSONResponse({"error": "no text could be extracted from that file"}, status_code=400)
+    return {"text": text}
 
 
 # --------------------------------------------------------------------------
@@ -86,6 +112,7 @@ def delete_doc(doc_id: int):
 class ResumeEdit(BaseModel):
     jobId: str = ""
     markdown: str | None = None
+    latex: str | None = None
     status: str | None = None
 
 
@@ -94,7 +121,7 @@ def edit_resume(body: ResumeEdit):
     job_id = body.jobId.strip()
     if not job_id:
         return JSONResponse({"error": "jobId is required."}, status_code=400)
-    if body.markdown is None and body.status is None:
+    if body.markdown is None and body.latex is None and body.status is None:
         return JSONResponse({"error": "Nothing to update."}, status_code=400)
     if body.status is not None and body.status.strip() not in resume_store.STATUSES:
         return JSONResponse({"error": "status must be draft or final."}, status_code=400)
@@ -108,7 +135,73 @@ def edit_resume(body: ResumeEdit):
         company=existing["company"],
         role=existing["role"],
         markdown=body.markdown if body.markdown is not None else existing["markdown"],
+        latex=body.latex,  # None keeps the existing tailored .tex
         keywords=existing["keywords"],
         status=body.status.strip() if body.status is not None else existing["status"],
     )
     return {"resume": resume}
+
+
+@router.get("/data/resumes/{job_id}/versions")
+def resume_versions(job_id: str):
+    """Past snapshots for a resume (newest first)."""
+    return {"versions": resume_store.list_resume_versions(job_id)}
+
+
+class RenderBody(BaseModel):
+    markdown: str = ""
+
+
+@router.post("/data/render")
+def render(body: RenderBody):
+    """Markdown → HTML, reusing the same renderer as agent output. Used by the
+    résumé tab for previews and the print-to-PDF view (no client md dependency)."""
+    return {"html": render_markdown(body.markdown)}
+
+
+class TexBody(BaseModel):
+    tex: str = ""
+    filename: str = "resume.pdf"
+
+
+@router.post("/data/resume/pdf")
+def compile_pdf(body: TexBody):
+    """Compile a full LaTeX document to a real PDF (Tectonic). Returns the PDF
+    bytes on success; on a LaTeX error returns 422 with the engine log so the
+    UI can fall back to handing the user the raw .tex."""
+    try:
+        pdf = compile_tex(body.tex)
+    except CompileError as exc:
+        return JSONResponse({"error": str(exc), "log": exc.log}, status_code=422)
+    name = (body.filename or "resume.pdf").strip() or "resume.pdf"
+    if not name.endswith(".pdf"):
+        name += ".pdf"
+    return Response(
+        content=pdf,
+        media_type="application/pdf",
+        headers={"Content-Disposition": f'attachment; filename="{name}"'},
+    )
+
+
+# --------------------------------------------------------------------------
+# Master resume — the single canonical résumé tailored drafts start from
+# --------------------------------------------------------------------------
+class MasterEdit(BaseModel):
+    markdown: str | None = None
+    latex: str | None = None
+    keywords: list[str] | None = None
+
+
+@router.get("/data/resume/master")
+def get_master():
+    return {"master": resume_store.get_master_resume()}
+
+
+@router.put("/data/resume/master")
+def put_master(body: MasterEdit):
+    if body.markdown is None and body.latex is None and body.keywords is None:
+        return JSONResponse({"error": "Nothing to update."}, status_code=400)
+    master = resume_store.upsert_master_resume(
+        body.markdown, latex=body.latex, keywords=body.keywords
+    )
+    return {"master": master}

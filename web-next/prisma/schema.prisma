@@ -8,15 +8,18 @@ datasource db {
 }
 
 model applications {
-  id            Int    @id @default(autoincrement())
-  company       String
-  role          String
-  url           String @default("")
-  status        String @default("applied")
-  applied_date  String
-  updated_date  String
-  notes         String @default("")
-  auto_detected Int    @default(0)
+  id             Int     @id @default(autoincrement())
+  company        String
+  role           String
+  url            String  @default("")
+  status         String  @default("applied")
+  applied_date   String
+  updated_date   String
+  notes          String  @default("")
+  auto_detected  Int     @default(0)
+  resume_job_id  String?
+  resume_pdf_key String?
+  job_id         String?
 }
 
 model node_events {
@@ -62,13 +65,21 @@ model jobs {
   fit_score    Float?
   fit_reason   String?
   ghost        Int     @default(0)
+  ghost_reason String  @default("")
   also_on      String  @default("[]")
+  country      String  @default("")
+  // Undergrad-eligibility screen. Tagged, never dropped — hidden by default in
+  // the UI like an out-of-country row. Default 1: only an explicit judgement
+  // hides a posting.
+  eligible        Int    @default(1)
+  eligible_reason String @default("")
   first_seen   String  @default("")
   last_seen    String  @default("")
   data         String  @default("{}")
 
   @@index([company], map: "idx_jobs_company")
   @@index([status], map: "idx_jobs_status")
+  @@index([country], map: "idx_jobs_country")
 }
 
 // Resume generator (feature/resume-generator). Tables are created by the Python
@@ -88,8 +99,67 @@ model resumes {
   company    String @default("")
   role       String @default("")
   markdown   String @default("")
+  latex      String @default("")
   keywords   String @default("[]") // JSON array of strings
   status     String @default("draft") // draft | final
   created_at String @default("")
   updated_at String @default("")
+}
+
+model master_resume {
+  id         Int    @id @default(autoincrement())
+  markdown   String @default("")
+  latex      String @default("")
+  keywords   String @default("[]") // JSON array of strings
+  updated_at String @default("")
+}
+
+model resume_versions {
+  id         Int    @id @default(autoincrement())
+  job_id     String
+  markdown   String @default("")
+  keywords   String @default("[]") // JSON array of strings
+  status     String @default("draft")
+  created_at String @default("")
+
+  @@index([job_id], map: "idx_resume_versions_job")
+}
+
+// Stock digest — persisted analysis snapshots. Created by the Python agent's
+// store (agents/stock_digest/store.py); mirrors schema.sql. The '__market__'
+// symbol row carries the overview blob; every other row is one analyzed ticker.
+model stock_analysis {
+  symbol  String
+  run_at  String
+  verdict String @default("")
+  score   Int?
+  signal  String @default("")
+  price   Float?
+  pct     Float?
+  data    String @default("{}")
+
+  @@id([run_at, symbol])
+  @@index([run_at(sort: Desc)], map: "idx_stock_analysis_run")
+}
+
+// Applicant profile — one row (id is always 1, enforced by profile_store).
+// Typed fields exist so no LLM ever invents a phone number or a work-
+// authorization answer into a submitted application form.
+model applicant_profile {
+  id                Int    @id @default(autoincrement())
+  full_name         String @default("")
+  email             String @default("")
+  phone             String @default("")
+  location          String @default("")
+  linkedin_url      String @default("")
+  github_url        String @default("")
+  portfolio_url     String @default("")
+  school            String @default("")
+  degree            String @default("")
+  grad_date         String @default("")
+  us_work_auth      String @default("")
+  ca_work_auth      String @default("")
+  needs_sponsorship Int    @default(0)
+  summary           String @default("")
+  updated_at        String @default("")
 }

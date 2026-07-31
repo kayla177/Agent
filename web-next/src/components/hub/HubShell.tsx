@@ -11,6 +11,7 @@ const TABS = [
   { href: "/stocks", label: "stocks", planet: "jupiter" },
   { href: "/jobs", label: "jobs", planet: "mars" },
   { href: "/tracker", label: "tracker", planet: "saturn" },
+  { href: "/resume", label: "résumé", planet: "neptune" },
 ] as const;
 
 function activeTab(pathname: string) {

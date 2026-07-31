@@ -23,8 +23,12 @@ export type Job = {
   description: string | null;
   fit_score: number | null;
   fit_reason: string | null;
-  ghost: number;      // 0 | 1
-  also_on: string;    // JSON array string
+  ghost: number;         // 0 | 1
+  ghost_reason: string;  // WHY it is flagged; "" when it is not
+  also_on: string;       // JSON array string
+  country: string;       // US | CA | OTHER | UNKNOWN
+  eligible: number;         // 0 | 1 — undergrad-eligibility screen (rank.py)
+  eligible_reason: string;  // WHY the screen said no; "" when eligible
 };
 
 export type FitTier = "hi" | "mid" | "lo" | "none";
@@ -86,12 +90,71 @@ export function byPriority(a: Job, b: Job): number {
   return d !== 0 ? d : byFitDesc(a, b);
 }
 
+// True when the undergrad-eligibility screen rejected this posting. Defaults to
+// ELIGIBLE for anything missing/legacy: `eligible` is NOT NULL DEFAULT 1 in the
+// schema, and a row must only ever be hidden by an explicit judgement.
+export function isScreenedOut(job: Job): boolean {
+  return job.eligible === 0;
+}
+
+// Short badge label for a screened-out posting, mirroring `ghostLabel`. The full
+// `eligible_reason` is shown on hover; rows tagged before a reason was recorded
+// fall back to fixed wording so the badge is never blank.
+export function eligibleLabel(job: Job): string {
+  return (job.eligible_reason || "").trim() || "not undergrad-eligible";
+}
+
 // Highest-fit role among status === "new" with a non-null score, preferring
 // reasonably fresh roles (≤30d) so the hero never highlights a stale posting.
+//
+// Screened-out rows are excluded unconditionally — NOT via the board's toggle.
+// The hero is a single "apply to this next" recommendation, so it must never
+// advertise a posting that is hidden from the list underneath it; that would be
+// the UI contradicting itself, and there would be no row to click through to.
 export function bestMatch(jobs: Job[]): Job | null {
-  const scored = jobs.filter((j) => j.status === "new" && j.fit_score !== null);
+  const scored = jobs.filter(
+    (j) => j.status === "new" && j.fit_score !== null && !isScreenedOut(j),
+  );
   if (!scored.length) return null;
   const fresh = scored.filter((j) => ageBucket(j) <= 2);
   const pool = fresh.length ? fresh : scored;
   return pool.reduce((best, j) => (j.fit_score! > best.fit_score! ? j : best));
+}
+
+export const COUNTRY_LABEL: Record<string, string> = {
+  US: "US", CA: "Canada", OTHER: "intl", UNKNOWN: "?",
+};
+
+export const ALL_COUNTRIES = ["US", "CA", "OTHER", "UNKNOWN"];
+
+// Mirrors config.JOB_COUNTRIES's default EXACTLY, used only when the effective
+// pref cannot be read. UNKNOWN is deliberately absent here because
+// `visibleCountries` adds it unconditionally — the two lists used to disagree
+// (config said ["US","CA"], this said ["US","CA","UNKNOWN"]).
+export const DEFAULT_COUNTRIES = ["US", "CA"];
+
+// The board's initial country filter, from the effective JOB_COUNTRIES pref.
+// UNKNOWN is ALWAYS included regardless of the pref: an unclassifiable location
+// is never dropped by the scraper (see locations.py) and must never be silently
+// hidden either, or a real US role with a location string like "2 Locations"
+// would vanish from the board with no way to find it. An empty pref means
+// "no filtering" everywhere else in this repo (JOB_SOURCES, STOCK_WATCHLIST),
+// so it falls back to the default rather than showing nothing.
+export function visibleCountries(pref: string[] | null | undefined): string[] {
+  const base = pref && pref.length ? pref : DEFAULT_COUNTRIES;
+  return Array.from(new Set([...base, "UNKNOWN"]));
+}
+
+export function inCountries(job: Job, allowed: string[]): boolean {
+  return allowed.includes(job.country || "UNKNOWN");
+}
+
+// Short badge label for a flagged posting. `ghost_reason` is written by
+// freshness_node / store.sweep_ghosts; the full string is shown on hover. Rows
+// flagged before ghost_reason was mirrored fall back to the old "stale Nd".
+export function ghostLabel(job: Job, age: number | null): string {
+  const r = (job.ghost_reason || "").trim();
+  if (r.startsWith("delisted")) return "removed from board";
+  if (r.startsWith("deadline passed")) return "deadline passed";
+  return age !== null ? `stale ${age}d` : "stale";
 }

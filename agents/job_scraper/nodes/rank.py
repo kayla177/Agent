@@ -1,21 +1,28 @@
-"""Rank node — undergrad-eligibility screen + optional fit score (LLM).
+"""Rank node — undergrad-eligibility screen + baseline/refined fit score.
 
 Uses the platform's local model (via ``shell/model_router.llm``) to, for every
 posting, judge:
-  - ``eligible``: can an UNDERGRAD (bachelor's, ~0-1 yrs exp) realistically apply?
-    False only when the role clearly requires a Master's/PhD or senior experience
-    (read from the title + a slice of the JD). Roles judged ineligible are dropped.
-  - ``fit_score`` (0–100) + ``fit_reason`` against ``config.JOB_PROFILE`` — only
-    when a profile is set; otherwise the score stays ``None``.
+  - ``eligible`` + ``eligible_reason``: can an UNDERGRAD (bachelor's, ~0-1 yrs
+    exp) realistically apply? False only when the role clearly requires a
+    Master's/PhD or senior experience (read from the title + a HEAD+TAIL excerpt
+    of the JD — see ``_desc_slice``; the qualifications live at the bottom, so a
+    head-only slice showed the model nothing but company boilerplate).
+    An ineligible role is TAGGED AND STORED, never dropped — see `rank_node`.
+  - ``fit_score`` (0–100) + ``fit_reason`` against the candidate profile.
 
 Design choices that keep this safe and cheap:
   - Batched: several postings per model call so one prompt handles many roles.
   - Runs even with no profile — eligibility is independent of the profile.
-  - Graceful degradation: on any model / JSON-parse failure a posting keeps
-    ``eligible=True`` (never over-drop) and ``fit_score=None``; the deterministic
-    title-exclusion in filter.py is the safety net.
-  - Optional ``config.JOB_MIN_FIT`` drops roles scoring below it (0 = keep all,
-    unscored roles are always kept).
+  - A deterministic keyword baseline (scoring.py) is applied to EVERY posting
+    FIRST, so a score always exists; the LLM then overrides it only when it
+    returns a usable integer. Measured 2026-07-25: llama3.1:8b returns a null
+    score for ~60% of postings even with a profile set, so treating the model
+    as the sole source left most rows unscored — and null sinks to the bottom
+    of sort-by-fit, hiding good roles. The LLM still has sole authority over
+    the ``eligible`` drop decision.
+  - Optional ``config.JOB_MIN_FIT`` drops roles scoring below it (0 = keep
+    all). Since every posting now always has a score, there is no "unscored
+    roles are always kept" carve-out anymore.
 """
 
 from __future__ import annotations
@@ -24,11 +31,16 @@ import json
 import re
 
 import config
+import profile_store
+from agents.job_scraper.scoring import extract_keywords, is_baseline_reason, score_baseline
 from agents.job_scraper.state import JobScraperState
 from shell.model_router import llm
+from shell.prompt_text import head_tail
 
-_BATCH = 5
-_DESC_SLICE = 500
+_BATCH = 3
+# Per-posting JD budget for the prompt, split HEAD + TAIL. See `_desc_slice`.
+_DESC_HEAD = 400
+_DESC_TAIL = 1600
 _JSON_RE = re.compile(r"\[.*\]", re.DOTALL)
 
 _SYSTEM = (
@@ -42,6 +54,53 @@ _SYSTEM = (
 )
 
 
+def _desc_slice(
+    description: str | None, *, head: int = _DESC_HEAD, tail: int = _DESC_TAIL
+) -> str:
+    """A bounded JD excerpt for the prompt: the OPENING plus the ENDING.
+
+    Mechanism lives in `shell.prompt_text.head_tail` (the résumé generator's
+    keywords node hit the same bug and shares it); the BUDGET lives here, because
+    it was measured against this prompt and this model.
+
+    DO NOT "simplify" this back to `description[:n]`. A job description is laid
+    out company-first — mission blurb, team pitch, "what you'll do" — and only
+    then the part that decides whether an undergrad can apply at all
+    ("Qualifications", "Minimum/Preferred", the actual tech stack). Measured over
+    50 live JDs from greenhouse / lever / ashby on 2026-07-25 (p50 5,045 chars,
+    max 13,982): the last mention of a concrete technology sits a median of 1,305
+    chars from the END of the text.
+
+    WHY 1600 AND NOT MORE. The tail was swept upward on 2026-07-30 once the real
+    context window was known (llama.context_length 131,072; see
+    `config.OLLAMA_NUM_CTX`), so the budget is no longer limited by the window.
+    Information capture keeps improving on paper — distinct tech terms 40% at
+    tail 1600, 69% at 2500, 87% at 4000 — but the MODEL's behaviour does not.
+    Timed against 34 real intern/co-op/new-grad postings with full text:
+
+        slice                score returned      ineligible caught      cost
+        head-only 500 (bug)          15%              7/9 (78%)     0.80s/posting
+        head 400 + tail 1600         15%              6/9 (67%)     1.24s/posting
+        head 400 + tail 2500          0%              6/9 (67%)     1.55s/posting
+        head 400 + tail 3500         15%              7/9 (78%)     1.94s/posting
+
+    Both LLM-facing outcomes are flat within noise while cost rises ~linearly
+    (a 60-posting backlog run goes 0.8 -> 1.9 minutes), so paying for a bigger
+    tail buys nothing measurable: llama3.1:8b does not reliably use the extra
+    context. 1600 is kept as the smallest budget that puts the requirements in
+    front of the model at all (73% of postings' degree/seniority wording, 40% of
+    tech terms) for +0.44s/posting over the old head-only slice.
+
+    The deterministic keyword baseline in `scoring.py` — the path that ALWAYS
+    produces a score — reads the whole stored description and is unaffected by
+    this budget. That is where raising `ats._DESC_MAX` did the real work.
+
+    A description that fits whole is returned whole — no elision marker, no
+    duplicated middle.
+    """
+    return head_tail(description, head=head, tail=tail)
+
+
 def _prompt(profile: str, batch: list[dict]) -> str:
     head = (
         f"CANDIDATE PROFILE:\n{profile}\n"
@@ -50,7 +109,7 @@ def _prompt(profile: str, batch: list[dict]) -> str:
     )
     lines = [head, "ROLES:"]
     for i, p in enumerate(batch):
-        desc = (p.get("description") or "")[:_DESC_SLICE].replace("\n", " ")
+        desc = _desc_slice(p.get("description")).replace("\n", " ")
         lines.append(
             f"[{i}] {p.get('title', '?')} @ {p.get('company', '?')} "
             f"({p.get('location', '—')})\n{desc}"
@@ -78,6 +137,15 @@ def _parse(reply: str, size: int) -> dict[int, dict]:
         # Default eligible=True unless the model explicitly says false.
         eligible = it.get("eligible", True) is not False
         raw = it.get("score", None)
+        # `bool` subclasses `int`, so `int(True) == 1` — without this guard a
+        # reply of {"score": true} is silently accepted as a fit score of 1
+        # AND overwrites the baseline reason, which makes is_baseline_reason()
+        # False. The row is then never re-selected by backfill and never
+        # re-baselined, so ONE malformed reply pins a good job at the bottom of
+        # sort-by-fit permanently. A bool is not a score: treat it as absent
+        # and keep the deterministic baseline.
+        if isinstance(raw, bool):
+            raw = None
         try:
             score = None if raw is None else max(0, min(100, int(raw)))
         except (TypeError, ValueError):
@@ -86,22 +154,55 @@ def _parse(reply: str, size: int) -> dict[int, dict]:
     return out
 
 
-def _score_batch(profile: str, batch: list[dict]) -> None:
-    """Attach eligible / fit_score / fit_reason to a batch in place (best-effort)."""
+def _score_batch(profile: str, keywords: list[str], batch: list[dict]) -> None:
+    """Attach eligible / fit_score / fit_reason to a batch in place.
+
+    The deterministic baseline is applied FIRST so every posting always has a
+    score, then the LLM overrides it only when it returns a usable integer.
+    Measured 2026-07-25: llama3.1:8b returns a null score for ~60% of postings
+    even with a profile set, so treating the model as the sole source would
+    leave most rows unscored — and null sinks to the bottom of sort-by-fit,
+    hiding good roles.
+    """
+    for p in batch:
+        base_score, base_reason = score_baseline(keywords, p)
+        p["fit_score"] = base_score
+        p["fit_reason"] = base_reason
+        # Default ELIGIBLE, set before the call. Every failure path below —
+        # transport error, unparseable reply, an index the model omitted — leaves
+        # this True, so a posting is only ever hidden by an explicit judgement.
+        p["eligible"] = True
+        p["eligible_reason"] = ""
+
     try:
         reply = llm("local", _prompt(profile, batch), system=_SYSTEM, temperature=0.2)
-    except Exception as exc:  # model unavailable / transport error → keep everything
+    except Exception as exc:  # model unavailable / transport error -> keep baselines
+        # Print the detail (can be a very long litellm/httpx error) rather than
+        # storing it in fit_reason, which is rendered directly in the jobs board
+        # UI. The fixed " (unrefined)" suffix must keep is_baseline_reason() True
+        # so the backfill node still retries these rows.
+        print(f"rank_node: LLM unavailable, keeping baseline scores: {exc}")
         for p in batch:
-            p.setdefault("eligible", True)
-            p.setdefault("fit_score", None)
-            p.setdefault("fit_reason", f"unranked ({exc})")
+            p["fit_reason"] = f"{p['fit_reason']} (unrefined)"
         return
+
     parsed = _parse(reply, len(batch))
     for i, p in enumerate(batch):
         hit = parsed.get(i)
-        p["eligible"] = hit["eligible"] if hit else True
-        p["fit_score"] = hit["score"] if hit else None
-        p["fit_reason"] = (hit["reason"] if hit and hit["reason"] else ("unranked" if profile else "no profile set"))
+        if not hit:
+            continue
+        p["eligible"] = hit["eligible"]
+        # Record WHY when the screen says no, so a hidden row can explain itself
+        # in the UI. Reuses the model's own one-line reason, falling back to
+        # fixed wording so the badge is never blank.
+        if not hit["eligible"]:
+            p["eligible_reason"] = hit["reason"] or "screened out: not undergrad-eligible"
+        if hit["score"] is not None:
+            p["fit_score"] = hit["score"]
+            # Always overwrite the reason when the score was refined. Leaving the
+            # baseline reason in place would make is_baseline_reason() True, so the
+            # row would be re-selected (and re-clobbered) on every future run.
+            p["fit_reason"] = hit["reason"] or "refined (no reason given)"
 
 
 def rank_node(state: JobScraperState) -> JobScraperState:
@@ -109,20 +210,58 @@ def rank_node(state: JobScraperState) -> JobScraperState:
     if not new:
         return {"new": new}
 
-    profile = (config.JOB_PROFILE or "").strip()
+    # Profile: explicit pref wins, else the applicant profile's summary.
+    profile = (config.JOB_PROFILE or "").strip() or profile_store.fit_profile_text()
+    keywords = extract_keywords(profile)
 
-    # Run the model on every scrape — even without a profile — for the eligibility
-    # judgment (and fit score when a profile exists).
-    for start in range(0, len(new), _BATCH):
-        _score_batch(profile, new[start : start + _BATCH])
+    refinable = [p for p in new if not p.get("_skip_llm")]
+    baseline_only = [p for p in new if p.get("_skip_llm")]
 
-    # Drop roles the model judged not undergrad-eligible (grad-only / senior).
-    new = [p for p in new if p.get("eligible", True)]
+    for p in baseline_only:
+        # Never clobber an existing LLM-refined score. A row can land here with
+        # `_skip_llm` set for a reason that has nothing to do with its score —
+        # e.g. backfill selected it only because `country` was blank, and it
+        # already carries a real, LLM-refined fit_score/fit_reason. Recomputing
+        # unconditionally would overwrite that (measured: 92/"strong python +
+        # react match" -> 35/"matched: none"), and since a baseline reason
+        # reads as "not yet refined", the row would then be re-selected by
+        # backfill forever. Only (re)compute when there is no score yet, or
+        # the current score already IS the baseline (never refined).
+        if p.get("fit_score") is None or is_baseline_reason(p.get("fit_reason", "")):
+            p["fit_score"], p["fit_reason"] = score_baseline(keywords, p)
+        p.setdefault("eligible", True)
+        p.setdefault("eligible_reason", "")
 
-    # Optional fit threshold (never drops unscored roles).
+    for start in range(0, len(refinable), _BATCH):
+        _score_batch(profile, keywords, refinable[start : start + _BATCH])
+
+    # The eligibility screen TAGS, it does not drop. It used to do this:
+    #
+    #     new = [p for p in new if p.get("_rescored") or p.get("eligible", True)]
+    #
+    # which discarded the posting before `notify` persisted anything — so an
+    # ineligible role never entered the database, was never visible, could not be
+    # audited or overridden, and was re-fetched and re-dropped on every
+    # subsequent run. That silent, unrecoverable data loss cost far more than the
+    # noise it saved, because the screen is not accurate enough to be trusted
+    # with a drop: measured 2026-07-30 across two independent samples, 33-44% of
+    # postings with plainly undergrad-eligible titles ("Software Engineering
+    # Intern", "Data Science Intern", "Robotics Intern, Deployment") were being
+    # judged ineligible and thrown away.
+    #
+    # So the judgement is now carried on the row (`eligible` / `eligible_reason`)
+    # and persisted. `notify` withholds these from the digest and the board hides
+    # them behind a toggle — the same store-everything, hide-in-the-UI pattern
+    # `country` already uses, which keeps the call reversible and lets the gate's
+    # accuracy finally be measured from real data instead of guessed at.
+    #
+    # The row count out of this node now equals the row count in. Nothing here
+    # may reintroduce a filter on `eligible`.
+
+    # Optional fit threshold. Every posting now HAS a score, so there is no
+    # "unscored" carve-out to make any more. Same `_rescored` exemption as above.
     if config.JOB_MIN_FIT > 0:
-        new = [p for p in new if p.get("fit_score") is None or p["fit_score"] >= config.JOB_MIN_FIT]
+        new = [p for p in new if p.get("_rescored") or p["fit_score"] >= config.JOB_MIN_FIT]
 
-    # Highest fit first; unscored (None) sink to the bottom.
-    new.sort(key=lambda p: (p.get("fit_score") is not None, p.get("fit_score") or 0), reverse=True)
+    new.sort(key=lambda p: p["fit_score"], reverse=True)
     return {"new": new}

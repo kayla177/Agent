@@ -54,9 +54,6 @@ Open **http://localhost:3000**. The frontend reads/writes the SQLite DB and call
 agent service on :8001 to run agents and stream results. Agents that use the local LLM
 also need **Ollama** running (`ollama serve`).
 
-> `uv` works too (`uv run python -m server`) if installed, but is not required — a plain
-> venv is enough.
-
 ## Run one agent from the CLI
 
 ```bash
@@ -64,6 +61,12 @@ python scripts/run.py morning_briefing          # build + print only
 python scripts/run.py job_scraper --send        # + deliver to Discord
 # résumé generator has its own richer CLI:
 python scripts/run_resume_generator.py --list
+```
+
+## Tests
+
+```bash
+.venv/bin/python -m pytest tests/
 ```
 
 ## Models (Ollama)

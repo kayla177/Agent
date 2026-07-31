@@ -30,10 +30,16 @@ def main() -> None:
     parser.add_argument("agent", choices=keys, metavar="agent_key",
                         help=f"which agent to run ({', '.join(keys)})")
     parser.add_argument("--send", action="store_true", help="deliver to Discord")
+    parser.add_argument(
+        "--backfill", action="store_true",
+        help="also LLM-refine stored postings that lack a real fit score "
+             "(job_scraper only; ~6.5s per posting, so the scheduled runs use "
+             "it and interactive runs do not)",
+    )
     args = parser.parse_args()
 
     graph = get_spec(args.agent).build_graph(send=args.send)
-    final = graph.invoke({})
+    final = graph.invoke({"backfill": True} if args.backfill else {})
 
     print("=" * 60)
     print(final.get("message", "(no message produced)"))

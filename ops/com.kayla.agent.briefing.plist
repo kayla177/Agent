@@ -1,0 +1,34 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>Label</key>
+	<string>com.kayla.agent.briefing</string>
+
+	<!-- Label is deliberately NOT com.kayla.daily-agents.briefing: that label is
+	     taken by the older ~/dev/daily-agents briefing job, which still runs. -->
+	<!-- Run: .venv/bin/python scripts/run.py morning_briefing --send -->
+	<key>ProgramArguments</key>
+	<array>
+		<string>/Users/kayla.li/.superset/Agent/.venv/bin/python</string>
+		<string>scripts/run.py</string>
+		<string>morning_briefing</string>
+		<string>--send</string>
+	</array>
+	<key>RunAtLoad</key>
+	<false/>
+	<key>StandardErrorPath</key>
+	<string>/Users/kayla.li/.superset/Agent/briefing.error.log</string>
+	<key>StandardOutPath</key>
+	<string>/Users/kayla.li/.superset/Agent/briefing.log</string>
+	<key>StartCalendarInterval</key>
+	<dict>
+		<key>Hour</key>
+		<integer>7</integer>
+		<key>Minute</key>
+		<integer>0</integer>
+	</dict>
+	<key>WorkingDirectory</key>
+	<string>/Users/kayla.li/.superset/Agent</string>
+</dict>
+</plist>

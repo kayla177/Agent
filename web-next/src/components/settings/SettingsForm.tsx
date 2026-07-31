@@ -7,6 +7,8 @@ type Prefs = {
   WEATHER_TEMP_UNIT: string; COMMUTE_ORIGIN: string; COMMUTE_DESTINATION: string;
   NEWS_TOPICS: string[]; NEWS_MAX_ITEMS_PER_TOPIC: number;
   STOCK_WATCHLIST: string[]; STOCK_HEADLINE_TOPICS: string[]; JOB_SOURCES: Source[];
+  JOB_PROFILE: string; JOB_MIN_FIT: number; JOB_MAX_AGE_DAYS: number;
+  JOB_DROP_GHOSTS: boolean; JOB_COUNTRIES: string[];
 };
 type Secret = { name: string; set: boolean };
 
@@ -35,7 +37,12 @@ export default function SettingsForm({ prefs, secrets }: { prefs: Prefs; secrets
   }
 
   return (
-    <form className="settings-form" onSubmit={onSubmit}>
+    <form className="settings-form panel" onSubmit={onSubmit}>
+      <h2>preferences</h2>
+      <p className="panel-sub">
+        Agent behaviour — weather, news, stocks, and the job scraper.
+        <strong> Save settings</strong> below saves only this section.
+      </p>
       {msg ? <div className={`banner ${msg.ok ? "ok" : "err"}`}>{msg.text}</div> : null}
 
       <label>Weather latitude<input name="WEATHER_LATITUDE" defaultValue={prefs.WEATHER_LATITUDE} /></label>
@@ -54,6 +61,23 @@ export default function SettingsForm({ prefs, secrets }: { prefs: Prefs; secrets
       <label>Stock watchlist (one ticker per line)<textarea name="STOCK_WATCHLIST" defaultValue={prefs.STOCK_WATCHLIST.join("\n")} /></label>
       <label>Stock headline topics (one per line)<textarea name="STOCK_HEADLINE_TOPICS" defaultValue={prefs.STOCK_HEADLINE_TOPICS.join("\n")} /></label>
       <label>Job sources (company, ats, token — one per line)<textarea name="JOB_SOURCES" defaultValue={sourcesText} /></label>
+      <label>Candidate profile (drives job fit scores)
+        <textarea name="JOB_PROFILE" rows={4} defaultValue={prefs.JOB_PROFILE}
+          placeholder="3rd-year CS undergrad at Waterloo. Python, TypeScript, React, SQL. Seeking SWE/ML co-op." />
+      </label>
+      <label>Minimum fit score to keep (0 = keep all)
+        <input name="JOB_MIN_FIT" defaultValue={prefs.JOB_MIN_FIT} />
+      </label>
+      <label>Flag postings older than (days)
+        <input name="JOB_MAX_AGE_DAYS" defaultValue={prefs.JOB_MAX_AGE_DAYS} />
+      </label>
+      <label>Countries to show (one code per line: US, CA, OTHER, UNKNOWN)
+        <textarea name="JOB_COUNTRIES" rows={3} defaultValue={prefs.JOB_COUNTRIES.join("\n")} />
+      </label>
+      <label className="checkbox-row">
+        <input type="checkbox" name="JOB_DROP_GHOSTS" defaultChecked={prefs.JOB_DROP_GHOSTS} />
+        Drop stale/ghost postings entirely (instead of just flagging them)
+      </label>
 
       <button type="submit" className="primary" disabled={pending}>{pending ? "Saving…" : "Save settings"}</button>
 

@@ -1,8 +1,9 @@
 """Shared state for the job-scraper graph.
 
-The pipeline is a linear chain (fetch -> filter -> dedupe -> notify), so each
-node reads the previous node's list and writes its own key. `warnings`
-accumulates per-source failure strings so one bad ATS token never kills the run.
+The pipeline is a linear chain (fetch -> filter -> dedupe -> backfill ->
+freshness -> rank -> notify), so each node reads the previous node's list and
+writes its own key. `warnings` accumulates per-source failure strings so one
+bad ATS token never kills the run.
 
 A posting is a normalized dict:
     {"company": str, "ats": str, "title": str, "location": str,
@@ -13,7 +14,18 @@ A posting is a normalized dict:
      # derived downstream by the freshness / dedupe / rank nodes:
      "age_days": int|None, "ghost": bool, "ghost_reason": str,
      "canonical_location": str, "dup_of": str|None, "also_on": list[str],
-     "fit_score": int|None, "fit_reason": str}
+     "country": str,            # US | CA | OTHER | UNKNOWN (locations.py)
+     "fit_score": int,          # ALWAYS set (deterministic baseline, LLM-refined)
+     "fit_reason": str,
+     "eligible": bool,          # rank.py: undergrad-eligible? NOT transient —
+                                # it survives into the store. False TAGS the row
+                                # (hidden in the UI, withheld from the digest);
+                                # it must never drop it. See rank_node.
+     "eligible_reason": str,    # WHY the screen said no; "" when eligible
+     # transient pipeline tags (stripped before persistence):
+     "_rescored": bool,   # re-injected backlog row; persisted, never announced
+     "_skip_llm": bool,   # baseline score only; no inference spent on this row
+    }
 where `id` is already prefixed with company+ats to be globally unique.
 """
 
@@ -23,13 +35,28 @@ from typing import TypedDict
 
 
 class JobScraperState(TypedDict, total=False):
-    # Every posting pulled from every source (normalized).
+    # Every posting pulled from every source (normalized). Still readable at
+    # `notify` time, which is what lets `store.refresh_descriptions` repair
+    # truncated stored descriptions with no second fetch pass.
     raw: list[dict]
-    # Postings whose title matches co-op/intern/new-grad keywords.
+    # Postings whose title matches co-op/intern/new-grad keywords. Same deal:
+    # read again at `notify` time for the description repair.
     filtered: list[dict]
     # Of the filtered set, the ones not already in the seen-store.
     new: list[dict]
+    # Graph input: when True, backfill's LLM refinement pass runs (bounded by
+    # LLM_CAP). False/absent keeps the interactive "run scraper" path fast.
+    backfill: bool
     # Final assembled Discord message, consumed by notify/deliver.
     message: str
     # Non-fatal per-source problems, surfaced but never raised.
     warnings: list[str]
+    # fetch: every posting id returned by any source this run. A stored posting
+    # absent from this set, whose (company, ats) is in `fetched_ok`, is delisted.
+    observed_ids: set[str]
+    # fetch: the `(company, ats)` BOARDS whose fetch this run can be trusted as
+    # a complete picture — no error, non-empty, and not truncated at the
+    # adapter's page cap. Only these can decide a delisting. Keyed per board,
+    # not per company, because every way of losing trust is a property of one
+    # board (see fetch.py).
+    fetched_ok: set[tuple[str, str]]

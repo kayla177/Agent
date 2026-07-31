@@ -53,6 +53,11 @@ async def post_prefs(request: Request):
         "NEWS_MAX_ITEMS_PER_TOPIC": g("NEWS_MAX_ITEMS_PER_TOPIC"),
         "STOCK_WATCHLIST": _lines(g("STOCK_WATCHLIST")),
         "STOCK_HEADLINE_TOPICS": _lines(g("STOCK_HEADLINE_TOPICS")),
+        "JOB_PROFILE": g("JOB_PROFILE"),
+        "JOB_MIN_FIT": g("JOB_MIN_FIT"),
+        "JOB_MAX_AGE_DAYS": g("JOB_MAX_AGE_DAYS"),
+        "JOB_DROP_GHOSTS": str(body.get("JOB_DROP_GHOSTS", "")).strip(),
+        "JOB_COUNTRIES": _lines(g("JOB_COUNTRIES")),
     }
     try:
         payload["JOB_SOURCES"] = _parse_sources(g("JOB_SOURCES"))

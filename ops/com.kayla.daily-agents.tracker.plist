@@ -8,16 +8,14 @@
 
     <key>ProgramArguments</key>
     <array>
-        <string>/Users/kayla.li/.local/bin/uv</string>
-        <string>run</string>
-        <string>python</string>
+        <string>/Users/kayla.li/.superset/Agent/.venv/bin/python</string>
         <string>scripts/run.py</string>
         <string>application_tracker</string>
         <string>--send</string>
     </array>
 
     <key>WorkingDirectory</key>
-    <string>/Users/kayla.li/dev/daily-agents</string>
+    <string>/Users/kayla.li/.superset/Agent</string>
 
     <!-- Fire at 09:00 local time every day. -->
     <key>StartCalendarInterval</key>
@@ -29,9 +27,9 @@
     </dict>
 
     <key>StandardOutPath</key>
-    <string>/Users/kayla.li/dev/daily-agents/tracker.log</string>
+    <string>/Users/kayla.li/.superset/Agent/tracker.log</string>
     <key>StandardErrorPath</key>
-    <string>/Users/kayla.li/dev/daily-agents/tracker.error.log</string>
+    <string>/Users/kayla.li/.superset/Agent/tracker.error.log</string>
 
     <key>RunAtLoad</key>
     <false/>

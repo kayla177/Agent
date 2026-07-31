@@ -10,6 +10,8 @@ from __future__ import annotations
 import datetime as dt
 import re
 
+import config
+
 # Role keywords. \b anchors avoid matching inside "internal", "international",
 # "internals", etc. Hyphen/space variants of co-op are handled explicitly.
 _ROLE_RE = re.compile(
@@ -37,10 +39,9 @@ _EXCLUDE_RE = re.compile(
     re.IGNORECASE | re.VERBOSE,
 )
 
-# Field / domain gate — SWE / SDE / ML / MLE / CS / AI / data roles only. Scraping
-# whole company boards surfaces every intern (e.g. "Box Office Internship"); this
-# keeps only software/ML/data/CS-adjacent titles. Positive allow-list (precision
-# over recall — a student would rather see clearly-technical roles).
+# Field gate: the title must name a software / ML / data / CS / AI role, not just
+# any early-career opening. Without this, "Academy Administration & Operations
+# Internship" and "SDR Intern" pass the co-op/intern keyword check.
 _FIELD_RE = re.compile(
     r"""(
         software | \bdeveloper\b | \bdev\b | \bSWE\b | \bSDE\b | programmer
@@ -53,12 +54,6 @@ _FIELD_RE = re.compile(
         | security\ engineer | cloud\ engineer | \biOS\b | android\ (engineer|developer)
     )""",
     re.IGNORECASE | re.VERBOSE,
-)
-
-# Locations the user prefers (soft filter — does NOT exclude by default).
-_PREFERRED_LOCATION_RE = re.compile(
-    r"\b(canada|waterloo|toronto|ontario|remote)\b",
-    re.IGNORECASE,
 )
 
 
@@ -78,11 +73,6 @@ def is_excluded(title: str) -> bool:
     return bool(_EXCLUDE_RE.search(title or ""))
 
 
-def is_preferred_location(location: str) -> bool:
-    """True if the location matches the preferred set (Canada/Waterloo/etc.)."""
-    return bool(_PREFERRED_LOCATION_RE.search(location or ""))
-
-
 def age_days(posted_at: str) -> int | None:
     """Whole days between an ISO date string and today; None if unparseable."""
     try:
@@ -90,6 +80,62 @@ def age_days(posted_at: str) -> int | None:
     except (ValueError, TypeError):
         return None
     return (dt.date.today() - d).days
+
+
+def stale_reason(posting: dict) -> str:
+    """Age/deadline/source staleness for one posting, or "" if it looks fine.
+
+    This is the half of the ghost decision that depends ONLY on the posting's
+    own stored fields, so it can be re-derived from the store at any time
+    without a live fetch. It deliberately excludes the "absent from a healthy
+    board" rule, which needs this run's fetch evidence and lives in
+    `freshness_node`.
+
+    It lives here (rather than in `freshness_node`) because it has TWO callers:
+    `freshness_node`, for postings passing through the pipeline, and
+    `store.sweep_ghosts`, which re-derives it for every stored `new`/`viewed`
+    row. A row that has converged (country + score + refined reason) is never
+    re-injected by `backfill_node`, so without that second caller a row could
+    age past `JOB_MAX_AGE_DAYS` and never be flagged — the audited symptom of a
+    row reading "🕒 90d ago" with no stale badge.
+
+    Age is derived from `posted_at` FIRST and only falls back to a stored
+    `age_days`. Preferring the stored value silently broke the whole point of the
+    second caller: `age_days` is written only by `freshness_node` and then
+    persisted into the `data` blob, and neither `touch_last_seen` nor
+    `sweep_ghosts` refreshes it — so for a converged row (the exact population
+    the sweep exists to serve) it is frozen at that row's last pipeline pass, and
+    the sweep would judge staleness against a stale number. That reproduces the
+    original audit symptom verbatim, because `JobRow` computes age client-side
+    from `posted_at`: the row reads "🕒 90d ago" with no stale badge. Live
+    reachability, measured 2026-07-29: 108 of the 132 sweep-eligible rows already
+    carry `age_days` in their blob.
+
+    The pipeline path is unaffected: `freshness_node` computes `age_days` with
+    this same `age_days()` helper, which returns non-None only when `posted_at`
+    parsed — so whenever the snapshot exists and is trustworthy, deriving from
+    `posted_at` yields exactly the same number. The fallback therefore only ever
+    matters for a caller that supplies `age_days` WITHOUT a usable `posted_at`.
+    """
+    age = age_days(posting.get("posted_at") or "")
+    if age is None:
+        # No usable posted_at: honour a caller-supplied age if there is one.
+        age = posting.get("age_days")
+    if age is not None and age > config.JOB_MAX_AGE_DAYS:
+        return f"stale ({age}d old)"
+
+    deadline = (posting.get("deadline") or "")[:10]
+    if deadline:
+        try:
+            if dt.date.fromisoformat(deadline) < dt.date.today():
+                return f"deadline passed ({deadline})"
+        except ValueError:
+            pass
+
+    if posting.get("listed") is False:  # Ashby-only signal; absent elsewhere
+        return "delisted by source"
+
+    return ""
 
 
 # Canonical-location normalization. Deterministic rules that collapse the

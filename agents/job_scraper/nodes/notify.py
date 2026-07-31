@@ -9,14 +9,49 @@ Full enriched records are persisted here on every run (the same store powers the
 web jobs view + the dedupe "seen" memory). Discord delivery is the only side
 effect gated on send=True — so the web "run scraper" button (send=0) still fills
 the jobs board.
+
+The backfill node re-injects stored rows tagged `_rescored` so they get scored /
+re-freshness-checked / persisted, but they are NOT genuinely new finds — so the
+digest must not re-announce them. Every posting is persisted regardless (the
+board needs the refreshed score/country), but only untagged, shown-country rows
+are formatted into the announcement. Transient `_`-prefixed pipeline tags
+(`_rescored`, `_skip_llm`) are stripped before persistence so they never reach
+the mirrored columns or the `data` JSON blob.
+
+Postings the eligibility screen rejected are treated exactly like out-of-country
+ones: persisted, but withheld from the announcement and counted in a log line.
+They are NOT dropped — `rank_node` used to discard them before this node ran, so
+they never reached the database at all. See `rank_node` for the measurement.
+
+`JOB_COUNTRIES` empty means "no country filtering" (same convention as
+`JOB_SOURCES` / `STOCK_WATCHLIST`), not "show nothing" — an empty prefs list
+must never silently blank the whole digest. A missing/blank `country` is
+treated as `UNKNOWN`, which is never hidden (see locations.py: only `OTHER` is
+ever filtered out downstream, never `UNKNOWN`).
+
+After persisting, this node also repairs stored descriptions
+(`store.refresh_descriptions`) from `state["raw"] + state["filtered"]` — the
+full JD text this run already downloaded — refreshes `last_seen`
+(`store.touch_last_seen`) on everything observed this run, and re-derives the
+ghost flag across the WHOLE
+store (`store.sweep_ghosts`) — not just the rows that happened to pass through
+the pipeline this run. That sweep flags AND un-flags, so each of its four
+outcomes is logged separately. See `freshness.py`'s module docstring for why
+the pipeline-only check can't reach a fully-processed row on its own.
 """
 
 from __future__ import annotations
 
 import datetime as dt
 
+import config
 from agents.job_scraper.state import JobScraperState
-from agents.job_scraper.store import upsert_records
+from agents.job_scraper.store import (
+    refresh_descriptions,
+    sweep_ghosts,
+    touch_last_seen,
+    upsert_records,
+)
 from shell.discord_client import send_message
 
 
@@ -76,18 +111,113 @@ def make_notify_node(*, send: bool):
     """Return a notify node bound to whether it should deliver to Discord."""
 
     def notify_node(state: JobScraperState) -> JobScraperState:
-        new = state.get("new", [])
+        all_rows = state.get("new", [])
         warnings = state.get("warnings", [])
-        message = _format_message(new, warnings)
+
+        # Announce only genuinely new postings in the shown countries. Rescored
+        # backlog rows are persisted but never re-announced. An empty
+        # JOB_COUNTRIES means "no filtering" (matches JOB_SOURCES /
+        # STOCK_WATCHLIST's empty-means-default convention) — otherwise
+        # clearing that Settings textarea would silently blank the whole
+        # digest. A missing/blank country is kept as UNKNOWN rather than
+        # dropped, per "never drop a posting on an UNKNOWN country".
+        shown = set(config.JOB_COUNTRIES)
+        announce = []
+        withheld_ineligible = 0
+        for p in all_rows:
+            if p.get("_rescored"):
+                continue
+            # Screened out as not undergrad-eligible: persisted (so it stays
+            # auditable and can be revealed on the board) but kept out of the
+            # digest, exactly as an out-of-country row is. Defaults to eligible,
+            # so a row that never went through the screen is always announced.
+            if not p.get("eligible", True):
+                withheld_ineligible += 1
+                continue
+            c = p.get("country") or "UNKNOWN"
+            if shown and c not in shown and c != "UNKNOWN":
+                continue
+            announce.append(p)
+        message = _format_message(announce, warnings)
+
+        # A bounded coverage change must never land silently — same rule as the
+        # sweep counts below. This one matters especially: the screen is only
+        # ~two-thirds accurate, so this number is the user's cue that it may be
+        # hiding something they want (the board's "show screened-out" toggle).
+        if withheld_ineligible:
+            print(
+                f"ℹ️ withheld {withheld_ineligible} posting(s) from the digest as not "
+                "undergrad-eligible (stored and visible on the board via 'show screened-out')"
+            )
 
         # Persist the scraped roles on EVERY run — this is the data the web jobs
         # view + dedupe memory read, and the web "run scraper" button runs with
         # send=0. Persistence is a data operation; Discord delivery is the only
-        # send-gated side effect.
+        # send-gated side effect. Transient pipeline tags (`_rescored`,
+        # `_skip_llm`) must never reach the store: strip any `_`-prefixed key
+        # before persisting, so they can't land in the mirrored columns or blob.
         try:
-            upsert_records(new)
+            upsert_records([{k: v for k, v in p.items() if not k.startswith("_")} for p in all_rows])
         except Exception as exc:
             print(f"⚠️ Could not persist job records: {exc}")
+
+        # Repair stored descriptions from text this run already downloaded.
+        # Rows written under the old 1200-char cap keep a truncated description
+        # forever otherwise: dedupe drops already-seen ids before we get here,
+        # so they are never re-persisted. `raw` + `filtered` are still in state,
+        # so this costs no extra network calls.
+        #
+        # MUST run AFTER upsert_records. A backlog row re-injected by backfill
+        # carries the OLD stored (short) description, and upsert merges the
+        # posting over the stored record — so refreshing first would just get
+        # clobbered. refresh_descriptions only ever lengthens, so running it
+        # last is safe in both directions.
+        try:
+            refreshed = refresh_descriptions(
+                list(state.get("raw") or []) + list(state.get("filtered") or [])
+            )
+            if refreshed:
+                print(f"ℹ️ refreshed the description on {refreshed} stored posting(s) with longer fetched text")
+        except Exception as exc:
+            print(f"⚠️ Could not refresh stored descriptions: {exc}")
+
+        # Refresh last_seen on everything actually observed this run. dedupe
+        # drops already-seen postings before this point, so without this a
+        # posting that is STILL listed would never get re-stamped — this runs
+        # AFTER upsert_records so a row that is both re-injected (_rescored)
+        # and still listed ends up correctly stamped with today.
+        try:
+            touched = touch_last_seen(state.get("observed_ids") or set())
+            if touched:
+                print(f"ℹ️ refreshed last_seen on {touched} still-listed posting(s)")
+        except Exception as exc:
+            print(f"⚠️ Could not refresh last_seen: {exc}")
+
+        # freshness_node only sees rows that re-enter the pipeline this run
+        # (fresh finds, or backlog rows backfill re-injected because they
+        # still needed work) — a fully-processed row is never re-selected by
+        # backfill and so can never be flagged, or UN-flagged, there. This
+        # sweep re-derives the ghost state of every stored new/viewed row, so a
+        # delisted posting is flagged even once it's fully scored and refined,
+        # a delisting the board later contradicts is cleared, and a row that
+        # aged past JOB_MAX_AGE_DAYS since its last pass gets flagged.
+        #
+        # Each outcome is logged separately: "flagged 3" and "cleared 3" are
+        # very different events and a single net number would hide both.
+        try:
+            counts = sweep_ghosts(
+                state.get("observed_ids") or set(), state.get("fetched_ok") or set()
+            )
+            if counts["delisted"]:
+                print(f"ℹ️ swept {counts['delisted']} stored posting(s) as delisted (absent from a healthy board)")
+            if counts["relisted"]:
+                print(f"ℹ️ cleared the delisted flag on {counts['relisted']} posting(s) seen on their board again")
+            if counts["stale"]:
+                print(f"ℹ️ flagged {counts['stale']} stored posting(s) as stale (age/deadline)")
+            if counts["unstale"]:
+                print(f"ℹ️ cleared a stale flag that no longer holds on {counts['unstale']} posting(s)")
+        except Exception as exc:
+            print(f"⚠️ Could not re-derive ghost flags: {exc}")
 
         if send:
             try:

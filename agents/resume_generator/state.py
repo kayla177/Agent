@@ -20,6 +20,10 @@ class ResumeState(TypedDict, total=False):
     job: dict
     experience: str
 
+    # gather: the user's master résumé LaTeX (their template), if set. The
+    # latexify node tailors this per job; empty string means no template yet.
+    master_latex: str
+
     # research: plain text pulled from the posting URL + company page ("" on fail).
     company_research: str
 
@@ -28,6 +32,10 @@ class ResumeState(TypedDict, total=False):
 
     # draft: the tailored resume, Markdown.
     markdown: str
+
+    # latexify: the tailored resume as LaTeX (their template), compile-verified.
+    # Falls back to the master .tex verbatim if tailoring won't compile.
+    latex: str
 
     # save: human-facing summary (this is the registry/CLI output_key).
     message: str

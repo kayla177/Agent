@@ -38,9 +38,25 @@ def load_all() -> list[dict]:
 
 
 def add_application(
-    company: str, role: str, url: str = "", notes: str = "", status: str = "applied"
+    company: str,
+    role: str,
+    url: str = "",
+    notes: str = "",
+    status: str = "applied",
+    resume_job_id: str | None = None,
+    resume_pdf_key: str | None = None,
+    job_id: str | None = None,
 ) -> dict:
-    """Create and persist a new application; returns the stored record."""
+    """Create and persist a new application; returns the stored record.
+
+    `resume_job_id` links the résumé used (-> resumes.job_id) and
+    `resume_pdf_key` pins the exact compiled PDF that was sent, so editing that
+    résumé later cannot destroy the record of what the company received.
+    `job_id` links back to the exact `jobs.id` this application is for — the
+    only reliable way to verify an undo-apply request actually belongs to a
+    given posting, since company+title alone cannot disambiguate two distinct
+    postings sharing both (e.g. the same role on two ATS boards).
+    """
     if status not in STATUSES:
         raise ValueError(f"status must be one of {STATUSES}")
     store_db.init_db()
@@ -48,9 +64,13 @@ def add_application(
     with store_db.connect() as conn:
         cur = conn.execute(
             "INSERT INTO applications "
-            "(company, role, url, status, applied_date, updated_date, notes, auto_detected) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, 0) RETURNING *",
-            (company.strip(), role.strip(), url.strip(), status, today, today, notes.strip()),
+            "(company, role, url, status, applied_date, updated_date, notes, "
+            " auto_detected, resume_job_id, resume_pdf_key, job_id) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?) RETURNING *",
+            (company.strip(), role.strip(), url.strip(), status, today, today,
+             notes.strip(), (resume_job_id or "").strip() or None,
+             (resume_pdf_key or "").strip() or None,
+             (job_id or "").strip() or None),
         )
         row = cur.fetchone()
     return _row(row)
@@ -81,6 +101,23 @@ def delete_application(app_id: int) -> bool:
     with store_db.connect() as conn:
         cur = conn.execute("DELETE FROM applications WHERE id = ?", (int(app_id),))
     return cur.rowcount > 0
+
+
+def set_resume_link(app_id: int, resume_job_id: str | None) -> dict | None:
+    """Record which generated resume was used to apply (or clear it with None).
+
+    `resume_job_id` points at resumes.job_id so interview prep can recall the
+    exact resume sent. Returns the updated record, or None if the id is absent.
+    """
+    store_db.init_db()
+    link = (resume_job_id or "").strip() or None
+    with store_db.connect() as conn:
+        cur = conn.execute(
+            "UPDATE applications SET resume_job_id = ? WHERE id = ? RETURNING *",
+            (link, int(app_id)),
+        )
+        row = cur.fetchone()
+    return _row(row) if row else None
 
 
 def days_since(date_str: str) -> int:

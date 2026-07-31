@@ -94,10 +94,11 @@ REGISTRY: dict[str, AgentSpec] = {
     "stock_digest": AgentSpec(
         key="stock_digest",
         display_name="Stock Digest",
-        description="Quotes, technical indicators, and news sentiment (info only, not advice).",
+        description="Plain-English verdicts, explained signals, news & market overview (info only, not advice).",
         emoji="📈",
         _builder=_stock_builder,
-        node_order=("market_data", "technical", "news_sentiment", "synthesize", "deliver"),
+        node_order=("market_data", "technical", "market_overview", "news_sentiment",
+                    "analyst", "synthesize", "persist", "deliver"),
         planet="jupiter", label="stocks",
     ),
     "job_scraper": AgentSpec(
@@ -106,7 +107,7 @@ REGISTRY: dict[str, AgentSpec] = {
         description="New co-op / intern / new-grad roles from official ATS boards.",
         emoji="🧑‍💻",
         _builder=_job_builder,
-        node_order=("fetch", "filter", "dedupe", "freshness", "rank", "notify"),
+        node_order=("fetch", "filter", "dedupe", "backfill", "freshness", "rank", "notify"),
         planet="mars", label="jobs",
     ),
     "application_tracker": AgentSpec(
@@ -124,7 +125,7 @@ REGISTRY: dict[str, AgentSpec] = {
         description="Draft an ATS-tailored resume for a scraped job (per-job, not scheduled).",
         emoji="📝",
         _builder=_resume_builder,
-        node_order=("gather", "research", "keywords", "draft", "save"),
+        node_order=("gather", "research", "keywords", "draft", "latexify", "save"),
         planet="jupiter", label="resume",
     ),
     "gmail_sync": AgentSpec(

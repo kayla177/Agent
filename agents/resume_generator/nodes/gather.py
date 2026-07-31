@@ -31,14 +31,28 @@ def gather_node(state: ResumeState) -> ResumeState:
             "message": f"No scraped job found for id '{job_id}'.",
         }
 
-    experience = resume_store.load_experience_text()
+    # Grounding text = the master résumé (LaTeX or legacy Markdown) + every
+    # experience-pool doc. Either source alone is enough; fail only if all empty.
+    master = resume_store.get_master_resume()
+    master_latex = master.get("latex", "").strip()
+    parts: list[str] = []
+    if master_latex:
+        parts.append(f"### MASTER RESUME (LaTeX source)\n{master_latex}")
+    elif master.get("markdown", "").strip():
+        parts.append(f"### MASTER RESUME\n{master['markdown'].strip()}")
+    pool = resume_store.load_experience_text()
+    if pool:
+        parts.append(pool)
+    experience = "\n\n".join(parts).strip()
+
     if not experience:
         return {
             "error": "no_experience",
             "message": (
-                "Your experience pool is empty. Upload your resume and past "
-                "projects first (CLI: --add-experience <file>)."
+                "You have no experience to draw on yet. Add a master résumé, or "
+                "upload your resume and past projects to the experience pool first "
+                "(CLI: --add-experience <file>)."
             ),
         }
 
-    return {"job": job, "experience": experience}
+    return {"job": job, "experience": experience, "master_latex": master_latex}
