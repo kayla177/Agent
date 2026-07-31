@@ -78,3 +78,88 @@ def test_missing_chromium_binary_is_a_distinct_error_from_missing_package(monkey
         "chromium-missing message should not repeat the pip-install step — "
         "the package is already there, only the browser binary is missing"
     )
+
+
+def _fake_sync_playwright():
+    """Build a fake `sync_playwright()` call chain that records context-close
+    and driver-stop calls, without touching a real browser or subprocess."""
+    calls = {"context_closed": 0, "driver_stopped": 0}
+
+    class FakeContext:
+        def close(self):
+            calls["context_closed"] += 1
+
+    class FakeChromium:
+        @staticmethod
+        def launch_persistent_context(*_a, **_k):
+            return FakeContext()
+
+    class FakePlaywright:
+        chromium = FakeChromium
+
+        def stop(self):
+            calls["driver_stopped"] += 1
+
+    class FakeContextManager:
+        def start(self):
+            return FakePlaywright()
+
+    return FakeContextManager, calls
+
+
+def _patch_fake_playwright(monkeypatch):
+    import playwright.sync_api as pw_sync_api
+
+    monkeypatch.setattr(browser, "is_available", lambda: True)
+    fake_cm, calls = _fake_sync_playwright()
+    monkeypatch.setattr(pw_sync_api, "sync_playwright", lambda: fake_cm())
+    return calls
+
+
+def test_context_manager_closes_context_and_stops_driver_on_success(monkeypatch):
+    calls = _patch_fake_playwright(monkeypatch)
+
+    with browser.launch_context() as ctx:
+        assert ctx is not None
+
+    assert calls["context_closed"] == 1
+    assert calls["driver_stopped"] == 1
+
+
+def test_context_manager_tears_down_when_body_raises(monkeypatch):
+    calls = _patch_fake_playwright(monkeypatch)
+
+    with pytest.raises(ValueError):
+        with browser.launch_context():
+            raise ValueError("boom")
+
+    assert calls["context_closed"] == 1
+    assert calls["driver_stopped"] == 1
+
+
+def test_close_is_idempotent(monkeypatch):
+    calls = _patch_fake_playwright(monkeypatch)
+
+    ctx = browser.launch_context()
+    ctx.close()
+    ctx.close()  # must not explode, must not double-close/double-stop
+
+    assert calls["context_closed"] == 1
+    assert calls["driver_stopped"] == 1
+
+
+def test_close_stops_the_playwright_driver(monkeypatch):
+    """Dedicated mutation-test anchor for the driver-leak finding: closing a
+    ManagedBrowserContext must stop the Playwright driver process, not just
+    close the visible browser context. If `ManagedBrowserContext.close()` is
+    ever changed to close only `self._context` and drop the
+    `self._playwright.stop()` call, this test must fail."""
+    calls = _patch_fake_playwright(monkeypatch)
+
+    ctx = browser.launch_context()
+    ctx.close()
+
+    assert calls["driver_stopped"] == 1, (
+        "the Playwright driver process was not stopped on close() — "
+        "it will leak a driver subprocess per launch_context() call"
+    )
