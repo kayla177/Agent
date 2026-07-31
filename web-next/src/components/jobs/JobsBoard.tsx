@@ -1,7 +1,7 @@
 "use client";
 import { useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
-import { type Job, JOB_STATUSES, byPriority, byFitDesc, byDateDesc, bestMatch, inCountries, ALL_COUNTRIES, COUNTRY_LABEL } from "@/lib/jobs";
+import { type Job, JOB_STATUSES, byPriority, byFitDesc, byDateDesc, bestMatch, inCountries, isScreenedOut, ALL_COUNTRIES, COUNTRY_LABEL } from "@/lib/jobs";
 import BestMatchHero from "./BestMatchHero";
 import JobRow from "./JobRow";
 import ApplyModal, { type ResumeRow } from "./ApplyModal";
@@ -23,6 +23,10 @@ export default function JobsBoard({ jobs, resumes, hasMaster, initialCountries }
   const [expandedId, setExpandedId] = useState<string | null>(null);
   const [busyId, setBusyId] = useState<string | null>(null);
   const [showAllCountries, setShowAllCountries] = useState(false);
+  // Screened-out roles are hidden by DEFAULT but always reachable, mirroring the
+  // country control. The gate is only ~two-thirds accurate, so this toggle is
+  // the recovery path for a good role it wrongly rejected.
+  const [showScreenedOut, setShowScreenedOut] = useState(false);
   const [applyFor, setApplyFor] = useState<Job | null>(null);
   const [undo, setUndo] = useState<{ jobId: string; applicationId: number } | null>(null);
   const [undoBusy, setUndoBusy] = useState(false);
@@ -57,10 +61,19 @@ export default function JobsBoard({ jobs, resumes, hasMaster, initialCountries }
     l = statusFilter ? l.filter((j) => j.status === statusFilter) : l.filter((j) => j.status !== "dismissed");
     if (companyFilter) l = l.filter((j) => j.company === companyFilter);
     if (hideGhost) l = l.filter((j) => j.ghost !== 1);
+    if (!showScreenedOut) l = l.filter((j) => !isScreenedOut(j));
     l = l.filter((j) => inCountries(j, countries));
     l.sort(sort === "date" ? byDateDesc : sort === "fit" ? byFitDesc : byPriority);
     return l;
-  }, [jobs, statusFilter, companyFilter, hideGhost, countries, sort]);
+  }, [jobs, statusFilter, companyFilter, hideGhost, showScreenedOut, countries, sort]);
+
+  // Only offer the reveal control when there is something to reveal, and say how
+  // many — an always-on checkbox that does nothing reads as broken, and the
+  // count is what tells the user whether the screen is being over-eager.
+  const screenedOutCount = useMemo(
+    () => jobs.filter((j) => isScreenedOut(j) && j.status !== "dismissed").length,
+    [jobs],
+  );
 
   // A rejected fetch (backend unreachable) is distinguished from a failed
   // response, because the two need different wording. Callers clear their busy
@@ -232,6 +245,16 @@ export default function JobsBoard({ jobs, resumes, hasMaster, initialCountries }
           <input type="checkbox" checked={hideGhost} onChange={(e) => setHideGhost(e.target.checked)} />
           hide stale/ghost
         </label>
+        {screenedOutCount > 0 ? (
+          <label title="Roles the undergrad-eligibility screen rejected. The screen is imperfect — reveal these to check what it hid.">
+            <input
+              type="checkbox"
+              checked={showScreenedOut}
+              onChange={(e) => setShowScreenedOut(e.target.checked)}
+            />
+            show screened-out ({screenedOutCount})
+          </label>
+        ) : null}
       </div>
 
       {list.length === 0 ? (

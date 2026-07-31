@@ -27,6 +27,8 @@ export type Job = {
   ghost_reason: string;  // WHY it is flagged; "" when it is not
   also_on: string;       // JSON array string
   country: string;       // US | CA | OTHER | UNKNOWN
+  eligible: number;         // 0 | 1 — undergrad-eligibility screen (rank.py)
+  eligible_reason: string;  // WHY the screen said no; "" when eligible
 };
 
 export type FitTier = "hi" | "mid" | "lo" | "none";
@@ -88,10 +90,31 @@ export function byPriority(a: Job, b: Job): number {
   return d !== 0 ? d : byFitDesc(a, b);
 }
 
+// True when the undergrad-eligibility screen rejected this posting. Defaults to
+// ELIGIBLE for anything missing/legacy: `eligible` is NOT NULL DEFAULT 1 in the
+// schema, and a row must only ever be hidden by an explicit judgement.
+export function isScreenedOut(job: Job): boolean {
+  return job.eligible === 0;
+}
+
+// Short badge label for a screened-out posting, mirroring `ghostLabel`. The full
+// `eligible_reason` is shown on hover; rows tagged before a reason was recorded
+// fall back to fixed wording so the badge is never blank.
+export function eligibleLabel(job: Job): string {
+  return (job.eligible_reason || "").trim() || "not undergrad-eligible";
+}
+
 // Highest-fit role among status === "new" with a non-null score, preferring
 // reasonably fresh roles (≤30d) so the hero never highlights a stale posting.
+//
+// Screened-out rows are excluded unconditionally — NOT via the board's toggle.
+// The hero is a single "apply to this next" recommendation, so it must never
+// advertise a posting that is hidden from the list underneath it; that would be
+// the UI contradicting itself, and there would be no row to click through to.
 export function bestMatch(jobs: Job[]): Job | null {
-  const scored = jobs.filter((j) => j.status === "new" && j.fit_score !== null);
+  const scored = jobs.filter(
+    (j) => j.status === "new" && j.fit_score !== null && !isScreenedOut(j),
+  );
   if (!scored.length) return null;
   const fresh = scored.filter((j) => ageBucket(j) <= 2);
   const pool = fresh.length ? fresh : scored;

@@ -21,6 +21,7 @@ const JOB_SELECT = {
   ats: true, posted_at: true, remote: true, compensation: true, department: true,
   description: true, fit_score: true, fit_reason: true, ghost: true,
   ghost_reason: true, also_on: true, country: true,
+  eligible: true, eligible_reason: true,
 } as const;
 
 // The effective JOB_COUNTRIES pref, so the Settings control actually drives the

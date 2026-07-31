@@ -1,5 +1,5 @@
 import type { Job } from "@/lib/jobs";
-import { fitTier, FIT_COLOR, JOB_STATUS_META, ageDays, parseAlsoOn, COUNTRY_LABEL, ghostLabel } from "@/lib/jobs";
+import { fitTier, FIT_COLOR, JOB_STATUS_META, ageDays, parseAlsoOn, COUNTRY_LABEL, ghostLabel, isScreenedOut, eligibleLabel } from "@/lib/jobs";
 
 type Props = {
   job: Job;
@@ -17,8 +17,9 @@ export default function JobRow({ job, expanded, busy, onToggle, onApply, onDismi
   const age = ageDays(job.posted_at);
   const applied = job.status === "applied";
   const dismissed = job.status === "dismissed";
-  const dim = applied || dismissed || job.ghost === 1;
+  const dim = applied || dismissed || job.ghost === 1 || isScreenedOut(job);
   const alsoOn = parseAlsoOn(job.also_on);
+  const screenedOut = isScreenedOut(job);
   const st = JOB_STATUS_META[job.status] ?? { label: job.status, color: "#8b93a6" };
   const actionable = !applied && !dismissed;
 
@@ -48,6 +49,14 @@ export default function JobRow({ job, expanded, busy, onToggle, onApply, onDismi
             {job.ghost === 1 ? (
               <span className="job-badge stale" title={job.ghost_reason || undefined}>
                 ⚠ {ghostLabel(job, age)}
+              </span>
+            ) : null}
+            {/* A revealed screened-out row must say WHY it was hidden, or the
+                toggle just produces unexplained extra rows and the user cannot
+                tell an over-eager screen from a genuinely senior role. */}
+            {screenedOut ? (
+              <span className="job-badge stale" title={job.eligible_reason || undefined}>
+                🎓 {eligibleLabel(job)}
               </span>
             ) : null}
           </div>
