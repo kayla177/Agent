@@ -247,6 +247,65 @@ def touch_last_seen(ids: list[str] | set[str]) -> int:
     return touched
 
 
+def refresh_descriptions(postings: list[dict]) -> int:
+    """Replace a stored row's `description` when this run fetched a LONGER one.
+
+    Same shape as `touch_last_seen`, and it exists for the same structural
+    reason: `dedupe` drops already-seen ids before `notify` persists, so a row
+    written under the old 1200-char `ats._DESC_MAX` would keep its truncated
+    description FOREVER even though every run re-downloads the full text. Fed
+    `state["raw"] + state["filtered"]`, this repairs those rows from text this
+    run already has in memory — no extra network calls, no second fetch pass.
+
+    ONLY-WHEN-LONGER is deliberate, not an optimisation. A board briefly serving
+    a stub (schema change, partial render, an adapter that stops returning
+    `descriptionPlain`) must never be able to clobber good stored text. The
+    comparison is on length because that is exactly the failure being repaired:
+    a prefix of the real JD.
+
+    Writes through `_write`, so the mirrored column and the `data` JSON blob
+    stay in sync (the dual-write rule). Ids absent from the table are skipped —
+    a genuinely new posting is `upsert_records`' job, not this one. Nothing but
+    `description` is altered: the record written back is the STORED one with a
+    single key replaced, so `status`, `first_seen`, `last_seen`, `country`,
+    `fit_score` are untouched and no `_`-prefixed pipeline tag riding on the
+    incoming posting can reach the store through here.
+
+    Returns the number of rows updated so `notify` can log it.
+    """
+    # `raw` and `filtered` overlap (filtered is a subset of raw) and one role can
+    # appear on two boards, so collapse to the longest text per id first — one
+    # SELECT + at most one write per id instead of a write per duplicate.
+    best: dict[str, str] = {}
+    for p in postings or []:
+        pid = p.get("id")
+        desc = p.get("description") or ""
+        if not pid or not desc:
+            continue
+        if len(desc) > len(best.get(pid, "")):
+            best[pid] = desc
+    if not best:
+        return 0
+    store_db.init_db()
+    updated = 0
+    with store_db.connect() as conn:
+        for pid, desc in best.items():
+            row = conn.execute("SELECT data FROM jobs WHERE id = ?", (pid,)).fetchone()
+            if row is None:
+                continue
+            try:
+                record = json.loads(row["data"]) if row["data"] else {}
+            except json.JSONDecodeError:
+                record = {}
+            if len(desc) <= len(record.get("description") or ""):
+                continue
+            record["id"] = pid
+            record["description"] = desc
+            _write(conn, record)
+            updated += 1
+    return updated
+
+
 def sweep_ghosts(
     observed_ids: set[str], fetched_ok: set[tuple[str, str]]
 ) -> dict[str, int]:

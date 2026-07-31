@@ -32,9 +32,12 @@ from typing import TypedDict
 
 
 class JobScraperState(TypedDict, total=False):
-    # Every posting pulled from every source (normalized).
+    # Every posting pulled from every source (normalized). Still readable at
+    # `notify` time, which is what lets `store.refresh_descriptions` repair
+    # truncated stored descriptions with no second fetch pass.
     raw: list[dict]
-    # Postings whose title matches co-op/intern/new-grad keywords.
+    # Postings whose title matches co-op/intern/new-grad keywords. Same deal:
+    # read again at `notify` time for the description repair.
     filtered: list[dict]
     # Of the filtered set, the ones not already in the seen-store.
     new: list[dict]

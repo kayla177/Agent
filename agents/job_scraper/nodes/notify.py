@@ -24,8 +24,11 @@ must never silently blank the whole digest. A missing/blank `country` is
 treated as `UNKNOWN`, which is never hidden (see locations.py: only `OTHER` is
 ever filtered out downstream, never `UNKNOWN`).
 
-After persisting, this node also refreshes `last_seen` (`store.touch_last_seen`)
-on everything observed this run, and re-derives the ghost flag across the WHOLE
+After persisting, this node also repairs stored descriptions
+(`store.refresh_descriptions`) from `state["raw"] + state["filtered"]` — the
+full JD text this run already downloaded — refreshes `last_seen`
+(`store.touch_last_seen`) on everything observed this run, and re-derives the
+ghost flag across the WHOLE
 store (`store.sweep_ghosts`) — not just the rows that happened to pass through
 the pipeline this run. That sweep flags AND un-flags, so each of its four
 outcomes is logged separately. See `freshness.py`'s module docstring for why
@@ -38,7 +41,12 @@ import datetime as dt
 
 import config
 from agents.job_scraper.state import JobScraperState
-from agents.job_scraper.store import sweep_ghosts, touch_last_seen, upsert_records
+from agents.job_scraper.store import (
+    refresh_descriptions,
+    sweep_ghosts,
+    touch_last_seen,
+    upsert_records,
+)
 from shell.discord_client import send_message
 
 
@@ -129,6 +137,26 @@ def make_notify_node(*, send: bool):
             upsert_records([{k: v for k, v in p.items() if not k.startswith("_")} for p in all_rows])
         except Exception as exc:
             print(f"⚠️ Could not persist job records: {exc}")
+
+        # Repair stored descriptions from text this run already downloaded.
+        # Rows written under the old 1200-char cap keep a truncated description
+        # forever otherwise: dedupe drops already-seen ids before we get here,
+        # so they are never re-persisted. `raw` + `filtered` are still in state,
+        # so this costs no extra network calls.
+        #
+        # MUST run AFTER upsert_records. A backlog row re-injected by backfill
+        # carries the OLD stored (short) description, and upsert merges the
+        # posting over the stored record — so refreshing first would just get
+        # clobbered. refresh_descriptions only ever lengthens, so running it
+        # last is safe in both directions.
+        try:
+            refreshed = refresh_descriptions(
+                list(state.get("raw") or []) + list(state.get("filtered") or [])
+            )
+            if refreshed:
+                print(f"ℹ️ refreshed the description on {refreshed} stored posting(s) with longer fetched text")
+        except Exception as exc:
+            print(f"⚠️ Could not refresh stored descriptions: {exc}")
 
         # Refresh last_seen on everything actually observed this run. dedupe
         # drops already-seen postings before this point, so without this a
