@@ -35,7 +35,11 @@ Measured 2026-07-31 against live public boards:
 - **Never write to `data/control_center.db`** in tests; use the `temp_db` / `client` fixtures. Verify any migration on a copy first.
 - WAL-aware DB fingerprint before/after any task that could touch storage: `scratchpad/dbfp.sh`. File mtime is not evidence.
 - Frontend: no JS test harness; verify with `npm run lint`, `npx tsc --noEmit`, `npm run check:jobs`. Do NOT run `npm run build` while a production server is live.
-- Current baseline: **262 pytest tests green.** Must grow, not shrink.
+- Current baseline: **262 pytest tests green** at plan time (267 after Task 1). Must grow, not shrink.
+- **Row counts in this plan go stale.** The user's launchd scraper is ACTIVE across 261 sources, so
+  `jobs`/`new` move between tasks (551→559 during Task 1 alone). Re-read the fingerprint at the
+  start of every task; attribute a delta to the scraper before suspecting your own work, and never
+  read an unchanged count as proof a task was clean.
 
 ## Test data — obviously fake, and structurally unable to reach a real person
 
@@ -142,6 +146,11 @@ def test_profile_dir_is_under_data_and_gitignored():
 Run: `.venv/bin/python -m pytest tests/test_applier_browser.py -v`
 
 - [ ] **Step 3: Install the dependency**
+
+> **Measured 2026-07-31:** Chromium is **344 MB** on disk (`chromium-1228`) plus ~42 MB for the
+> `playwright` pip package — not the ~150 MB this plan originally estimated. It may already be
+> cached by the Playwright MCP plugin, in which case no download occurs. Verify rather than
+> assume; see `.claude/skills/verifying-inherited-claims/SKILL.md`.
 
 ```bash
 .venv/bin/pip install playwright
@@ -352,6 +361,11 @@ Lever and Ashby publish no form schema, so questions are discovered from the pag
 
 ## Task 6: Fill executor with per-field verification
 
+> **Prerequisite carried from Task 1:** no headed Chromium has actually been launched yet — Task
+> 1's five tests are all monkeypatched. Before writing fill logic, launch `browser.launch_context()`
+> ONCE against a saved local fixture page (`file://` URL from `tests/fixtures/ats/`), confirm the
+> persistent context opens and accepts typed input, then close it. Never against a live ATS.
+
 **Files:** Create `agents/job_applier/nodes/fill.py`; Test: extend `tests/test_applier_locate.py`
 
 - [ ] After typing, **read the value back** and confirm it landed. React-controlled inputs frequently swallow programmatic input; a fill that silently did nothing is worse than one that failed loudly.
@@ -406,7 +420,8 @@ Phase A records applications optimistically on the modal's confirm. Greenhouse/L
 
 ## Done criteria
 
-- [ ] `.venv/bin/python -m pytest tests/` — all pass, count > 262.
+- [ ] `.venv/bin/python -m pytest tests/` — all pass, and the count exceeds whatever the branch
+      started at (262 at plan time, 267 after Task 1). Re-read it; do not trust this line.
 - [ ] No test contacts a live ATS or launches Chromium.
 - [ ] A source scan proves no submit control is ever clicked.
 - [ ] `npm run db:check` — no drift; migration verified on a copy of the live DB.
