@@ -1,0 +1,415 @@
+# Phase B — Assisted Apply (fill, never submit) — Implementation Plan
+
+> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax.
+
+**Goal:** A `job_applier` agent that opens a Greenhouse / Lever / Ashby application form in a visible browser, fills every field it can derive deterministically from `applicant_profile`, drafts the free-text answers with the local model clearly marked as AI-drafted, and then **stops** — handing the user a review checklist. The human clicks Submit. Afterwards the agent detects the ATS confirmation page and upgrades the tracker row from optimistically-applied to confirmed.
+
+**Spec:** `docs/superpowers/specs/2026-07-25-jobs-quality-and-autoapply-design.md` (Phase B section)
+**Base:** `main` @ `a535f49` (Phase A merged). Branch: `feature/jobs-autoapply-phase-b`.
+
+## The one rule
+
+**No code path may click a submit button.** Not behind a flag, not "if confirmed", not in a test against a live site. The agent fills and stops. Every task below inherits this.
+
+---
+
+## Research findings that shape the design
+
+Measured 2026-07-31 against live public boards:
+
+| ATS | Form schema as JSON? | Consequence |
+|---|---|---|
+| **Greenhouse** | **Yes.** `GET /v1/boards/{token}/jobs/{id}?questions=true` returns `questions[]` with `label`, `required`, and `fields[].type` (`input_text`, `input_file`, `textarea`, …). A real posting returned 12. | Field mapping is **schema-driven**: deterministic, unit-testable without a browser, and robust to CSS changes. |
+| Lever | No. `api.lever.co/v0/postings/{token}` has `applyUrl` but no `customQuestions`. | DOM label-heuristic mapping. |
+| Ashby | No. `api.ashbyhq.com/posting-api/job-board/{token}` has `applyUrl` but no `applicationFormDefinition`. | DOM label-heuristic mapping. |
+
+**Design consequence:** the field *resolver* (profile → answers) is shared and pure; the field *locator* (answer → page element) is per-ATS. Greenhouse resolves against a fetched schema; Lever and Ashby resolve against the live DOM's labels. That split keeps the risky, untestable part as small as possible.
+
+## Global Constraints
+
+- **Never submit.** No `click()` on a submit control, ever.
+- **Never invent a value.** Only `applicant_profile`'s typed fields may fill an identity/authorization field. A field with no profile value is left empty and listed in the handoff. This is why those columns are typed rather than free text.
+- **Work-authorization answers are never model-drafted.** If `us_work_auth` / `ca_work_auth` are unset, the corresponding questions stay blank and are reported as blocking.
+- `uv` is NOT installed. Python is `.venv/bin/python`; tests via `.venv/bin/python -m pytest`.
+- **Tests never touch a live ATS.** All fill/locate tests run against saved HTML fixtures in `tests/fixtures/ats/`. Read-only GETs to public board APIs are allowed in a dev probe, never in a test.
+- **Never write to `data/control_center.db`** in tests; use the `temp_db` / `client` fixtures. Verify any migration on a copy first.
+- WAL-aware DB fingerprint before/after any task that could touch storage: `scratchpad/dbfp.sh`. File mtime is not evidence.
+- Frontend: no JS test harness; verify with `npm run lint`, `npx tsc --noEmit`, `npm run check:jobs`. Do NOT run `npm run build` while a production server is live.
+- Current baseline: **262 pytest tests green.** Must grow, not shrink.
+
+## Test data — obviously fake, and structurally unable to reach a real person
+
+The user's real profile is intentionally incomplete (name, email, phone, links, grad date, and both work-auth fields are blank) and real values arrive later. Development uses this fixture, which must **never** be written into `data/control_center.db`:
+
+```python
+FAKE_PROFILE = {
+    "full_name": "Testy McTestface",
+    "email": "testy.mctestface@example.invalid",   # .invalid is RFC 2606 reserved
+    "phone": "+1-555-0100",                        # 555-01xx is reserved for fiction
+    "location": "Waterloo, ON, Canada",
+    "linkedin_url": "https://www.linkedin.com/in/example-invalid",
+    "github_url": "https://github.com/example-invalid",
+    "portfolio_url": "",
+    "school": "University of Waterloo",
+    "degree": "Computer Engineering (3rd year)",
+    "grad_date": "2027-04",
+    "us_work_auth": "tn_eligible",
+    "ca_work_auth": "citizen",
+    "needs_sponsorship": 0,
+    "summary": "3rd-year Computer Engineering. Python, React, Next.js.",
+}
+```
+
+`.invalid` and `555-01xx` are reserved precisely so test data cannot reach a real inbox or phone. Live behaviour reads the real profile; only fixtures use this.
+
+---
+
+## File structure
+
+```
+agents/job_applier/
+  __init__.py
+  state.py                  # ApplierState TypedDict
+  graph.py                  # load_profile -> fetch_form -> resolve -> fill -> handoff
+  browser.py                # visible Chromium, persistent context, graceful absence
+  resolver.py               # PURE: profile + question -> answer | BLANK(reason)
+  schema_greenhouse.py      # questions API -> normalized Question list
+  locate_dom.py             # normalized Question -> page element (Lever/Ashby + GH fallback)
+  drafting.py               # LLM free-text, always flagged AI-drafted
+  nodes/
+    load_profile.py  fetch_form.py  resolve.py  fill.py  handoff.py
+tests/fixtures/ats/
+  greenhouse-questions.json  greenhouse-form.html  lever-form.html  ashby-form.html
+tests/
+  test_applier_resolver.py  test_applier_schema.py  test_applier_locate.py
+  test_applier_drafting.py  test_applier_graph.py   test_applier_browser.py
+```
+
+---
+
+## Task 1: Playwright bootstrap + graceful absence
+
+**Files:** Create `agents/job_applier/__init__.py`, `agents/job_applier/browser.py`; Test: `tests/test_applier_browser.py`; Modify: `pyproject.toml`
+
+**Interfaces:**
+- Produces: `browser.launch_context() -> BrowserContext` (visible Chromium, persistent profile at `data/browser_profile/`); `browser.PLAYWRIGHT_MISSING_HINT: str`; `browser.is_available() -> bool`
+
+- [ ] **Step 1: Write the failing test**
+
+```python
+"""Browser bootstrap. The agent must degrade with a usable instruction when
+Playwright is absent, not traceback — it is an optional heavy dependency
+(~150MB of Chromium) and the rest of the platform must keep working without it."""
+from __future__ import annotations
+import builtins
+import pytest
+from agents.job_applier import browser
+
+
+def test_is_available_false_when_import_fails(monkeypatch):
+    real_import = builtins.__import__
+
+    def fake(name, *a, **k):
+        if name.startswith("playwright"):
+            raise ImportError("no playwright")
+        return real_import(name, *a, **k)
+
+    monkeypatch.setattr(builtins, "__import__", fake)
+    assert browser.is_available() is False
+
+
+def test_hint_names_both_install_steps():
+    hint = browser.PLAYWRIGHT_MISSING_HINT
+    assert ".venv/bin/pip install playwright" in hint
+    assert "playwright install chromium" in hint
+    assert "uv" not in hint, "uv is not installed on this machine"
+
+
+def test_launch_raises_a_clear_error_when_unavailable(monkeypatch):
+    monkeypatch.setattr(browser, "is_available", lambda: False)
+    with pytest.raises(RuntimeError) as exc:
+        browser.launch_context()
+    assert "playwright install chromium" in str(exc.value)
+
+
+def test_profile_dir_is_under_data_and_gitignored():
+    assert browser.PROFILE_DIR.name == "browser_profile"
+    assert browser.PROFILE_DIR.parent.name == "data"
+```
+
+- [ ] **Step 2: Run it, confirm ImportError/AttributeError**
+
+Run: `.venv/bin/python -m pytest tests/test_applier_browser.py -v`
+
+- [ ] **Step 3: Install the dependency**
+
+```bash
+.venv/bin/pip install playwright
+.venv/bin/python -m playwright install chromium
+```
+Add `playwright>=1.40` to `pyproject.toml` dependencies. Report the download size.
+
+- [ ] **Step 4: Write `browser.py`**
+
+Headed (`headless=False`) persistent context at `config.PROJECT_ROOT / "data" / "browser_profile"`. `data/` is already gitignored, so the profile is never committed. Import Playwright lazily inside the functions so importing this module never requires it.
+
+- [ ] **Step 5: Tests pass; commit**
+
+```bash
+git add pyproject.toml agents/job_applier/ tests/test_applier_browser.py
+git commit -m "feat(applier): visible-Chromium bootstrap that degrades without Playwright"
+```
+
+---
+
+## Task 2: Greenhouse form schema
+
+**Files:** Create `agents/job_applier/schema_greenhouse.py`, `tests/fixtures/ats/greenhouse-questions.json`; Test: `tests/test_applier_schema.py`
+
+**Interfaces:**
+- Produces: `Question` dataclass (`key`, `label`, `required`, `kind` in `text|textarea|file|select|checkbox`, `options`); `parse_questions(payload: dict) -> list[Question]`; `form_url(job: dict) -> str`
+
+- [ ] **Step 1: Capture a real payload as a fixture (dev probe, not a test)**
+
+```bash
+.venv/bin/python -c "
+import httpx, json, pathlib
+r = httpx.get('https://boards-api.greenhouse.io/v1/boards/cloudflare/jobs', timeout=25).json()
+jid = r['jobs'][0]['id']
+d = httpx.get(f'https://boards-api.greenhouse.io/v1/boards/cloudflare/jobs/{jid}?questions=true', timeout=25).json()
+p = pathlib.Path('tests/fixtures/ats/greenhouse-questions.json'); p.parent.mkdir(parents=True, exist_ok=True)
+p.write_text(json.dumps(d, indent=2)); print('captured', len(d.get('questions', [])), 'questions')"
+```
+
+- [ ] **Step 2: Write the failing test**
+
+```python
+"""Greenhouse exposes the application form as structured JSON, so mapping is
+schema-driven rather than DOM-guessing. Parsed from a captured fixture — this
+test must never hit the network."""
+from __future__ import annotations
+import json, pathlib
+from agents.job_applier.schema_greenhouse import parse_questions
+
+FIXTURE = pathlib.Path(__file__).parent / "fixtures" / "ats" / "greenhouse-questions.json"
+
+
+def _questions():
+    return parse_questions(json.loads(FIXTURE.read_text()))
+
+
+def test_parses_the_identity_questions():
+    by = {q.label.lower(): q for q in _questions()}
+    for label in ("first name", "last name", "email", "phone"):
+        assert label in by, f"missing {label}"
+        assert by[label].required is True
+        assert by[label].kind == "text"
+
+
+def test_resume_is_a_file_question():
+    q = next(q for q in _questions() if "resume" in q.label.lower())
+    assert q.kind == "file"
+    assert q.required is True
+
+
+def test_multi_field_question_picks_the_primary_input():
+    """Greenhouse models Resume/CV as fields=[input_file, textarea]. A file
+    upload beats a paste-in textarea, so `kind` must be `file`, not `textarea`."""
+    q = next(q for q in _questions() if "resume" in q.label.lower())
+    assert q.kind == "file"
+
+
+def test_every_question_has_a_stable_key():
+    ks = [q.key for q in _questions()]
+    assert all(ks) and len(ks) == len(set(ks)), "keys must exist and be unique"
+
+
+def test_empty_or_missing_questions_is_not_an_error():
+    assert parse_questions({}) == []
+    assert parse_questions({"questions": []}) == []
+```
+
+- [ ] **Step 3: Implement, run, commit**
+
+`kind` precedence when a question has several fields: `file` > `select` > `checkbox` > `textarea` > `text`. Document why (a file upload is the real answer; the textarea is a fallback Greenhouse offers).
+
+---
+
+## Task 3: The resolver — pure, and the safety boundary
+
+**Files:** Create `agents/job_applier/resolver.py`; Test: `tests/test_applier_resolver.py`
+
+This is where "never invent a value" is enforced. Keep it pure: no browser, no network, no model.
+
+**Interfaces:**
+- Produces: `Answer` dataclass (`question`, `value`, `source` in `profile|drafted|blank`, `note`); `resolve(questions, profile) -> list[Answer]`; `BLOCKING_KINDS: frozenset`
+
+- [ ] **Step 1: Write the failing test**
+
+```python
+"""The resolver is the safety boundary: it may only answer from typed profile
+fields. Anything it cannot answer becomes source='blank' with a reason, which
+the handoff shows the user. It must never guess a name, an email, or — above
+all — a work-authorization answer."""
+from __future__ import annotations
+from agents.job_applier.resolver import resolve
+from agents.job_applier.schema_greenhouse import Question
+
+FAKE = {
+    "full_name": "Testy McTestface",
+    "email": "testy.mctestface@example.invalid",
+    "phone": "+1-555-0100",
+    "linkedin_url": "https://www.linkedin.com/in/example-invalid",
+    "us_work_auth": "", "ca_work_auth": "", "needs_sponsorship": 0,
+    "school": "University of Waterloo", "degree": "Computer Engineering (3rd year)",
+    "grad_date": "2027-04", "github_url": "", "portfolio_url": "", "location": "",
+    "summary": "",
+}
+
+def q(label, required=True, kind="text"):
+    return Question(key=label.lower().replace(" ", "_"), label=label, required=required, kind=kind, options=[])
+
+
+def test_splits_full_name_across_first_and_last():
+    a = {x.question.label: x for x in resolve([q("First Name"), q("Last Name")], FAKE)}
+    assert a["First Name"].value == "Testy" and a["First Name"].source == "profile"
+    assert a["Last Name"].value == "McTestface"
+
+
+def test_single_name_field_gets_the_whole_name():
+    assert resolve([q("Full Name")], FAKE)[0].value == "Testy McTestface"
+
+
+def test_email_and_phone_come_from_the_profile():
+    a = {x.question.label: x.value for x in resolve([q("Email"), q("Phone")], FAKE)}
+    assert a["Email"] == "testy.mctestface@example.invalid"
+    assert a["Phone"] == "+1-555-0100"
+
+
+def test_unset_profile_field_is_blank_with_a_reason_not_invented():
+    ans = resolve([q("GitHub Profile")], FAKE)[0]
+    assert ans.source == "blank" and ans.value == ""
+    assert "profile" in ans.note.lower()
+
+
+def test_work_authorization_is_never_drafted_or_guessed():
+    """With both work-auth fields unset, the answer must be blank and marked
+    blocking. A wrong answer here goes out on a real application."""
+    ans = resolve([q("Are you legally authorized to work in the United States?")], FAKE)[0]
+    assert ans.source == "blank"
+    assert ans.value == ""
+    assert "authorization" in ans.note.lower()
+
+
+def test_work_authorization_is_used_when_the_profile_sets_it():
+    prof = {**FAKE, "us_work_auth": "tn_eligible"}
+    ans = resolve([q("Are you legally authorized to work in the United States?")], prof)[0]
+    assert ans.source == "profile"
+    assert ans.value
+
+
+def test_free_text_question_is_left_for_the_drafting_node():
+    ans = resolve([q("Why do you want to work here?", kind="textarea")], FAKE)[0]
+    assert ans.source == "blank"
+    assert "draft" in ans.note.lower()
+
+
+def test_resolver_touches_no_io():
+    """Pure function: importing and calling it must not need a browser, a
+    network, or a model. Guards the safety boundary against future drift."""
+    import inspect, agents.job_applier.resolver as r
+    src = inspect.getsource(r)
+    for forbidden in ("httpx", "playwright", "llm(", "requests"):
+        assert forbidden not in src, f"resolver must stay pure; found {forbidden}"
+```
+
+- [ ] **Steps 2-4:** run red, implement, run green, commit.
+
+---
+
+## Task 4: DOM locator for Lever / Ashby (+ Greenhouse fallback)
+
+**Files:** Create `agents/job_applier/locate_dom.py`, fixtures `tests/fixtures/ats/{lever,ashby,greenhouse}-form.html`; Test: `tests/test_applier_locate.py`
+
+Lever and Ashby publish no form schema, so questions are discovered from the page. Match on the **accessible label**, not CSS classes — labels are what a human reads and are far more stable than generated class names.
+
+- [ ] **Step 1: Capture form fixtures (dev probe)** — save the real application pages for one Lever, one Ashby, and one Greenhouse posting into `tests/fixtures/ats/`. Record which URLs and when, in a comment at the top of the test.
+
+- [ ] **Step 2: Failing tests** — from each fixture, discover the identity questions (name/email/phone/resume) with correct `kind`; assert a label-matched lookup finds the right element for each; assert an unmatched label returns `None` rather than a wrong guess; assert matching is case- and punctuation-insensitive ("Email" / "Email Address" / "E-mail *").
+
+- [ ] **Step 3: Implement using Playwright's `get_by_label` semantics, with an explicit fallback chain** (label → `aria-label` → `placeholder` → `name` attribute), each step documented. Never fall back to positional indexing — a wrong element gets a wrong value typed into it.
+
+---
+
+## Task 5: Drafting free-text answers, always marked
+
+**Files:** Create `agents/job_applier/drafting.py`; Test: `tests/test_applier_drafting.py`
+
+- [ ] Model-written answers are **always** returned with `source="drafted"` and a visible marker so the handoff can flag them. Ground them in the JD plus `company_research` when available rather than letting the model invent facts about the company.
+- [ ] Tests: a drafted answer is marked `drafted`; a model failure yields `blank` with a reason, never a fabricated answer; work-authorization and identity questions are **never** routed to drafting (assert the router refuses them); the prompt includes the JD but not the user's phone/email.
+
+---
+
+## Task 6: Fill executor with per-field verification
+
+**Files:** Create `agents/job_applier/nodes/fill.py`; Test: extend `tests/test_applier_locate.py`
+
+- [ ] After typing, **read the value back** and confirm it landed. React-controlled inputs frequently swallow programmatic input; a fill that silently did nothing is worse than one that failed loudly.
+- [ ] A field that will not accept its value is reported as `blank` with the reason, not retried indefinitely.
+- [ ] **Assert no submit control is ever clicked** — a test that scans the executor's source for a click on anything matching `submit|apply now|send application` and fails if present.
+
+---
+
+## Task 7: Handoff report
+
+**Files:** Create `agents/job_applier/nodes/handoff.py`; Test: `tests/test_applier_graph.py`
+
+- [ ] Output groups answers into **filled from profile / AI-drafted, review these / left blank**, with required-and-blank listed first as blocking.
+- [ ] Says plainly that nothing was submitted and the browser is left open.
+- [ ] Tests: a blocking required field appears first; drafted answers are marked; the message never claims to have submitted.
+
+---
+
+## Task 8: Graph + registry
+
+**Files:** Create `state.py`, `graph.py`, `nodes/*`; Modify: `agents/registry.py`; Test: `tests/test_applier_graph.py`
+
+- [ ] Chain: `load_profile → fetch_form → resolve → draft → fill → handoff`, each node short-circuiting on `state["error"]` the way `resume_generator` does.
+- [ ] Registry entry `job_applier` with `node_order` matching the graph exactly (Phase A found two registries drifted from their graphs — add a test asserting they match).
+- [ ] Tests run the whole graph against fixtures with the browser and model monkeypatched; no network, no Chromium.
+
+---
+
+## Task 9: Confirmation detection → upgrade the tracker row
+
+**Files:** Modify `agents/application_tracker/store.py`, `server/routers/jobs.py`, `schema.sql`, `store_db.py`, Prisma mirror; Test: `tests/test_applier_confirm.py`
+
+Phase A records applications optimistically on the modal's confirm. Greenhouse/Lever/Ashby all land on a confirmation page after a real submit, so the agent can verify it.
+
+- [ ] Add `applications.confirmed_at TEXT` (idempotent `_migrate` guard; `_migrate` runs BEFORE `executescript`; Prisma mirror; `db:check` must pass).
+- [ ] Detection matches confirmation text/URL per ATS; on match, stamp `confirmed_at`. **No match must never un-confirm or delete anything** — absence of evidence is not evidence.
+- [ ] UI shows confirmed vs optimistic in the tracker.
+- [ ] Tests: each ATS's confirmation fixture stamps the row; a non-confirmation page leaves it untouched; a second detection is idempotent.
+
+---
+
+## Task 10: UI entry point
+
+**Files:** Modify `web-next/src/components/jobs/ApplyModal.tsx`, `web-next/src/lib/jobs.ts`
+
+- [ ] For `greenhouse|lever|ashby`, offer **Autofill for me** beside the existing manual path; other ATSs keep Phase A's open-the-posting flow with a one-line note saying why.
+- [ ] Streams node progress via the existing `RunStream`, then shows the handoff checklist.
+- [ ] Must state before starting that it fills but does not submit.
+- [ ] Verify: `npm run lint`, `npx tsc --noEmit`, `npm run check:jobs`.
+
+---
+
+## Done criteria
+
+- [ ] `.venv/bin/python -m pytest tests/` — all pass, count > 262.
+- [ ] No test contacts a live ATS or launches Chromium.
+- [ ] A source scan proves no submit control is ever clicked.
+- [ ] `npm run db:check` — no drift; migration verified on a copy of the live DB.
+- [ ] Resolver is pure (asserted by test) and never fills an identity or work-authorization field absent from the profile.
+- [ ] With the real profile still incomplete, a dry run reports the missing required fields as blocking rather than proceeding.
+- [ ] DB fingerprint unchanged across the whole plan.
