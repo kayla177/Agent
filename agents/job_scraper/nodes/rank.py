@@ -34,12 +34,12 @@ import profile_store
 from agents.job_scraper.scoring import extract_keywords, is_baseline_reason, score_baseline
 from agents.job_scraper.state import JobScraperState
 from shell.model_router import llm
+from shell.prompt_text import head_tail
 
 _BATCH = 3
 # Per-posting JD budget for the prompt, split HEAD + TAIL. See `_desc_slice`.
 _DESC_HEAD = 400
 _DESC_TAIL = 1600
-_DESC_ELIDE = "\n[...]\n"
 _JSON_RE = re.compile(r"\[.*\]", re.DOTALL)
 
 _SYSTEM = (
@@ -58,36 +58,46 @@ def _desc_slice(
 ) -> str:
     """A bounded JD excerpt for the prompt: the OPENING plus the ENDING.
 
-    DO NOT "simplify" this back to `description[:n]`. Head-only is the bug this
-    replaced, and it is the reason both jobs below scored the same.
+    Mechanism lives in `shell.prompt_text.head_tail` (the résumé generator's
+    keywords node hit the same bug and shares it); the BUDGET lives here, because
+    it was measured against this prompt and this model.
 
-    A job description is laid out company-first: mission blurb, team pitch, "what
-    you'll do" — and only then the part that decides whether an undergrad can
-    apply at all ("Qualifications", "Requirements", "Minimum/Preferred", "you
-    have...", the actual tech stack). Measured over 50 live JDs pulled from
-    greenhouse / lever / ashby on 2026-07-25 (p50 length 5,045 chars, max
-    13,982): the last mention of a concrete technology sits a median of 1,305
-    chars from the END of the text, while a head-only 500-char slice — the old
-    `_DESC_SLICE` — captured a qualifications heading in 10% of them and 1.8% of
-    the distinct tech terms. head=400 + tail=1600 captures 88% and 40%
-    respectively at the same order of cost. The head is still needed because the
-    ending alone often lands in EEO/legal boilerplate that never names the role.
+    DO NOT "simplify" this back to `description[:n]`. A job description is laid
+    out company-first — mission blurb, team pitch, "what you'll do" — and only
+    then the part that decides whether an undergrad can apply at all
+    ("Qualifications", "Minimum/Preferred", the actual tech stack). Measured over
+    50 live JDs from greenhouse / lever / ashby on 2026-07-25 (p50 5,045 chars,
+    max 13,982): the last mention of a concrete technology sits a median of 1,305
+    chars from the END of the text.
 
-    The budget is deliberately small: `_BATCH` postings share ONE prompt against
-    `ollama/llama3.1:8b`, and Ollama commonly defaults `num_ctx` to 2048 TOKENS.
-    A full 3-posting prompt built from the three longest JDs in that sample
-    measures 1,506 tokens including the system message (litellm token_counter),
-    leaving ~540 for the reply. Raising these numbers without re-measuring
-    reintroduces the original bug the expensive way: the runtime silently drops
-    the overflow and the model is left reading the intro paragraph again.
+    WHY 1600 AND NOT MORE. The tail was swept upward on 2026-07-30 once the real
+    context window was known (llama.context_length 131,072; see
+    `config.OLLAMA_NUM_CTX`), so the budget is no longer limited by the window.
+    Information capture keeps improving on paper — distinct tech terms 40% at
+    tail 1600, 69% at 2500, 87% at 4000 — but the MODEL's behaviour does not.
+    Timed against 34 real intern/co-op/new-grad postings with full text:
+
+        slice                score returned      ineligible caught      cost
+        head-only 500 (bug)          15%              7/9 (78%)     0.80s/posting
+        head 400 + tail 1600         15%              6/9 (67%)     1.24s/posting
+        head 400 + tail 2500          0%              6/9 (67%)     1.55s/posting
+        head 400 + tail 3500         15%              7/9 (78%)     1.94s/posting
+
+    Both LLM-facing outcomes are flat within noise while cost rises ~linearly
+    (a 60-posting backlog run goes 0.8 -> 1.9 minutes), so paying for a bigger
+    tail buys nothing measurable: llama3.1:8b does not reliably use the extra
+    context. 1600 is kept as the smallest budget that puts the requirements in
+    front of the model at all (73% of postings' degree/seniority wording, 40% of
+    tech terms) for +0.44s/posting over the old head-only slice.
+
+    The deterministic keyword baseline in `scoring.py` — the path that ALWAYS
+    produces a score — reads the whole stored description and is unaffected by
+    this budget. That is where raising `ats._DESC_MAX` did the real work.
 
     A description that fits whole is returned whole — no elision marker, no
     duplicated middle.
     """
-    text = description or ""
-    if len(text) <= head + tail:
-        return text
-    return text[:head] + _DESC_ELIDE + text[-tail:]
+    return head_tail(description, head=head, tail=tail)
 
 
 def _prompt(profile: str, batch: list[dict]) -> str:
