@@ -8,6 +8,13 @@ import ScoreBacklogButton from "@/components/jobs/ScoreBacklogButton";
 
 export const dynamic = "force-dynamic";
 
+// The board renders at most 400 chars of a description (JobRow), but every row
+// is serialized into the client payload. Stored descriptions used to be capped
+// at 1200 chars; they now hold the FULL JD (~5k typical, 20k ceiling), so
+// shipping the whole column for every row would grow this page's payload from
+// ~0.7 MB to several MB for text nothing displays. Excerpt server-side, with
+// headroom over what JobRow slices.
+const DESC_EXCERPT = 600;
 // Only the columns the UI renders — never ship the `data` blob to the client.
 const JOB_SELECT = {
   id: true, company: true, title: true, location: true, url: true, status: true,
@@ -33,12 +40,16 @@ async function loadCountries(): Promise<string[]> {
 }
 
 export default async function JobsPage() {
-  const [jobs, resumes, master, countries] = await Promise.all([
+  const [rows, resumes, master, countries] = await Promise.all([
     prisma.jobs.findMany({ select: JOB_SELECT }) as Promise<Job[]>,
     prisma.resumes.findMany({ select: { job_id: true, company: true, role: true } }),
     prisma.master_resume.findFirst({ select: { latex: true } }),
     loadCountries(),
   ]);
+  const jobs: Job[] = rows.map((j) => ({
+    ...j,
+    description: j.description ? j.description.slice(0, DESC_EXCERPT) : j.description,
+  }));
   return (
     <>
       <div className="jobs-header">
