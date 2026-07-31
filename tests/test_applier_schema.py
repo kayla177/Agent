@@ -8,6 +8,7 @@ import pathlib
 
 from agents.job_applier.schema_greenhouse import (
     demographic_questions_raw,
+    excluded_eeo_questions,
     form_url,
     parse_questions,
 )
@@ -21,6 +22,14 @@ def _payload():
 
 def _questions():
     return parse_questions(_payload())
+
+
+def _q(label, name="q", field_type="input_text", required=False, values=None):
+    """Build one minimal `questions[]`-shaped entry for synthetic payloads."""
+    entry = {"name": name, "type": field_type}
+    if values is not None:
+        entry["values"] = values
+    return {"label": label, "required": required, "fields": [entry]}
 
 
 def test_parses_the_identity_questions():
@@ -92,15 +101,40 @@ def test_empty_or_missing_questions_is_not_an_error():
 
 
 def test_demographic_questions_are_not_in_the_core_list():
-    """The resolver must never be handed a race/gender/veteran-status
-    question to answer, so demographic_questions must never surface as a
-    Question from parse_questions."""
+    """The captured fixture's `demographic_questions` is `null`, so this test
+    alone would pass even if parse_questions accidentally looped over that
+    key too (an empty array merged into anything changes nothing) — see
+    test_demographic_questions_with_real_content_never_leak below for the
+    version that actually exercises the exclusion."""
     payload = _payload()
     demo_labels = {
         d.get("label", "").lower() for d in demographic_questions_raw(payload) or []
     }
     core_labels = {q.label.lower() for q in parse_questions(payload)}
     assert not (demo_labels & core_labels)
+
+
+def test_demographic_questions_with_real_content_never_leak():
+    """Regression test with teeth: inject REAL EEO content into
+    `demographic_questions` (the fixture's is `null`, which cannot catch a
+    merge bug) and assert none of it reaches parse_questions(). A version of
+    parse_questions that loops over `demographic_questions` in addition to
+    `questions` — the exact mutation an ATS reviewer verified independently —
+    fails this test."""
+    payload = _payload()
+    payload = dict(payload)
+    payload["demographic_questions"] = [
+        _q("Gender", name="gender", field_type="multi_value_single_select",
+           values=[{"label": "Male", "value": 1}, {"label": "Female", "value": 2}]),
+        _q("Race/Ethnicity", name="race_ethnicity", field_type="multi_value_single_select",
+           values=[{"label": "White", "value": 1}, {"label": "Black or African American", "value": 2}]),
+        _q("Veteran Status", name="veteran_status", field_type="multi_value_single_select",
+           values=[{"label": "I am a veteran", "value": 1}]),
+    ]
+    core_labels = {q.label.lower() for q in parse_questions(payload)}
+    assert "gender" not in core_labels
+    assert "race/ethnicity" not in core_labels
+    assert "veteran status" not in core_labels
 
 
 def test_demographic_questions_raw_is_a_separate_accessor():
@@ -124,3 +158,167 @@ def test_form_url_reads_absolute_url():
 
 def test_form_url_missing_key_is_empty_string():
     assert form_url({}) == ""
+
+
+# --- Content-based EEO backstop ---------------------------------------
+#
+# Which ARRAY a question arrives in is not a safety property: an employer
+# can write a custom EEO-flavored question straight into the core
+# `questions` array. These adversarial payloads reproduce that exactly
+# ("Race" (select, options White/Black), "Gender", "Veteran Status" placed
+# in `questions`) and assert the content backstop still keeps them out of
+# parse_questions(), one per required term.
+
+_EEO_LABELS_BY_TERM = {
+    "race": "What is your race?",
+    "ethnicity": "What is your ethnicity?",
+    "gender": "What is your gender?",
+    "sex": "What is your sex?",
+    "veteran": "Are you a veteran?",
+    "disability": "Do you have a disability?",
+    "sexual orientation": "What is your sexual orientation?",
+    "pronoun": "What are your pronouns?",
+}
+
+
+def test_eeo_terms_are_excluded_from_the_core_list_even_in_the_core_array():
+    for term, label in _EEO_LABELS_BY_TERM.items():
+        payload = {"questions": [_q(label, name=f"q_{term}")]}
+        labels = {q.label.lower() for q in parse_questions(payload)}
+        assert label.lower() not in labels, f"{term!r} term leaked: {label!r}"
+
+
+def test_eeo_terms_are_retrievable_via_the_excluded_accessor():
+    """Excluded questions must not silently vanish — they stay retrievable
+    via excluded_eeo_questions, just never via parse_questions."""
+    payload = {
+        "questions": [
+            _q(
+                "Race",
+                name="race",
+                field_type="multi_value_single_select",
+                values=[{"label": "White", "value": 1}, {"label": "Black", "value": 2}],
+            ),
+            _q("Gender", name="gender"),
+            _q("Veteran Status", name="veteran_status"),
+        ]
+    }
+    assert parse_questions(payload) == []
+    excluded = {q.label for q in excluded_eeo_questions(payload)}
+    assert excluded == {"Race", "Gender", "Veteran Status"}
+    race = next(q for q in excluded_eeo_questions(payload) if q.label == "Race")
+    assert race.options == ["White", "Black"]  # excluded questions are still fully parsed
+
+
+def test_excluded_eeo_questions_empty_payload_is_not_an_error():
+    assert excluded_eeo_questions({}) == []
+    assert excluded_eeo_questions({"questions": []}) == []
+
+
+# --- Near-misses: must NOT be excluded ---------------------------------
+
+
+def test_substring_race_inside_embrace_is_not_excluded():
+    """Word-boundary regression: this repo already shipped one substring bug
+    (`agents/job_scraper/locations.py` matched "uk" inside "Milwaukee"). This
+    label contains "race" as a substring of "embrace", not the standalone
+    word, and must survive."""
+    label = "How do you embrace ambiguity in a fast-moving environment?"
+    payload = {"questions": [_q(label, name="embrace_q")]}
+    labels = {q.label for q in parse_questions(payload)}
+    assert label in labels
+    assert excluded_eeo_questions(payload) == []
+
+
+def test_substring_sex_inside_essex_is_not_excluded():
+    """Same class of bug for "sex": "Essex" contains it as a substring, not
+    the standalone word."""
+    label = "Which office do you prefer: Essex, London, or Remote?"
+    payload = {
+        "questions": [
+            _q(
+                label,
+                name="office_pref",
+                field_type="multi_value_single_select",
+                values=[{"label": "Essex", "value": 1}, {"label": "London", "value": 2}],
+            )
+        ]
+    }
+    labels = {q.label for q in parse_questions(payload)}
+    assert label in labels
+
+
+def test_eeo_term_in_a_select_option_does_not_taint_the_question():
+    """Only the question LABEL is screened, never its options. "Gender
+    Studies" sitting among other majors in a dropdown must not make the
+    whole "what was your major" question look like an EEO question — the
+    protected term lives in one answer choice, not in what is being asked."""
+    label = "What was your undergraduate major?"
+    payload = {
+        "questions": [
+            _q(
+                label,
+                name="major",
+                field_type="multi_value_single_select",
+                values=[
+                    {"label": "Gender Studies", "value": 1},
+                    {"label": "Biology", "value": 2},
+                    {"label": "Computer Science", "value": 3},
+                ],
+            )
+        ]
+    }
+    q = next(q for q in parse_questions(payload) if q.label == label)
+    assert q.kind == "select"
+    assert "Gender Studies" in q.options  # the option text is untouched
+    assert excluded_eeo_questions(payload) == []
+
+
+# --- Key collisions ------------------------------------------------------
+
+
+def test_duplicate_labels_with_no_name_get_disambiguated_keys():
+    """Two questions both labelled 'Additional Comments' with no `name` at
+    all both slugify to the same key. The first keeps the plain slug; the
+    second gets a stable positional suffix instead of silently colliding."""
+    payload = {
+        "questions": [
+            _q("Additional Comments", name=""),
+            _q("Additional Comments", name=""),
+        ]
+    }
+    ks = [q.key for q in parse_questions(payload)]
+    assert len(ks) == len(set(ks)) == 2
+    assert ks[0] == "additional_comments"
+    assert ks[1] == "additional_comments__2"
+
+
+def test_duplicate_explicit_names_get_disambiguated_keys():
+    """Two structurally distinct questions that happen to share a literal
+    `name` (should never happen on a real Greenhouse form, but must not be
+    assumed) must still end up with unique, stable keys."""
+    payload = {
+        "questions": [
+            _q("First Question", name="dup"),
+            _q("Second Question", name="dup"),
+        ]
+    }
+    ks = [q.key for q in parse_questions(payload)]
+    assert len(ks) == len(set(ks)) == 2
+    assert ks[0] == "dup"
+    assert ks[1] == "dup__2"
+
+
+# --- `required` string coercion -----------------------------------------
+
+
+def test_required_string_false_is_treated_as_false():
+    payload = {"questions": [_q("Optional Field", name="opt", required="false")]}
+    q = parse_questions(payload)[0]
+    assert q.required is False
+
+
+def test_required_string_true_is_treated_as_true():
+    payload = {"questions": [_q("Required Field", name="req", required="true")]}
+    q = parse_questions(payload)[0]
+    assert q.required is True
