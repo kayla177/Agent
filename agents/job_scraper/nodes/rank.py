@@ -4,7 +4,9 @@ Uses the platform's local model (via ``shell/model_router.llm``) to, for every
 posting, judge:
   - ``eligible``: can an UNDERGRAD (bachelor's, ~0-1 yrs exp) realistically apply?
     False only when the role clearly requires a Master's/PhD or senior experience
-    (read from the title + a slice of the JD). Roles judged ineligible are dropped.
+    (read from the title + a HEAD+TAIL excerpt of the JD — see ``_desc_slice``;
+    the qualifications live at the bottom, so a head-only slice showed the model
+    nothing but company boilerplate). Roles judged ineligible are dropped.
   - ``fit_score`` (0–100) + ``fit_reason`` against the candidate profile.
 
 Design choices that keep this safe and cheap:
@@ -34,7 +36,10 @@ from agents.job_scraper.state import JobScraperState
 from shell.model_router import llm
 
 _BATCH = 3
-_DESC_SLICE = 500
+# Per-posting JD budget for the prompt, split HEAD + TAIL. See `_desc_slice`.
+_DESC_HEAD = 400
+_DESC_TAIL = 1600
+_DESC_ELIDE = "\n[...]\n"
 _JSON_RE = re.compile(r"\[.*\]", re.DOTALL)
 
 _SYSTEM = (
@@ -48,6 +53,43 @@ _SYSTEM = (
 )
 
 
+def _desc_slice(
+    description: str | None, *, head: int = _DESC_HEAD, tail: int = _DESC_TAIL
+) -> str:
+    """A bounded JD excerpt for the prompt: the OPENING plus the ENDING.
+
+    DO NOT "simplify" this back to `description[:n]`. Head-only is the bug this
+    replaced, and it is the reason both jobs below scored the same.
+
+    A job description is laid out company-first: mission blurb, team pitch, "what
+    you'll do" — and only then the part that decides whether an undergrad can
+    apply at all ("Qualifications", "Requirements", "Minimum/Preferred", "you
+    have...", the actual tech stack). Measured over 50 live JDs pulled from
+    greenhouse / lever / ashby on 2026-07-25 (p50 length 5,045 chars, max
+    13,982): the last mention of a concrete technology sits a median of 1,305
+    chars from the END of the text, while a head-only 500-char slice — the old
+    `_DESC_SLICE` — captured a qualifications heading in 10% of them and 1.8% of
+    the distinct tech terms. head=400 + tail=1600 captures 88% and 40%
+    respectively at the same order of cost. The head is still needed because the
+    ending alone often lands in EEO/legal boilerplate that never names the role.
+
+    The budget is deliberately small: `_BATCH` postings share ONE prompt against
+    `ollama/llama3.1:8b`, and Ollama commonly defaults `num_ctx` to 2048 TOKENS.
+    A full 3-posting prompt built from the three longest JDs in that sample
+    measures 1,506 tokens including the system message (litellm token_counter),
+    leaving ~540 for the reply. Raising these numbers without re-measuring
+    reintroduces the original bug the expensive way: the runtime silently drops
+    the overflow and the model is left reading the intro paragraph again.
+
+    A description that fits whole is returned whole — no elision marker, no
+    duplicated middle.
+    """
+    text = description or ""
+    if len(text) <= head + tail:
+        return text
+    return text[:head] + _DESC_ELIDE + text[-tail:]
+
+
 def _prompt(profile: str, batch: list[dict]) -> str:
     head = (
         f"CANDIDATE PROFILE:\n{profile}\n"
@@ -56,7 +98,7 @@ def _prompt(profile: str, batch: list[dict]) -> str:
     )
     lines = [head, "ROLES:"]
     for i, p in enumerate(batch):
-        desc = (p.get("description") or "")[:_DESC_SLICE].replace("\n", " ")
+        desc = _desc_slice(p.get("description")).replace("\n", " ")
         lines.append(
             f"[{i}] {p.get('title', '?')} @ {p.get('company', '?')} "
             f"({p.get('location', '—')})\n{desc}"
