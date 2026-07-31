@@ -50,8 +50,12 @@ export default function ProfileForm({ profile }: { profile: Profile }) {
   }
 
   return (
-    <form className="settings-form" onSubmit={onSubmit}>
+    <form className="settings-form panel" onSubmit={onSubmit}>
       <h2>profile</h2>
+      <p className="panel-sub">
+        Who you are, for fit scoring and (later) filling application forms.
+        <strong> Save profile</strong> below saves only this section.
+      </p>
       {msg ? <div className={`banner ${msg.ok ? "ok" : "err"}`}>{msg.text}</div> : null}
 
       <label>Full name<input name="full_name" defaultValue={profile.full_name} /></label>

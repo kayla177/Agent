@@ -22,10 +22,15 @@ export default async function SettingsPage() {
       {!data ? (
         <p className="muted">Agent service offline — start it with <code>python -m server</code> (port 8001).</p>
       ) : (
-        <>
+        // Two INDEPENDENT forms, each with its own save button. They are
+        // separated into panels (same treatment the résumé tab uses) because a
+        // flat stack made it easy to fill the profile fields, scroll past
+        // "Save profile", and hit "Save settings" — which silently submits only
+        // the other form.
+        <div className="settings-panels">
           {profileData ? <ProfileForm profile={profileData.profile as Profile} /> : null}
           <SettingsForm prefs={data.prefs} secrets={data.secrets} />
-        </>
+        </div>
       )}
     </>
   );

@@ -197,7 +197,15 @@ table.apps button:disabled { opacity: .5; cursor: default; }
 .badge.running { color: var(--amber); border-color: var(--amber); }
 
 /* ---------- Settings ---------- */
+/* /settings holds two independent forms, each with its own save button. Panels
+   give them a visible boundary so it is obvious which button belongs to which
+   set of fields. */
+.settings-panels { display: flex; flex-direction: column; gap: 1.4rem; max-width: 660px; }
 .settings-form { max-width: 660px; display: flex; flex-direction: column; gap: 1rem; }
+.settings-panels .settings-form { max-width: none; }
+/* A checkbox reads as a row, not a stacked label like every other field. */
+.settings-form label.checkbox-row { flex-direction: row; align-items: center; gap: .5rem; }
+.settings-form label.checkbox-row input { width: auto; }
 .settings-form label { display: flex; flex-direction: column; gap: .3rem; color: var(--muted); font-size: .85rem; }
 .settings-form input, .settings-form textarea, .settings-form select {
   background: var(--panel); border: 1px solid var(--border); color: var(--text); border-radius: 10px; padding: .5rem .6rem; font: inherit;

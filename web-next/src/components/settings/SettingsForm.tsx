@@ -37,7 +37,12 @@ export default function SettingsForm({ prefs, secrets }: { prefs: Prefs; secrets
   }
 
   return (
-    <form className="settings-form" onSubmit={onSubmit}>
+    <form className="settings-form panel" onSubmit={onSubmit}>
+      <h2>preferences</h2>
+      <p className="panel-sub">
+        Agent behaviour — weather, news, stocks, and the job scraper.
+        <strong> Save settings</strong> below saves only this section.
+      </p>
       {msg ? <div className={`banner ${msg.ok ? "ok" : "err"}`}>{msg.text}</div> : null}
 
       <label>Weather latitude<input name="WEATHER_LATITUDE" defaultValue={prefs.WEATHER_LATITUDE} /></label>
