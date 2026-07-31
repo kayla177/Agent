@@ -12,7 +12,8 @@ returns a list of postings normalized to the common shape:
      "remote": bool | None, # True/False when known, else None
      "department": str,
      "compensation": str,   # human-readable pay, when the board exposes it
-     "description": str}    # plain-text JD (truncated), used by fit-ranking
+     "description": str}    # full plain-text JD (capped at _DESC_MAX), the
+                            # signal behind both fit-scoring paths
 
 All enrichment fields come from the SAME response the adapter already fetches —
 no extra HTTP calls. `id` is prefixed with "<company>:<ats>:<native id>" so ids
@@ -31,8 +32,24 @@ import re
 import httpx
 
 _TIMEOUT = 20
-# Cap stored descriptions so the seen-store / LLM prompts stay small.
-_DESC_MAX = 1200
+# Sanity ceiling on a stored description — NOT a signal-reduction knob.
+#
+# This used to be 1200, "so the seen-store / LLM prompts stay small". Measured
+# 2026-07-25: that cost far more than it saved. A real JD runs ~5,000 chars and
+# opens with company boilerplate, so the first 1200 chars are marketing prose.
+# Across the 551 stored rows EVERY description was exactly 1200 long (p50 = p90
+# = max = 1200) and the words the scorers depend on had been cut off:
+# "qualification" survived in 1%, "requirement" 4%, "bachelor" 2%, "python" 4%,
+# "react" 0%. So the deterministic keyword baseline in scoring.py could not
+# match a single tech term, and the LLM in rank.py was asked to judge undergrad
+# eligibility from an intro paragraph.
+#
+# Prompt size is bounded where prompts are BUILT (see `nodes/rank.py`'s
+# head+tail slicer), not by throwing the requirements away at storage time.
+# What is left here is only a guard so one pathological board cannot bloat the
+# database: 20k is ~4x the longest JD measured across greenhouse/lever/ashby
+# (13,982 chars), and full text for the whole current corpus is ~2.8 MB.
+_DESC_MAX = 20_000
 
 # Page-size limits requested by the two adapters that ask for a bounded page and
 # then never paginate. A result whose length EQUALS its cap is very likely only
@@ -62,7 +79,12 @@ def _gid(company: str, ats: str, native_id: object) -> str:
 
 
 def _strip_html(raw: str | None) -> str:
-    """Turn an HTML job description into readable plain text (truncated)."""
+    """Turn an HTML job description into readable plain text.
+
+    Kept whole up to the `_DESC_MAX` sanity ceiling: the qualifications and
+    requirements sit at the BOTTOM of a JD, so trimming here is what silently
+    destroyed the fit signal (see `_DESC_MAX`).
+    """
     if not raw:
         return ""
     text = html.unescape(raw)
