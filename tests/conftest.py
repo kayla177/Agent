@@ -23,7 +23,39 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+import config  # noqa: E402
 import store_db  # noqa: E402
+
+# Hermetic defaults for the job-scraper prefs. These are the hardcoded defaults
+# from config.py as of this fixture's introduction — NOT whatever the developer
+# happens to have saved.
+_JOB_PREF_DEFAULTS = {
+    "JOB_DROP_GHOSTS": False,
+    "JOB_MAX_AGE_DAYS": 60,
+    "JOB_MIN_FIT": 0,
+    "JOB_PROFILE": "",
+    "JOB_COUNTRIES": ["US", "CA"],
+}
+
+
+@pytest.fixture(autouse=True)
+def hermetic_job_prefs(monkeypatch):
+    """Pin the job-scraper prefs so the suite never depends on `data/prefs.json`.
+
+    `config._apply_prefs()` reads that overlay at import, so without this the
+    suite's behaviour depends on the developer's saved Settings. That is not
+    hypothetical: ticking "drop stale/ghost postings" in the UI set
+    `JOB_DROP_GHOSTS=True`, which made `freshness_node` start dropping the very
+    rows several tests hand it, and one test failed with `IndexError` on a list
+    it expected to contain a posting.
+
+    `JOB_DROP_GHOSTS` is pinned False because most tests assert on the *tags*
+    (`ghost`, `ghost_reason`) and need the flagged row returned. Tests that
+    exercise the hard-drop path monkeypatch it True themselves; a later
+    `setattr` on the same monkeypatch instance wins over this one.
+    """
+    for name, value in _JOB_PREF_DEFAULTS.items():
+        monkeypatch.setattr(config, name, value)
 
 
 @pytest.fixture
