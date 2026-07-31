@@ -2,7 +2,7 @@
 
 This module is the safety boundary of Phase B. Everything downstream just
 types what it says, so this is the one place where "never invent a value" is
-enforced. Two properties make that enforceable:
+enforced. Three properties make that enforceable:
 
 1. It is PURE. A question list plus a profile dict in, a list of `Answer`
    objects out. No browser, no network, no local model, no database — not even
@@ -11,25 +11,24 @@ enforced. Two properties make that enforceable:
    tempting "just look it up" shortcut is exactly how a boundary like this
    rots.
 
-2. It only ever copies or mechanically derives a value from a field the user
-   typed. Anything else becomes `source="blank"` with a `note` saying why, and
-   the handoff (Task 7) shows those notes to the user. A blank field is always
-   a safe answer — the human is going to review the form and press Submit
-   themselves — whereas a guess is submitted to a real employer under their
-   name.
+2. It is DEFAULT-DENY. A profile value is emitted only when the label
+   POSITIVELY matches a narrow pattern for that field AND the label is asking
+   for a value rather than asking a yes/no question about one. Every other
+   label — including every phrasing nobody thought of — comes out
+   `source="blank"` with a note. The first version of this module was
+   default-allow with a denylist of bad shapes, and a review found eight
+   phrasings that leaked real values through it ("Do you currently live in
+   Milwaukee" answered with the profile's city; "Will you be graduating before
+   June 2027?" answered with a date; "Have you ever applied under a different
+   last name?" answered with the surname). A denylist cannot be finished; an
+   allowlist can.
 
-Work authorization is the sharpest edge here, and the user's instruction on it
-was explicit: it is never to be guessed. Those questions are what actually
-gate an application, so:
+3. Work-eligibility topics are quarantined FIRST, in any spelling, casing or
+   widget. See `_ELIGIBILITY_SUBKINDS`.
 
-  - they are classified BEFORE the free-text rule, so a work-auth question
-    phrased as a textarea can never be handed to the drafting node;
-  - an unset profile field means blank, marked blocking, never "No";
-  - `select`/`checkbox` answers must match one of the question's OWN options
-    exactly; if nothing matches, the answer is blank. Picking the
-    closest-looking option is precisely the failure mode to avoid;
-  - the two conditional statuses (`f1_opt`, `tn_eligible`) never get a bare
-    Yes/No — see `_CONDITIONAL_STATUS_TEXT`.
+A blank field is always a safe answer — the human reviews the form and presses
+Submit themselves — whereas a guess is submitted to a real employer under
+their name.
 
 THE ONE RULE for all of Phase B: no code path may ever click a submit button.
 This module writes no browser code at all.
@@ -65,23 +64,153 @@ class Answer:
 
 
 # ---------------------------------------------------------------------------
-# Classification
+# Work eligibility: quarantined before anything else
 # ---------------------------------------------------------------------------
-# An ORDERED list of (kind, pattern). First match wins, so the list is sorted
-# specific -> generic, and every pattern is word-boundary anchored. Both of
-# those are load-bearing:
+# Everything a form might ask about the right to hold the job — authorization,
+# sponsorship, citizenship, visas, permits, residency. These are the questions
+# that actually gate an application, and the instruction on them was explicit:
+# never guessed.
 #
-#   * Word boundaries, not substrings. agents/job_scraper/locations.py learned
-#     this the hard way: a substring check for "uk" matches inside
-#     "Milwaukee". Here the equivalent traps are "school" inside "Schoology"
-#     and "name" inside "Current Company Name".
+# Three properties are deliberate:
 #
-#   * Order. "Legal Name (if different than above)" must be caught by the
-#     specific `name_alt` rule before any generic name rule retypes the
-#     user's name into it; "Expected graduation date from your university"
-#     is a graduation date, not a school; a question mentioning both LinkedIn
-#     and a personal website is a LinkedIn question. The work-auth family sits
-#     near the top so nothing can ever steal one of those questions.
+#   * Matching is CASE-INSENSITIVE and covers BOTH orthographies
+#     (authoriz|authoris). A review found "ARE YOU LEGALLY AUTHORIZED TO WORK
+#     WITH US?" and "Are you legally authorised to work in the US?" slipping
+#     past casing- and spelling-specific rules — the first answered "No", the
+#     second classified as free text and would have been handed to a model.
+#
+#   * An eligibility match is checked BEFORE every other rule and regardless
+#     of `Question.kind`, so the textarea form of one of these can never
+#     become `free_text`. That is what makes the drafting node's "refuse to
+#     draft a BLOCKING_KINDS question" rule load-bearing rather than
+#     decorative: these kinds are all blocking.
+#
+#   * The vocabulary is intentionally broad and over-matches. "Are you a
+#     Citizens Bank customer?" lands here and shows up in the handoff as a
+#     blocking item the user must answer themselves. That is the trade taken
+#     knowingly: a spurious blocking item costs one glance, while a missed
+#     citizenship question could be answered by a model on a real application.
+
+# Mappable: asks whether the user MAY work somewhere. A work-auth status can
+# answer this (subject to the country and yes/no gates below).
+_ELIG_WORK_AUTH = (
+    r"work\s+authoris(?:ation|ed)|work\s+authoriz(?:ation|ed)"
+    r"|authoris(?:ation|ed)\s+to\s+work|authoriz(?:ation|ed)\s+to\s+work"
+    r"|authoris(?:ation|ed)\s+for\s+employment|authoriz(?:ation|ed)\s+for\s+employment"
+    r"|legally\s+(?:able|permitted|entitled|allowed)\s+to\s+work"
+    r"|eligible\s+to\s+work|eligibility\s+to\s+work|employment\s+eligibility"
+    r"|right\s+to\s+work|authoris\w*|authoriz\w*"
+)
+
+# Mappable: asks whether the user NEEDS an employer petition.
+_ELIG_SPONSORSHIP = (
+    r"sponsorship|sponsored|sponsor\s+(?:your|a|an)\s+\w+|visa\s+support"
+)
+
+# NOT mappable: asks about citizenship, nationality or residency. The profile
+# records a work-authorization status, not a nationality — see the
+# `citizenship` branch in `_resolve_one` for why inferring one from the other
+# is refused outright.
+_ELIG_CITIZENSHIP = (
+    r"citizens?|citizenship|nationality|national\s+of"
+    r"|permanent\s+resident(?:cy|ce)?|residency|resident\s+status|green\s+card"
+)
+
+# NOT mappable: asks whether the user HOLDS a particular document or status.
+# "Do you hold a valid US work permit?" is not answerable from
+# us_work_auth="citizen" — a citizen holds no work permit — so these are split
+# out from the mappable "are you authorized" phrasings rather than sharing an
+# alternation with them.
+_ELIG_DOCUMENT = (
+    r"visa|immigration|work\s+permit|employment\s+permit|permit\s+to\s+work"
+    r"|status\s+to\s+work|work\s+status|employment\s+authoris\w*\s+document"
+    r"|employment\s+authoriz\w*\s+document|h-?1b|f-?1|stem\s*-?\s*opt"
+    r"|opt\s+(?:status|employment|work)|tn\s+status"
+)
+
+# ORDERED. `sponsorship` precedes `document` so "Will you require visa
+# sponsorship?" stays answerable instead of being blanked for containing the
+# word "visa"; `citizenship` precedes both because a label mixing citizenship
+# with either is not answerable at all.
+_ELIGIBILITY_SUBKINDS: tuple[tuple[str, re.Pattern[str]], ...] = (
+    ("citizenship", re.compile(rf"\b(?:{_ELIG_CITIZENSHIP})\b", re.IGNORECASE)),
+    ("sponsorship", re.compile(rf"\b(?:{_ELIG_SPONSORSHIP})\b", re.IGNORECASE)),
+    ("work_auth", re.compile(rf"\b(?:{_ELIG_WORK_AUTH})\b", re.IGNORECASE)),
+    ("work_document", re.compile(rf"\b(?:{_ELIG_DOCUMENT})\b", re.IGNORECASE)),
+)
+
+# The kinds that can be answered from a work-auth status at all. The other two
+# eligibility kinds are always blank.
+_MAPPABLE_ELIGIBILITY = frozenset({"work_auth", "sponsorship"})
+_ELIGIBILITY_KINDS = frozenset(k for k, _ in _ELIGIBILITY_SUBKINDS)
+
+
+def _eligibility_kind(label: str) -> str | None:
+    """The work-eligibility sub-kind of `label`, or None if it isn't one."""
+    for kind, pattern in _ELIGIBILITY_SUBKINDS:
+        if pattern.search(label):
+            return kind
+    return None
+
+
+# ---------------------------------------------------------------------------
+# Is this label asking for a value, or asking a yes/no question?
+# ---------------------------------------------------------------------------
+# "Do you currently live in Milwaukee" and "Will you be graduating before June
+# 2027?" both mention a field the profile holds, and pasting that field in
+# would be wrong even though every character of it came from the profile. The
+# check is an ALLOWLIST of value-prompt shapes, not a denylist of question
+# openers: `will`/`would` cannot simply be denied, because Greenhouse's real
+# LinkedIn field is phrased "Would you like to include your LinkedIn profile,
+# personal website or blog?" — which IS asking for the value. So that exact
+# shape is allowlisted and every other auxiliary opener falls through to
+# "blank", including openers nobody enumerated.
+_VALUE_INVITATION_RE = re.compile(
+    r"^\s*(?:would|will|do|does|can|could|may|please)\s+(?:you\s+)?"
+    r"(?:like\s+to\s+|care\s+to\s+|please\s+|want\s+to\s+|wish\s+to\s+)?"
+    r"(?:include|provide|share|add|enter|list|link|attach|give|supply|upload|tell\s+us)\b",
+    re.IGNORECASE,
+)
+
+# Any label opening with an auxiliary verb is treated as a yes/no question.
+# Deliberately generous — over-matching here only produces a blank.
+_QUESTION_OPENER_RE = re.compile(
+    r"^\s*(?:are|is|was|were|am|do|does|did|have|has|had|can|could|will|would"
+    r"|shall|should|may|might|must)\b",
+    re.IGNORECASE,
+)
+
+
+def _is_value_prompt(label: str) -> bool:
+    """True when the label asks for a value, so a profile field may be typed.
+
+    Applied to EVERY copy-a-field branch, the name branch included: "Have you
+    ever applied under a different last name?" previously reached the name
+    branch, which had no gate, and got the surname typed into it.
+    """
+    if _VALUE_INVITATION_RE.match(label):
+        return True
+    return not _QUESTION_OPENER_RE.match(label)
+
+
+def _is_yes_no_question(label: str) -> bool:
+    """True when the label reads as a yes/no question.
+
+    The inverse gate, used for the eligibility kinds: a status may be mapped to
+    "Yes"/"No" only for a label that actually asks a yes/no question. A bare
+    "Work Authorization Status" field wants a status, not a "Yes", so it goes
+    blank rather than receiving one.
+    """
+    return bool(_QUESTION_OPENER_RE.match(label))
+
+
+# ---------------------------------------------------------------------------
+# Everything else: an ordered, word-boundary-anchored label mapping
+# ---------------------------------------------------------------------------
+# First match wins, so the list runs specific -> generic. Word boundaries, not
+# substrings: agents/job_scraper/locations.py learned that the hard way when a
+# substring check for "uk" matched inside "Milwaukee". The equivalents here are
+# "school" inside "Schoology" and "name" inside "Current Company Name".
 
 
 def _rx(*alternatives: str) -> re.Pattern[str]:
@@ -96,42 +225,18 @@ def _rx(*alternatives: str) -> re.Pattern[str]:
 _BARE_NAME_RE = re.compile(r"^[\s*]*(?:your\s+|full\s+|legal\s+)?name[\s*:?]*$", re.IGNORECASE)
 
 _LABEL_RULES: tuple[tuple[str, re.Pattern[str]], ...] = (
-    # "Legal Name (if different than above)", "Preferred name (if different)".
-    # Conditional on something this system cannot know (whether the user's
-    # legal name differs from the name they typed), so it is never filled.
+    # A name field that is conditional on something this system cannot know:
+    # whether the user's legal/previous/preferred name differs from the one
+    # they typed. Must beat every generic name rule. All the near-misses of
+    # the original rule — "Legal first name (if different than above)",
+    # "Legal name (if applicable)", "Other Legal Name" — resolved to real
+    # name values until this pattern covered them.
     ("name_alt", re.compile(
-        r"\b(?:legal|preferred|other|maiden)\s+name\b.*\bdiffer", re.IGNORECASE)),
-
-    # The work-authorization family, first among the substantive rules.
-    #
-    # `citizenship` is separate from `work_auth` because the two questions are
-    # NOT interchangeable: mapping a `permanent_resident` status onto "Are you
-    # a US citizen?" as a Yes would be a false legal statement on a real
-    # application. It exists as its own kind, rather than falling through to
-    # "other", for two reasons: it is always blocking, and — crucially — a
-    # citizenship question phrased as a textarea would otherwise reach the
-    # `free_text` rule and be handed to a model to write. No status question
-    # ever goes to a model.
-    ("citizenship", _rx(
-        r"citizens?(?:hip)?", r"immigration\s+status", r"visa\s+status",
-        r"green\s+card", r"permanent\s+resident(?:cy|ce)?", r"nationality",
-    )),
-    ("work_auth", _rx(
-        r"work\s+authoriz(?:ation|ed)",
-        r"authoriz(?:ation|ed)\s+to\s+work",
-        r"authoriz(?:ation|ed)\s+for\s+employment",
-        r"legally\s+(?:able|permitted|entitled|allowed)\s+to\s+work",
-        r"eligible\s+to\s+work",
-        r"employment\s+eligibility",
-        r"right\s+to\s+work",
-        r"work\s+permit",
-        r"work\s+visa\s+status",
-    )),
-    ("sponsorship", _rx(
-        r"sponsorship",
-        r"sponsor\s+(?:your|a|an)\s+(?:visa|work\s+visa|h-?1b)",
-        r"visa\s+support",
-    )),
+        r"\b(?:maiden|previous|former|other|preferred|alias)\s+"
+        r"(?:legal\s+)?(?:first\s+|last\s+|middle\s+|full\s+)?names?\b"
+        r"|\b(?:legal|full)\s+(?:first\s+|last\s+|middle\s+|full\s+)?names?\b"
+        r"[^?]*?\b(?:differ\w*|applicable|if\s+any|other\s+than|alias|above)\b",
+        re.IGNORECASE)),
 
     # Legal consent (privacy notice, terms, GDPR). Only the human can give it.
     ("consent", _rx(
@@ -191,16 +296,15 @@ _LABEL_RULES: tuple[tuple[str, re.Pattern[str]], ...] = (
                       r"candidate\s+name")),
 )
 
-# Kinds a pure resolver can never answer AND that gate a real submission, so
-# the handoff must surface every one of them for explicit human action before
-# the user presses Submit. The two work-auth kinds are here even when they DID
-# resolve from the profile: those are the answers that decide whether an
-# application is even considered, so they get confirmed, not assumed.
+# Kinds a pure resolver can never safely settle AND that gate a real
+# submission, so the handoff must surface every one of them for explicit human
+# action before the user presses Submit. The eligibility kinds are here even
+# when they DID resolve from the profile: those are the answers that decide
+# whether an application is considered at all, so they get confirmed, not
+# assumed.
 BLOCKING_KINDS: frozenset[str] = frozenset(
-    {"work_auth", "sponsorship", "citizenship", "consent", "file_upload"}
+    _ELIGIBILITY_KINDS | {"consent", "file_upload"}
 )
-
-_AUTH_KINDS = frozenset({"work_auth", "sponsorship"})
 
 # Profile field backing each straightforwardly-copied kind.
 _PROFILE_FIELD_BY_KIND = {
@@ -218,17 +322,25 @@ _PROFILE_FIELD_BY_KIND = {
 
 
 def classify(question: Question) -> str:
-    """The resolver's category for one question — the ordered mapping above.
+    """The resolver's category for one question.
 
-    `kind == "file"` short-circuits (nothing in a text profile is a file), and
-    `kind == "textarea"` falls through to `free_text` only AFTER every label
-    rule has had its chance, so a work-authorization or referral question
-    rendered as a textarea is still classified as itself and never handed to a
-    model.
+    Order of decision, and why each step is where it is:
+
+      1. `kind == "file"` — nothing in a text profile is a file.
+      2. Work eligibility, in any spelling/casing and for any widget, so a
+         textarea version can never reach the `free_text` rule and be handed
+         to a model.
+      3. The ordered label rules.
+      4. The anchored bare-"Name" rule.
+      5. `kind == "textarea"` => `free_text` — LAST, so it only catches labels
+         no rule above recognised.
     """
     if question.kind == "file":
         return "file_upload"
     label = question.label or ""
+    eligibility = _eligibility_kind(label)
+    if eligibility:
+        return eligibility
     for kind, pattern in _LABEL_RULES:
         if pattern.search(label):
             return kind
@@ -240,27 +352,37 @@ def classify(question: Question) -> str:
 
 
 # ---------------------------------------------------------------------------
-# Country of a work-authorization question
+# Which country is an eligibility question about?
 # ---------------------------------------------------------------------------
-# The bare abbreviation "US" is matched CASE-SENSITIVELY — the same trick
-# locations.py uses for two-letter state codes. Lowercase "us" is the English
-# pronoun, and "Do you have authorization to work with us?" must not be read
-# as a question about the United States. "CA" is deliberately absent: in a job
-# posting it means California at least as often as Canada.
-_US_RE = re.compile(r"\b(?:united\s+states(?:\s+of\s+america)?|usa|america|american)\b",
-                    re.IGNORECASE)
-_US_ABBR_RE = re.compile(r"\bU\.?S\.?\b")
+# The answer decides WHICH profile field may be read, so getting it wrong means
+# answering a Canadian question from a US field. Rules:
+#
+#   * "United States", "USA", "U.S." and "America" are unambiguous anywhere in
+#     the label.
+#   * The bare token "us" is the English pronoun far more often than the
+#     country, so it counts ONLY directly after a locative preposition ("in
+#     the US", "for US employment"). This is a positive allowlist rather than
+#     the earlier case-sensitive `\bUS\b` trick, which an ALL-CAPS label
+#     ("...TO WORK WITH US?") defeated outright.
+#   * "CA" is never matched: in a job posting it means California at least as
+#     often as Canada.
+#   * A label naming BOTH countries, or "North America", resolves to None:
+#     one profile field cannot answer it.
+_US_UNAMBIGUOUS_RE = re.compile(
+    r"\b(?:united\s+states(?:\s+of\s+america)?|u\.s\.a?\.?|usa|america|american)\b",
+    re.IGNORECASE)
+_US_PRONOUN_SAFE_RE = re.compile(
+    r"\b(?:in|for|within|to|from|inside|outside|throughout)\s+(?:the\s+)?us\b",
+    re.IGNORECASE)
 _CA_RE = re.compile(r"\b(?:canada|canadian)\b", re.IGNORECASE)
+_MULTI_COUNTRY_RE = re.compile(r"\bnorth\s+america\w*\b", re.IGNORECASE)
 
 
 def _country(label: str) -> str | None:
-    """"us", "ca", or None when the label names neither or BOTH.
-
-    Both is None on purpose: "authorized to work in the US or Canada?" cannot
-    be answered from one profile field, and answering it from the wrong one is
-    the mistake this module exists to prevent.
-    """
-    is_us = bool(_US_RE.search(label) or _US_ABBR_RE.search(label))
+    """"us", "ca", or None when the label names neither or BOTH."""
+    if _MULTI_COUNTRY_RE.search(label):
+        return None
+    is_us = bool(_US_UNAMBIGUOUS_RE.search(label) or _US_PRONOUN_SAFE_RE.search(label))
     is_ca = bool(_CA_RE.search(label))
     if is_us and not is_ca:
         return "us"
@@ -273,9 +395,8 @@ def _country(label: str) -> str | None:
 # Work-authorization enum -> form answer
 # ---------------------------------------------------------------------------
 # profile_store.WORK_AUTH values are INTERNAL enum strings, never text to type
-# into a form. A form either asks a yes/no question or offers its own option
-# strings, so each status maps to an intended answer here and the option gate
-# below decides whether that answer can actually be used.
+# into a form. Each maps to an intended answer here; the option gate and the
+# country/yes-no gates then decide whether that answer may actually be used.
 #
 # citizen / permanent_resident are unambiguously authorized and unambiguously
 # need no sponsorship. needs_sponsorship is the unambiguous opposite.
@@ -293,17 +414,39 @@ _SPONSORSHIP_YES_NO = {
 # f1_opt and tn_eligible are CONDITIONAL: whether either counts as "authorized"
 # or as "needing sponsorship" depends on visa specifics this system does not
 # model (OPT/STEM-OPT expiry and whether the employer will later petition; for
-# TN, whether the job title is on the USMCA schedule and that status is granted
-# at entry rather than held in advance). Asserting "Yes" could put a false
-# claim on a real application; asserting "No" could disqualify a candidate who
-# is in fact employable. So neither is asserted: on a free-text field the
-# resolver states the status the user actually typed — a faithful rendering of
-# a profile field, not a guess — and flags it for review; on a select the
-# status matches no option, so the answer goes blank (see the option gate).
+# TN, whether the job title is on the USMCA schedule, and that status is
+# granted at entry rather than held in advance). Asserting "Yes" could put a
+# false claim on a real application; asserting "No" could disqualify a
+# candidate who is in fact employable. So neither is asserted: on a free-text
+# field the resolver states the status the user typed and flags it for review,
+# and on a select the status matches no option so the answer goes blank.
+#
+# These strings encode ONLY what the enum encodes. An earlier version rendered
+# tn_eligible as "Canadian citizen, eligible for TN status under USMCA", which
+# asserted a nationality the profile never stores AND was wrong for a Mexican
+# citizen — TN covers both — i.e. exactly the citizenship inference the
+# `citizenship` branch refuses to make.
 _CONDITIONAL_STATUS_TEXT = {
-    "f1_opt": "F-1 student status with OPT work authorization",
-    "tn_eligible": "Canadian citizen, eligible for TN status under USMCA",
+    "f1_opt": "F-1 student; OPT work authorization applies",
+    "tn_eligible": "Eligible for TN status under USMCA",
 }
+
+# `needs_sponsorship` is an int 0/1 column that DEFAULTS to 0, so truthiness is
+# an ALLOWLIST of the values a deliberate tick can produce. A denylist
+# ("anything except '', '0', 'false'") read a whitespace-only or unexpected
+# value as "yes, I need sponsorship" and produced an answer with nothing typed
+# anywhere in the profile.
+_TRUE_VALUES = frozenset({"1", "true", "yes", "y"})
+
+
+def _is_true(value: object) -> bool:
+    if value is True:
+        return True
+    if isinstance(value, bool):
+        return False
+    if isinstance(value, int):
+        return value == 1
+    return str(value).strip().casefold() in _TRUE_VALUES
 
 
 def _blank(question: Question, kind: str, note: str) -> Answer:
@@ -334,7 +477,7 @@ def _emit(question: Question, kind: str, value: str, note: str = "") -> Answer:
             None,
         )
         if match is None:
-            prefix = "work authorization — " if kind in _AUTH_KINDS else ""
+            prefix = "work authorization — " if kind in _ELIGIBILITY_KINDS else ""
             return _blank(
                 question,
                 kind,
@@ -345,14 +488,15 @@ def _emit(question: Question, kind: str, value: str, note: str = "") -> Answer:
     return Answer(question=question, value=value, source="profile", note=note, kind=kind)
 
 
-def _resolve_auth(question: Question, profile: dict, kind: str) -> Answer:
+def _resolve_eligibility(question: Question, profile: dict, kind: str) -> Answer:
     """Resolve a work-authorization or sponsorship question.
 
     Never reached by the drafting node and never allowed to guess: every path
     that isn't a direct read of a typed status ends in a blank with a note the
-    handoff can list as blocking.
+    handoff lists as blocking.
     """
-    country = _country(question.label or "")
+    label = question.label or ""
+    country = _country(label)
     if country is None:
         return _blank(
             question, kind,
@@ -360,17 +504,26 @@ def _resolve_auth(question: Question, profile: dict, kind: str) -> Answer:
             "(US or Canada), so I cannot tell which profile field applies; "
             "answer it yourself.",
         )
+
+    # A status maps to "Yes"/"No" only for a label that actually asks a yes/no
+    # question. On a select/checkbox the option gate plays that role instead,
+    # so the shape of the label doesn't have to.
+    if question.kind in ("text", "textarea") and not _is_yes_no_question(label):
+        return _blank(
+            question, kind,
+            "work authorization — this does not read as a yes/no question, so your "
+            "profile's status is not an answer to it; answer it yourself.",
+        )
+
     auth_field = f"{country}_work_auth"
     status = str(profile.get(auth_field) or "").strip()
 
-    # needs_sponsorship is an int 0/1 and DEFAULTS to 0, so a bare 0 on an
-    # otherwise-empty profile means "the user never told us", not "the user
-    # does not need sponsorship". An explicit 1, by contrast, can only have
-    # been ticked deliberately, and "Yes" is the safe direction to trust: the
-    # harmful error on a real application is claiming sponsorship ISN'T needed.
-    wants_sponsorship = str(profile.get("needs_sponsorship") or "0") not in ("", "0", "False", "false")
-
-    if wants_sponsorship and status in ("citizen", "permanent_resident"):
+    # `needs_sponsorship` is ONE country-agnostic checkbox, so it can never
+    # answer a question that names a country — answering "will you require
+    # sponsorship to work in Canada?" from a global flag with ca_work_auth
+    # unset is exactly the kind of cross-wiring this module exists to prevent.
+    # Its only job here is to catch a profile that contradicts itself.
+    if _is_true(profile.get("needs_sponsorship")) and status in ("citizen", "permanent_resident"):
         return _blank(
             question, kind,
             f"work authorization — your profile conflicts: it says you need "
@@ -379,17 +532,6 @@ def _resolve_auth(question: Question, profile: dict, kind: str) -> Answer:
         )
 
     if not status:
-        if wants_sponsorship:
-            # The only thing typed is "I need sponsorship" — enough to answer a
-            # sponsorship question, never enough to claim authorization.
-            if kind == "sponsorship":
-                return _emit(question, kind, "Yes")
-            return _blank(
-                question, kind,
-                f"work authorization — your profile says you need sponsorship but "
-                f"{auth_field} is not set, so your current status is unknown; "
-                f"answer this yourself.",
-            )
         return _blank(
             question, kind,
             f"work authorization is not set in your profile ({auth_field}) — this "
@@ -419,19 +561,6 @@ def _resolve_auth(question: Question, profile: dict, kind: str) -> Answer:
     return _emit(question, kind, answer)
 
 
-# A label that opens with a boolean auxiliary and asks a question ("Do you
-# currently live in Milwaukee?", "Have you worked at a startup before?") wants
-# a yes/no, NOT a copy of a profile field — typing "Toronto, ON" into it is a
-# wrong answer even though every character of it came from the profile. Only
-# the unambiguously-boolean auxiliaries are listed: "Would/Will you like to
-# include your LinkedIn profile…" is an invitation to paste a value, not a
-# yes/no question, and Greenhouse really does phrase the LinkedIn field that
-# way, so "would"/"will" must stay out of this set.
-_YES_NO_LABEL_RE = re.compile(
-    r"^\s*(?:do|does|did|are|is|was|were|have|has|can|could)\b.*\?", re.IGNORECASE
-)
-
-
 def _missing_note(field_name: str) -> str:
     return (
         f"“{field_name}” is empty in your profile — add it there, or type "
@@ -439,35 +568,67 @@ def _missing_note(field_name: str) -> str:
     )
 
 
+def _not_a_value_prompt_note(field_name: str) -> str:
+    return (
+        f"this reads as a yes/no question, not a prompt for a value, so your "
+        f"profile's “{field_name}” is not the answer to it — answer it yourself."
+    )
+
+
+# Generational and academic suffixes that belong to the SURNAME, not to a
+# separate name part: splitting "Testy McTestface Jr." on the last space
+# yielded the surname "Jr.".
+_NAME_SUFFIXES = frozenset({
+    "jr", "sr", "ii", "iii", "iv", "v", "phd", "md", "esq", "mba",
+})
+
+
 def _name_parts(full_name: str) -> tuple[str, str]:
     """Split on the LAST space so multi-word given names survive: "Mary Jane
-    Watson" -> ("Mary Jane", "Watson"). A single token yields (token, "") — no
-    surname is ever fabricated.
+    Watson" -> ("Mary Jane", "Watson"). A trailing generational suffix stays
+    attached to the surname. A single token yields (token, "") — no surname is
+    ever fabricated.
     """
     parts = (full_name or "").split()
     if not parts:
         return "", ""
     if len(parts) == 1:
         return parts[0], ""
-    return " ".join(parts[:-1]), parts[-1]
+    tail = 1
+    if len(parts) >= 3 and parts[-1].strip(".,").casefold() in _NAME_SUFFIXES:
+        tail = 2
+    return " ".join(parts[:-tail]), " ".join(parts[-tail:])
 
 
 def _resolve_one(question: Question, profile: dict) -> Answer:
     kind = classify(question)
+    label = question.label or ""
 
-    if kind in _AUTH_KINDS:
-        return _resolve_auth(question, profile, kind)
+    if kind in _MAPPABLE_ELIGIBILITY:
+        return _resolve_eligibility(question, profile, kind)
 
     if kind == "citizenship":
         # Always blank, even when a status IS typed. The profile records work
-        # authorization, not citizenship or nationality, and inferring one from
-        # the other ("us_work_auth is citizen, so tick US citizen") is exactly
-        # the kind of chained guess that puts a false legal claim on a real
-        # application. One field for the user to fill beats any chance of that.
+        # authorization, not citizenship, nationality or residency, and
+        # inferring one from the other ("us_work_auth is citizen, so tick US
+        # citizen") is exactly the kind of chained guess that puts a false
+        # legal claim on a real application.
         return _blank(
             question, kind,
-            "citizenship, nationality and visa status are not stored in your profile "
-            "(it records work authorization only) — this answer must be yours.",
+            "work authorization — citizenship, nationality and residency are not "
+            "stored in your profile (it records a work-authorization status only); "
+            "this answer must be yours.",
+        )
+
+    if kind == "work_document":
+        # Holding a particular visa, permit or document does not follow from a
+        # work-auth status: a citizen holds no work permit, and "authorized"
+        # says nothing about which document authorizes it.
+        return _blank(
+            question, kind,
+            "work authorization — which visa, permit or document you hold is not "
+            "stored in your profile (it records a work-authorization status only); "
+            "this answer must be yours.",
         )
 
     if kind == "file_upload":
@@ -501,8 +662,8 @@ def _resolve_one(question: Question, profile: dict) -> Answer:
     if kind == "name_alt":
         return _blank(
             question, kind,
-            "this asks for a legal name only if it differs from the name above, and "
-            "your profile stores one name — fill it in only if yours differs.",
+            "this asks for a name only if it differs from the one above, and your "
+            "profile stores one name — fill it in only if yours differs.",
         )
 
     if kind == "relocation":
@@ -513,6 +674,8 @@ def _resolve_one(question: Question, profile: dict) -> Answer:
         )
 
     if kind in ("first_name", "last_name"):
+        if not _is_value_prompt(label):
+            return _blank(question, kind, _not_a_value_prompt_note("full_name"))
         first, last = _name_parts(str(profile.get("full_name") or ""))
         if not first:
             return _blank(question, kind, _missing_note("full_name"))
@@ -528,15 +691,11 @@ def _resolve_one(question: Question, profile: dict) -> Answer:
 
     field_name = _PROFILE_FIELD_BY_KIND.get(kind)
     if field_name:
+        if not _is_value_prompt(label):
+            return _blank(question, kind, _not_a_value_prompt_note(field_name))
         value = str(profile.get(field_name) or "").strip()
         if not value:
             return _blank(question, kind, _missing_note(field_name))
-        if question.kind in ("text", "textarea") and _YES_NO_LABEL_RE.match(question.label or ""):
-            return _blank(
-                question, kind,
-                f"this reads as a yes/no question, so your profile's “{field_name}” "
-                f"is not the answer to it — answer it yourself.",
-            )
         return _emit(question, kind, value)
 
     return _blank(

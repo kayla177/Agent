@@ -13,6 +13,7 @@ from agents.job_applier.resolver import (
     BLOCKING_KINDS,
     SOURCES,
     Answer,
+    blocking,
     classify,
     resolve,
 )
@@ -109,7 +110,7 @@ def test_resolver_touches_no_io():
     "Work Authorization",
     "Are you eligible to work in the United States without restriction?",
     "Do you have the right to work in Canada?",
-    "Do you hold a valid US work permit?",
+    "Is your employment eligibility restricted in any way?",
 ])
 def test_classifier_recognises_work_authorization_phrasings(label):
     assert classify(q(label)) == "work_auth"
@@ -127,12 +128,33 @@ def test_classifier_recognises_sponsorship_phrasings(label):
 @pytest.mark.parametrize("label", [
     "Are you a US citizen?",
     "Are you a citizen or permanent resident of Canada?",
-    "What is your current immigration status?",
     "Do you hold a green card?",
     "Nationality",
+    "Do you have permanent residency in Canada?",
 ])
 def test_classifier_recognises_citizenship_phrasings(label):
     assert classify(q(label)) == "citizenship"
+
+
+@pytest.mark.parametrize("label", [
+    "What is your current immigration status?",
+    "Do you hold a valid US work permit?",
+    "What is your visa status?",
+    "What is your status to work in the US",
+])
+def test_classifier_separates_hold_a_document_from_are_you_authorized(label):
+    """'Do you hold a valid US work permit?' is NOT answerable from
+    us_work_auth="citizen" — a citizen holds no work permit. These live in
+    their own kind rather than sharing an alternation with the mappable
+    'are you authorized' phrasings."""
+    assert classify(q(label)) == "work_document"
+
+
+def test_a_document_question_is_never_answered_from_a_status():
+    for status in ("citizen", "permanent_resident", "f1_opt", "tn_eligible"):
+        ans = resolve([q("Do you hold a valid US work permit?")],
+                      {**FAKE, "us_work_auth": status})[0]
+        assert (ans.source, ans.value) == ("blank", ""), status
 
 
 @pytest.mark.parametrize("status", ["citizen", "permanent_resident", "f1_opt"])
@@ -262,6 +284,18 @@ def test_conditional_statuses_never_assert_a_bare_yes_or_no(status):
 
 
 @pytest.mark.parametrize("status", ["f1_opt", "tn_eligible"])
+def test_conditional_status_text_asserts_no_nationality(status):
+    """The stated status may encode only what the enum encodes. Rendering
+    tn_eligible as "Canadian citizen, eligible for TN status" asserted a
+    nationality the profile never stores — and TN covers Mexican citizens too,
+    so it was outright false for some users."""
+    label = "Are you legally authorized to work in the United States?"
+    value = resolve([q(label)], {**FAKE, "us_work_auth": status})[0].value.lower()
+    for claim in ("canadian", "american", "mexican", "citizen", "nationality"):
+        assert claim not in value, value
+
+
+@pytest.mark.parametrize("status", ["f1_opt", "tn_eligible"])
 def test_conditional_statuses_are_blank_on_a_yes_no_select(status):
     """The dangerous case: a select can only hold one of its own options, so a
     conditional status has no honest option to pick. Blank, never 'closest'."""
@@ -318,12 +352,31 @@ def test_needs_sponsorship_zero_on_an_empty_profile_means_unset_not_no():
     assert "authorization" in ans.note.lower()
 
 
-def test_needs_sponsorship_one_is_authoritative_on_its_own():
-    """An explicit 1 can only have been ticked deliberately, and 'Yes' is the
-    safe direction: the harmful error would be claiming no sponsorship needed."""
+def test_the_global_flag_never_answers_a_country_specific_question():
+    """`needs_sponsorship` is ONE country-agnostic checkbox. Answering "will
+    you require sponsorship to work in Canada?" from it while ca_work_auth is
+    unset is cross-wiring: the tick may only have been about the US."""
+    for label in ("Will you require visa sponsorship in the US?",
+                  "Will you require sponsorship to work in Canada?"):
+        ans = resolve([q(label)], {**FAKE, "needs_sponsorship": 1})[0]
+        assert (ans.source, ans.value) == ("blank", ""), label
+
+
+@pytest.mark.parametrize("flag", ["", " ", "0", 0, False, None, "no", "off", 2, "banana"])
+def test_needs_sponsorship_truthiness_is_an_allowlist(flag):
+    """Only the values a deliberate tick produces count. A denylist read a
+    whitespace-only value as "yes, I need sponsorship"; here anything outside
+    the allowlist cannot even raise a conflict against a typed status."""
     ans = resolve([q("Will you require visa sponsorship in the US?")],
-                  {**FAKE, "needs_sponsorship": 1})[0]
-    assert (ans.source, ans.value) == ("profile", "Yes")
+                  {**FAKE, "us_work_auth": "citizen", "needs_sponsorship": flag})[0]
+    assert (ans.source, ans.value) == ("profile", "No"), flag
+
+
+@pytest.mark.parametrize("flag", [1, True, "1", "true", "True", "yes"])
+def test_needs_sponsorship_truthy_values_do_raise_the_conflict(flag):
+    ans = resolve([q("Will you require visa sponsorship in the US?")],
+                  {**FAKE, "us_work_auth": "citizen", "needs_sponsorship": flag})[0]
+    assert ans.source == "blank" and "conflict" in ans.note.lower(), flag
 
 
 def test_needs_sponsorship_contradicting_the_status_goes_blank():
@@ -414,6 +467,236 @@ def test_real_greenhouse_form_leaves_uploads_and_consent_to_the_human():
         if ans.kind in ("file_upload", "consent"):
             assert ans.source == "blank" and ans.value == ""
             assert ans.kind in BLOCKING_KINDS
+
+
+# ===========================================================================
+# Phrasing corpora + invariants
+# ===========================================================================
+# The lesson from this module's first review: every safety test pinned the one
+# phrasing its author thought of, so eight unthought-of phrasings leaked real
+# values through a green suite. These corpora exist so the assertions are
+# INVARIANTS over a family of phrasings rather than examples. Adding a phrasing
+# to a corpus and watching the invariant fail is the test doing its job.
+
+# Work-eligibility phrasings: both spellings (authoriz/authoris), ALL-CAPS /
+# Title Case / lowercase, with and without a trailing "?", US / Canada / UK /
+# no country, and the whole vocabulary — authorized to work, require
+# sponsorship, visa status, right to work, work permit, citizenship, residency.
+ELIGIBILITY_CORPUS = [
+    "Are you legally authorized to work in the United States?",
+    "ARE YOU LEGALLY AUTHORIZED TO WORK WITH US?",
+    "are you legally authorized to work in the us?",
+    "Are you legally authorised to work in the US?",
+    "Are you legally authorised to work in the UK?",
+    "ARE YOU AUTHORISED TO WORK IN CANADA",
+    "Describe your work authorisation",
+    "Describe your work authorization",
+    "Tell us about your visa situation",
+    "Work Authorization",
+    "work authorisation status",
+    "WORK AUTHORIZATION STATUS",
+    "Do you require sponsorship?",
+    "DO YOU REQUIRE SPONSORSHIP TO WORK WITH US?",
+    "Will you require visa sponsorship now or in the future?",
+    "do you now or will you in the future require immigration sponsorship?",
+    "Do you have the right to work in Canada?",
+    "DO YOU HAVE THE RIGHT TO WORK IN THE UNITED STATES",
+    "Do you hold a valid US work permit?",
+    "What is your current immigration status?",
+    "What is your visa status",
+    "Are you a US citizen?",
+    "ARE YOU A CANADIAN CITIZEN?",
+    "Nationality",
+    "Do you have permanent residency in Canada?",
+    "Do you hold a green card?",
+    "Are you a citizen or permanent resident of Canada?",
+    "Are you eligible to work in the United States without restriction?",
+    "Do you have work authorization in Canada?",
+    "What is your status to work in the US",
+    "Do you now or will you in the future require immigration sponsorship to work at Cloudflare?",
+    "Is your employment eligibility restricted in any way?",
+    "Are you authorized to work in the US or Canada?",
+    "Are you authorized to work anywhere in North America?",
+]
+
+# Boolean-phrased questions that merely MENTION a topic the profile stores.
+# Every one must be blank — the profile value is not the answer, however much
+# it looks like one. Run against a profile with every field filled, so a blank
+# cannot come from missing data.
+BOOLEAN_MENTION_CORPUS = [
+    "Do you currently live in Milwaukee",
+    "Do you currently live in Milwaukee?",
+    "Will you be graduating before June 2027?",
+    "Have you ever applied under a different last name?",
+    "Have you ever used a different first name?",
+    "Is your degree accredited?",
+    "Did you attend a university outside your home country?",
+    "Do you have a LinkedIn profile?",
+    "Is this your current phone number?",
+    "Was your email address different when you last applied?",
+    "Are you located in the same city as this role?",
+    "Does your school offer a co-op program?",
+    "Must your degree be from an accredited institution?",
+    "Should we contact your school directly?",
+    "Has your address changed in the last year?",
+    "Are you known by any other full name",
+]
+
+# Near-misses that must STILL be answered: the value-prompt allowlist has to
+# stay useful, or the resolver fills nothing at all.
+VALUE_PROMPT_CORPUS = [
+    ("First Name", "Testy"),
+    ("Last Name", "McTestface"),
+    ("Full Name", "Testy McTestface"),
+    ("Email", "testy.mctestface@example.invalid"),
+    ("Phone", "+1-555-0100"),
+    ("What is your email address?", "testy.mctestface@example.invalid"),
+    ("Would you like to include your LinkedIn profile?", FAKE["linkedin_url"]),
+    ("Would you like to include your LinkedIn profile, personal website or blog?",
+     FAKE["linkedin_url"]),
+    ("Can you provide your phone number?", "+1-555-0100"),
+    ("Please provide your email address", "testy.mctestface@example.invalid"),
+    ("School", "University of Waterloo"),
+    ("Expected graduation date", "2027-04"),
+]
+
+# Every profile field filled, so a blank in the boolean corpus is caused by the
+# gate and nothing else. Work-auth fields are set too: the eligibility corpus
+# must stay blank even when a status IS available, wherever the question is not
+# answerable from it.
+RICH = {**FAKE, "github_url": "https://github.com/example-invalid",
+        "portfolio_url": "https://example.invalid",
+        "location": "Toronto, ON", "summary": "x"}
+
+
+@pytest.mark.parametrize("label", ELIGIBILITY_CORPUS)
+@pytest.mark.parametrize("kind", ["text", "textarea"])
+def test_no_eligibility_phrasing_is_ever_free_text(label, kind):
+    """A work-eligibility question must never reach the drafting node, in any
+    spelling, casing or widget. This is what makes Task 5's "refuse to draft a
+    BLOCKING_KINDS question" rule load-bearing."""
+    assert classify(q(label, kind=kind)) != "free_text"
+
+
+@pytest.mark.parametrize("label", ELIGIBILITY_CORPUS)
+@pytest.mark.parametrize("kind", ["text", "textarea"])
+def test_every_eligibility_phrasing_is_blocking(label, kind):
+    assert classify(q(label, kind=kind)) in BLOCKING_KINDS
+
+
+@pytest.mark.parametrize("label", ELIGIBILITY_CORPUS)
+@pytest.mark.parametrize("kind", ["text", "textarea"])
+def test_no_eligibility_phrasing_is_answered_from_an_unset_field(label, kind):
+    ans = resolve([q(label, kind=kind)], SPARSE)[0]
+    assert ans.source == "blank" and ans.value == ""
+    assert ans.note
+
+
+@pytest.mark.parametrize("label", ELIGIBILITY_CORPUS)
+def test_no_eligibility_phrasing_ever_lands_off_menu_on_a_select(label):
+    """Across all six WORK_AUTH values and both widget kinds, a select may only
+    ever hold one of its own options."""
+    for status in ("", "citizen", "permanent_resident", "f1_opt", "tn_eligible",
+                   "needs_sponsorship"):
+        for widget in ("select", "checkbox"):
+            prof = {**RICH, "us_work_auth": status, "ca_work_auth": status}
+            ans = resolve([sel(label, ["Yes", "No"], kind=widget)], prof)[0]
+            assert ans.value in ("", "Yes", "No")
+            if ans.value:
+                assert ans.value in ans.question.options, (label, status)
+
+
+@pytest.mark.parametrize("label", BOOLEAN_MENTION_CORPUS)
+@pytest.mark.parametrize("kind", ["text", "textarea"])
+def test_a_boolean_question_mentioning_a_profile_topic_is_always_blank(label, kind):
+    ans = resolve([q(label, kind=kind)], RICH)[0]
+    assert ans.source == "blank", f"{label!r} was answered {ans.value!r}"
+    assert ans.value == ""
+    assert ans.note
+
+
+@pytest.mark.parametrize("label,expected", VALUE_PROMPT_CORPUS)
+def test_a_value_prompt_is_still_answered(label, expected):
+    ans = resolve([q(label)], FAKE)[0]
+    assert ans.source == "profile", ans.note
+    assert ans.value == expected
+
+
+# The literal reproduction set from this module's first review: every one of
+# these returned a real value (or reached the drafting node) through a green
+# suite. Kept verbatim and run against a FULLY populated profile, so nothing
+# here can pass by accident of missing data.
+REVIEW_LEAK_CORPUS = [
+    "ARE YOU LEGALLY AUTHORIZED TO WORK WITH US?",
+    "DO YOU REQUIRE SPONSORSHIP TO WORK WITH US?",
+    "Are you legally authorised to work in the US?",
+    "Describe your work authorisation",
+    "Tell us about your visa situation",
+    "Do you currently live in Milwaukee",
+    "Will you be graduating before June 2027?",
+    "Have you ever applied under a different last name?",
+    "Do you hold a valid US work permit?",
+    "Legal first name (if different than above)",
+    "Legal name (if applicable)",
+    "Other Legal Name",
+]
+
+
+@pytest.mark.parametrize("label", REVIEW_LEAK_CORPUS)
+@pytest.mark.parametrize("kind", ["text", "textarea"])
+def test_no_reviewed_leak_phrasing_returns_a_value(label, kind):
+    ans = resolve([q(label, kind=kind)], RICH)[0]
+    assert ans.source == "blank", f"{label!r} leaked {ans.value!r}"
+    assert ans.value == ""
+    assert classify(q(label, kind=kind)) != "free_text"
+
+
+# ----------------------------------------------------------------- blocking()
+
+def test_blocking_lists_every_blocking_kind_and_every_required_blank():
+    questions = [
+        q("Email"),                                          # filled, not blocking
+        q("Are you authorized to work in the US?"),           # blocking kind
+        q("Are you a US citizen?"),                           # blocking kind
+        q("Do you hold a valid US work permit?"),             # blocking kind
+        q("Will you require sponsorship in the US?"),          # blocking kind
+        q("I acknowledge the privacy policy", kind="checkbox"),  # blocking kind
+        q("Resume/CV", kind="file"),                          # blocking kind
+        q("How did you hear about this job?"),                # required + blank
+        q("Desired salary", required=False),                  # optional + blank
+    ]
+    got = {a.question.label for a in blocking(resolve(questions, FAKE))}
+    assert "Email" not in got
+    assert "Desired salary" not in got
+    assert got == {
+        "Are you authorized to work in the US?", "Are you a US citizen?",
+        "Do you hold a valid US work permit?", "Will you require sponsorship in the US?",
+        "I acknowledge the privacy policy", "Resume/CV",
+        "How did you hear about this job?",
+    }
+
+
+def test_blocking_includes_a_work_auth_answer_that_did_resolve():
+    """A filled work-auth answer is still confirmed, not assumed: it decides
+    whether the application is considered at all."""
+    prof = {**FAKE, "us_work_auth": "citizen"}
+    answers = resolve([q("Are you authorized to work in the US?")], prof)
+    assert answers[0].value == "Yes"
+    assert blocking(answers) == answers
+
+
+def test_blocking_is_empty_when_nothing_needs_a_human():
+    answers = resolve([q("Email"), q("First Name")], FAKE)
+    assert blocking(answers) == []
+
+
+# ------------------------------------------------------------ name suffixes
+
+def test_a_generational_suffix_stays_with_the_surname():
+    prof = {**FAKE, "full_name": "Testy McTestface Jr."}
+    a = {x.question.label: x.value for x in resolve([q("First Name"), q("Last Name")], prof)}
+    assert a["First Name"] == "Testy"
+    assert a["Last Name"] == "McTestface Jr."
 
 
 def test_real_greenhouse_form_fills_only_the_identity_fields_it_has():
