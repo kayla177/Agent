@@ -2,11 +2,12 @@
 
 Uses the platform's local model (via ``shell/model_router.llm``) to, for every
 posting, judge:
-  - ``eligible``: can an UNDERGRAD (bachelor's, ~0-1 yrs exp) realistically apply?
-    False only when the role clearly requires a Master's/PhD or senior experience
-    (read from the title + a HEAD+TAIL excerpt of the JD — see ``_desc_slice``;
-    the qualifications live at the bottom, so a head-only slice showed the model
-    nothing but company boilerplate). Roles judged ineligible are dropped.
+  - ``eligible`` + ``eligible_reason``: can an UNDERGRAD (bachelor's, ~0-1 yrs
+    exp) realistically apply? False only when the role clearly requires a
+    Master's/PhD or senior experience (read from the title + a HEAD+TAIL excerpt
+    of the JD — see ``_desc_slice``; the qualifications live at the bottom, so a
+    head-only slice showed the model nothing but company boilerplate).
+    An ineligible role is TAGGED AND STORED, never dropped — see `rank_node`.
   - ``fit_score`` (0–100) + ``fit_reason`` against the candidate profile.
 
 Design choices that keep this safe and cheap:
@@ -167,7 +168,11 @@ def _score_batch(profile: str, keywords: list[str], batch: list[dict]) -> None:
         base_score, base_reason = score_baseline(keywords, p)
         p["fit_score"] = base_score
         p["fit_reason"] = base_reason
+        # Default ELIGIBLE, set before the call. Every failure path below —
+        # transport error, unparseable reply, an index the model omitted — leaves
+        # this True, so a posting is only ever hidden by an explicit judgement.
         p["eligible"] = True
+        p["eligible_reason"] = ""
 
     try:
         reply = llm("local", _prompt(profile, batch), system=_SYSTEM, temperature=0.2)
@@ -187,6 +192,11 @@ def _score_batch(profile: str, keywords: list[str], batch: list[dict]) -> None:
         if not hit:
             continue
         p["eligible"] = hit["eligible"]
+        # Record WHY when the screen says no, so a hidden row can explain itself
+        # in the UI. Reuses the model's own one-line reason, falling back to
+        # fixed wording so the badge is never blank.
+        if not hit["eligible"]:
+            p["eligible_reason"] = hit["reason"] or "screened out: not undergrad-eligible"
         if hit["score"] is not None:
             p["fit_score"] = hit["score"]
             # Always overwrite the reason when the score was refined. Leaving the
@@ -220,18 +230,33 @@ def rank_node(state: JobScraperState) -> JobScraperState:
         if p.get("fit_score") is None or is_baseline_reason(p.get("fit_reason", "")):
             p["fit_score"], p["fit_reason"] = score_baseline(keywords, p)
         p.setdefault("eligible", True)
+        p.setdefault("eligible_reason", "")
 
     for start in range(0, len(refinable), _BATCH):
         _score_batch(profile, keywords, refinable[start : start + _BATCH])
 
-    # Drop roles the model judged not undergrad-eligible (grad-only / senior).
-    # `_rescored` rows are backlog rows already in the store, not newly
-    # discovered postings — this drop exists to decide which NEW postings are
-    # worth keeping, so it must not discard a backlog row's freshly computed
-    # country/fit_score before notify can persist it. `_rescored` already
-    # suppresses announcement, so letting one through here only updates a row
-    # that exists in the DB either way.
-    new = [p for p in new if p.get("_rescored") or p.get("eligible", True)]
+    # The eligibility screen TAGS, it does not drop. It used to do this:
+    #
+    #     new = [p for p in new if p.get("_rescored") or p.get("eligible", True)]
+    #
+    # which discarded the posting before `notify` persisted anything — so an
+    # ineligible role never entered the database, was never visible, could not be
+    # audited or overridden, and was re-fetched and re-dropped on every
+    # subsequent run. That silent, unrecoverable data loss cost far more than the
+    # noise it saved, because the screen is not accurate enough to be trusted
+    # with a drop: measured 2026-07-30 across two independent samples, 33-44% of
+    # postings with plainly undergrad-eligible titles ("Software Engineering
+    # Intern", "Data Science Intern", "Robotics Intern, Deployment") were being
+    # judged ineligible and thrown away.
+    #
+    # So the judgement is now carried on the row (`eligible` / `eligible_reason`)
+    # and persisted. `notify` withholds these from the digest and the board hides
+    # them behind a toggle — the same store-everything, hide-in-the-UI pattern
+    # `country` already uses, which keeps the call reversible and lets the gate's
+    # accuracy finally be measured from real data instead of guessed at.
+    #
+    # The row count out of this node now equals the row count in. Nothing here
+    # may reintroduce a filter on `eligible`.
 
     # Optional fit threshold. Every posting now HAS a score, so there is no
     # "unscored" carve-out to make any more. Same `_rescored` exemption as above.

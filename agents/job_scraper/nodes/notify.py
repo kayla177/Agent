@@ -18,6 +18,11 @@ are formatted into the announcement. Transient `_`-prefixed pipeline tags
 (`_rescored`, `_skip_llm`) are stripped before persistence so they never reach
 the mirrored columns or the `data` JSON blob.
 
+Postings the eligibility screen rejected are treated exactly like out-of-country
+ones: persisted, but withheld from the announcement and counted in a log line.
+They are NOT dropped — `rank_node` used to discard them before this node ran, so
+they never reached the database at all. See `rank_node` for the measurement.
+
 `JOB_COUNTRIES` empty means "no country filtering" (same convention as
 `JOB_SOURCES` / `STOCK_WATCHLIST`), not "show nothing" — an empty prefs list
 must never silently blank the whole digest. A missing/blank `country` is
@@ -118,14 +123,32 @@ def make_notify_node(*, send: bool):
         # dropped, per "never drop a posting on an UNKNOWN country".
         shown = set(config.JOB_COUNTRIES)
         announce = []
+        withheld_ineligible = 0
         for p in all_rows:
             if p.get("_rescored"):
+                continue
+            # Screened out as not undergrad-eligible: persisted (so it stays
+            # auditable and can be revealed on the board) but kept out of the
+            # digest, exactly as an out-of-country row is. Defaults to eligible,
+            # so a row that never went through the screen is always announced.
+            if not p.get("eligible", True):
+                withheld_ineligible += 1
                 continue
             c = p.get("country") or "UNKNOWN"
             if shown and c not in shown and c != "UNKNOWN":
                 continue
             announce.append(p)
         message = _format_message(announce, warnings)
+
+        # A bounded coverage change must never land silently — same rule as the
+        # sweep counts below. This one matters especially: the screen is only
+        # ~two-thirds accurate, so this number is the user's cue that it may be
+        # hiding something they want (the board's "show screened-out" toggle).
+        if withheld_ineligible:
+            print(
+                f"ℹ️ withheld {withheld_ineligible} posting(s) from the digest as not "
+                "undergrad-eligible (stored and visible on the board via 'show screened-out')"
+            )
 
         # Persist the scraped roles on EVERY run — this is the data the web jobs
         # view + dedupe memory read, and the web "run scraper" button runs with

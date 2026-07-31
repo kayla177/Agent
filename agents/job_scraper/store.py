@@ -78,6 +78,14 @@ def _mirror(rec: dict) -> dict:
         "ghost_reason": rec.get("ghost_reason") or "",
         "also_on": json.dumps(rec.get("also_on", [])),
         "country": rec.get("country", ""),
+        # Undergrad-eligibility screen. Mirrored so the board can hide these
+        # rows in SQL/JS the way it hides out-of-country ones, and so the reason
+        # is displayable — an unexplained hidden row is indistinguishable from a
+        # bug. `.get("eligible", True)` defaults to ELIGIBLE: a record that never
+        # went through the screen (a migration, a hand-built row, a model
+        # failure) must never be hidden by omission.
+        "eligible": 1 if rec.get("eligible", True) else 0,
+        "eligible_reason": rec.get("eligible_reason") or "",
         "first_seen": rec.get("first_seen", ""),
         "last_seen": rec.get("last_seen", ""),
     }
@@ -86,11 +94,12 @@ def _mirror(rec: dict) -> dict:
 _INSERT = (
     "INSERT INTO jobs (id, company, title, location, url, status, ats, posted_at, "
     "remote, compensation, department, description, fit_score, fit_reason, ghost, "
-    "ghost_reason, also_on, country, first_seen, last_seen, data) "
+    "ghost_reason, also_on, country, eligible, eligible_reason, first_seen, "
+    "last_seen, data) "
     "VALUES (:id, :company, :title, :location, "
     ":url, :status, :ats, :posted_at, :remote, :compensation, :department, "
     ":description, :fit_score, :fit_reason, :ghost, :ghost_reason, :also_on, "
-    ":country, :first_seen, "
+    ":country, :eligible, :eligible_reason, :first_seen, "
     ":last_seen, :data) ON CONFLICT(id) DO UPDATE SET "
     "company=excluded.company, title=excluded.title, location=excluded.location, "
     "url=excluded.url, status=excluded.status, ats=excluded.ats, "
@@ -99,7 +108,8 @@ _INSERT = (
     "description=excluded.description, fit_score=excluded.fit_score, "
     "fit_reason=excluded.fit_reason, ghost=excluded.ghost, "
     "ghost_reason=excluded.ghost_reason, also_on=excluded.also_on, "
-    "country=excluded.country, "
+    "country=excluded.country, eligible=excluded.eligible, "
+    "eligible_reason=excluded.eligible_reason, "
     "first_seen=excluded.first_seen, last_seen=excluded.last_seen, data=excluded.data"
 )
 

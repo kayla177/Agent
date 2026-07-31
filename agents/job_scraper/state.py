@@ -17,8 +17,11 @@ A posting is a normalized dict:
      "country": str,            # US | CA | OTHER | UNKNOWN (locations.py)
      "fit_score": int,          # ALWAYS set (deterministic baseline, LLM-refined)
      "fit_reason": str,
-     "eligible": bool,          # rank.py: undergrad-eligible? False -> dropped.
-                                # NOT transient — it survives into the store.
+     "eligible": bool,          # rank.py: undergrad-eligible? NOT transient —
+                                # it survives into the store. False TAGS the row
+                                # (hidden in the UI, withheld from the digest);
+                                # it must never drop it. See rank_node.
+     "eligible_reason": str,    # WHY the screen said no; "" when eligible
      # transient pipeline tags (stripped before persistence):
      "_rescored": bool,   # re-injected backlog row; persisted, never announced
      "_skip_llm": bool,   # baseline score only; no inference spent on this row
