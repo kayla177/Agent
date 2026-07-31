@@ -150,10 +150,19 @@ def test_classifier_separates_hold_a_document_from_are_you_authorized(label):
     assert classify(q(label)) == "work_document"
 
 
-def test_a_document_question_is_never_answered_from_a_status():
+@pytest.mark.parametrize("label", [
+    # Both name the country unambiguously, so the blank is caused by the
+    # document/status split and NOT by the country gate — the first version of
+    # this test used a label whose country was undetectable, so it passed
+    # without exercising the split at all.
+    "Do you hold a valid work permit for the United States?",
+    "Do you hold a valid US work permit?",
+])
+def test_a_document_question_is_never_answered_from_a_status(label):
+    from agents.job_applier.resolver import _country
+    assert _country(label) == "us", "label must name a country for this test to bite"
     for status in ("citizen", "permanent_resident", "f1_opt", "tn_eligible"):
-        ans = resolve([q("Do you hold a valid US work permit?")],
-                      {**FAKE, "us_work_auth": status})[0]
+        ans = resolve([q(label)], {**FAKE, "us_work_auth": status})[0]
         assert (ans.source, ans.value) == ("blank", ""), status
 
 
@@ -560,13 +569,33 @@ VALUE_PROMPT_CORPUS = [
     ("Expected graduation date", "2027-04"),
 ]
 
-# Every profile field filled, so a blank in the boolean corpus is caused by the
-# gate and nothing else. Work-auth fields are set too: the eligibility corpus
-# must stay blank even when a status IS available, wherever the question is not
-# answerable from it.
+# EVERY field filled, work-auth statuses included, and `needs_sponsorship`
+# left at 0 so the profile does not contradict itself. Both details matter: an
+# earlier version of this constant left the statuses unset, which made every
+# eligibility assertion below pass for the weak reason "nothing was typed"
+# rather than because a guard held. A mutation run caught that.
 RICH = {**FAKE, "github_url": "https://github.com/example-invalid",
         "portfolio_url": "https://example.invalid",
-        "location": "Toronto, ON", "summary": "x"}
+        "location": "Toronto, ON", "summary": "x",
+        "us_work_auth": "citizen", "ca_work_auth": "citizen",
+        "needs_sponsorship": 0}
+
+# Corpus entries that name NO single country: a pronoun ("with us"), no country
+# at all, a third country, or two at once. None may be answered from either
+# work-auth field however complete the profile is — one field cannot answer a
+# question that isn't about one country.
+NO_SINGLE_COUNTRY_CORPUS = [
+    "ARE YOU LEGALLY AUTHORIZED TO WORK WITH US?",
+    "DO YOU REQUIRE SPONSORSHIP TO WORK WITH US?",
+    "Are you legally authorised to work in the UK?",
+    "Do you require sponsorship?",
+    "Will you require visa sponsorship now or in the future?",
+    "do you now or will you in the future require immigration sponsorship?",
+    "Do you now or will you in the future require immigration sponsorship to work at Cloudflare?",
+    "Is your employment eligibility restricted in any way?",
+    "Are you authorized to work in the US or Canada?",
+    "Are you authorized to work anywhere in North America?",
+]
 
 
 @pytest.mark.parametrize("label", ELIGIBILITY_CORPUS)
@@ -606,6 +635,16 @@ def test_no_eligibility_phrasing_ever_lands_off_menu_on_a_select(label):
                 assert ans.value in ans.question.options, (label, status)
 
 
+@pytest.mark.parametrize("label", NO_SINGLE_COUNTRY_CORPUS)
+@pytest.mark.parametrize("kind", ["text", "textarea", "select"])
+def test_no_single_country_means_no_answer_however_full_the_profile(label, kind):
+    assert label in ELIGIBILITY_CORPUS, "keep this list a subset of the corpus"
+    question = (sel(label, ["Yes", "No"]) if kind == "select" else q(label, kind=kind))
+    ans = resolve([question], RICH)[0]
+    assert ans.source == "blank" and ans.value == ""
+    assert "country" in ans.note.lower() or "yes/no" in ans.note.lower()
+
+
 @pytest.mark.parametrize("label", BOOLEAN_MENTION_CORPUS)
 @pytest.mark.parametrize("kind", ["text", "textarea"])
 def test_a_boolean_question_mentioning_a_profile_topic_is_always_blank(label, kind):
@@ -629,7 +668,6 @@ def test_a_value_prompt_is_still_answered(label, expected):
 REVIEW_LEAK_CORPUS = [
     "ARE YOU LEGALLY AUTHORIZED TO WORK WITH US?",
     "DO YOU REQUIRE SPONSORSHIP TO WORK WITH US?",
-    "Are you legally authorised to work in the US?",
     "Describe your work authorisation",
     "Tell us about your visa situation",
     "Do you currently live in Milwaukee",
@@ -649,6 +687,29 @@ def test_no_reviewed_leak_phrasing_returns_a_value(label, kind):
     assert ans.source == "blank", f"{label!r} leaked {ans.value!r}"
     assert ans.value == ""
     assert classify(q(label, kind=kind)) != "free_text"
+
+
+# The British-spelling findings whose bug was MISclassification, not a leak:
+# these are well-formed, country-named yes/no questions, so answering them
+# "Yes" from a typed status is correct. What must never happen is the original
+# behaviour — classifying as free_text and handing a work-authorization answer
+# to a model — or inventing prose instead of the mapped Yes/No.
+REVIEW_ORTHOGRAPHY_CORPUS = [
+    "Are you legally authorised to work in the US?",
+    "ARE YOU AUTHORISED TO WORK IN CANADA",
+    "Are you legally authorized to work in the United States?",
+]
+
+
+@pytest.mark.parametrize("label", REVIEW_ORTHOGRAPHY_CORPUS)
+@pytest.mark.parametrize("kind", ["text", "textarea"])
+def test_both_spellings_are_handled_identically_and_never_drafted(label, kind):
+    question = q(label, kind=kind)
+    assert classify(question) != "free_text"
+    assert classify(question) in BLOCKING_KINDS
+    ans = resolve([question], RICH)[0]
+    assert ans.value in ("", "Yes"), ans.value
+    assert resolve([question], SPARSE)[0].value == ""
 
 
 # ----------------------------------------------------------------- blocking()

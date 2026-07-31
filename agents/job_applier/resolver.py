@@ -374,6 +374,14 @@ _US_UNAMBIGUOUS_RE = re.compile(
 _US_PRONOUN_SAFE_RE = re.compile(
     r"\b(?:in|for|within|to|from|inside|outside|throughout)\s+(?:the\s+)?us\b",
     re.IGNORECASE)
+# "US" used adjectivally before a noun it can only be modifying as the country
+# ("US work authorization", "US payroll"). Also an allowlist: the pronoun is
+# never followed by any of these, whereas "…to work with us?" and "…tell us
+# about…" both leave "us" at the end of a clause.
+_US_ADJECTIVE_RE = re.compile(
+    r"\bus\s+(?:work|employment|citizen\w*|resident\w*|visa|immigration|payroll"
+    r"|entity|office|based|jobs?|roles?|positions?|law|labor|labour)\b",
+    re.IGNORECASE)
 _CA_RE = re.compile(r"\b(?:canada|canadian)\b", re.IGNORECASE)
 _MULTI_COUNTRY_RE = re.compile(r"\bnorth\s+america\w*\b", re.IGNORECASE)
 
@@ -382,7 +390,11 @@ def _country(label: str) -> str | None:
     """"us", "ca", or None when the label names neither or BOTH."""
     if _MULTI_COUNTRY_RE.search(label):
         return None
-    is_us = bool(_US_UNAMBIGUOUS_RE.search(label) or _US_PRONOUN_SAFE_RE.search(label))
+    is_us = bool(
+        _US_UNAMBIGUOUS_RE.search(label)
+        or _US_PRONOUN_SAFE_RE.search(label)
+        or _US_ADJECTIVE_RE.search(label)
+    )
     is_ca = bool(_CA_RE.search(label))
     if is_us and not is_ca:
         return "us"
