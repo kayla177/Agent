@@ -2149,10 +2149,16 @@ _LEVER_VIDEO_SECTION_PREFIX = (
 
 def test_lever_questions_all_carry_their_section_heading(questions):
     """Lever wraps each card in `div.section` with an `<h4>` heading, so every
-    question on that form has one. `_section_heading` reads it through a
-    CONTAINMENT relationship — "the nearest preceding heading in document order"
-    is the other obvious rule and it would stamp Ashby's `<h3>WHAT WE EXPECT :`
-    from the job description onto the whole application form."""
+    question on that form has one, read through a CONTAINMENT relationship.
+
+    On THIS fixture the positional alternative ("nearest preceding heading in
+    document order") produces the identical answer — measured, 0 of 65 controls
+    differ — so Lever is not what justifies containment. Ashby and Greenhouse are:
+    see `test_what_the_positional_section_rule_would_have_produced`, where the
+    positional rule files 19 of Ashby's 20 fields under a widget's title and all 15
+    of Greenhouse's under the form's own H2. An earlier version of this docstring
+    claimed the positional rule would stamp Ashby's `<h3>WHAT WE EXPECT :` onto the
+    whole form; that was false and is corrected in `locate_dom`."""
     counts = collections.Counter(q.section for q in questions["lever"])
     video = [s for s in counts if s.startswith(_LEVER_VIDEO_SECTION_PREFIX)]
     assert len(video) == 1, "the video-prompt section heading is read verbatim"
@@ -2163,10 +2169,17 @@ def test_lever_questions_all_carry_their_section_heading(questions):
 
 @pytest.mark.parametrize("board", ("ashby", "greenhouse"))
 def test_a_board_with_no_section_heading_reports_no_section(board, questions):
-    """Not a gap to be filled with a guess. Ashby's one form section is
-    `_section_5yu8i_86 ashby-application-form-section-container` — no bare
-    `section` class token, and no heading element inside it either — and
-    Greenhouse groups nothing at all. "" is the honest answer for both."""
+    """Not a gap to be filled with a guess. Greenhouse groups nothing at all, and
+    Ashby's one form section is
+    `_section_5yu8i_86 ashby-application-form-section-container`.
+
+    That class name fails the container test for a reason this assertion alone
+    cannot distinguish from "it has no heading anyway" — both are true of Ashby.
+    So each is pinned separately below:
+    `test_a_class_containing_section_as_a_substring_is_not_a_section` covers the
+    token match, `test_a_section_with_no_heading_reports_no_section` covers the
+    missing heading. Without those two, a substring class match
+    (`"section" in class`) passes this test unchanged."""
     assert [q.section for q in questions[board]] == [""] * len(questions[board])
 
 
@@ -2217,3 +2230,144 @@ def test_a_section_heading_is_cleaned_of_its_required_marker():
     html = ('<section><h3>Video Prompts ✱</h3>'
             '<input id="a" type="text"><label for="a">A</label></section>')
     assert parse_controls(html)[0].section == "Video Prompts"
+
+
+def test_a_class_containing_section_as_a_substring_is_not_a_section():
+    """`_is_section` uses `has_class`, a whitespace-TOKEN match. A substring test
+    (`"section" in node.attr("class")`) passes every existing test in this file —
+    including the Ashby/Greenhouse assertions, since neither has a heading to pick
+    up either way — while making `sectional`, `subsection` and Ashby's own
+    `ashby-application-form-section-container` all count as sections. Ashby then
+    stops reporting "" for the reason the docstring claims."""
+    for klass in ("sectional", "subsection", "form-section-container",
+                  "ashby-application-form-section-container", "section-header"):
+        html = (f'<div class="{klass}"><h4>Heading</h4>'
+                '<input id="a" type="text"><label for="a">A</label></div>')
+        assert parse_controls(html)[0].section == "", klass
+    # And the token form still is one, so this is not just "nothing matches".
+    html = ('<div class="page section wide"><h4>Heading</h4>'
+            '<input id="a" type="text"><label for="a">A</label></div>')
+    assert parse_controls(html)[0].section == "Heading"
+
+
+def test_a_section_with_no_heading_reports_no_section():
+    """The other half of the Ashby claim, pinned independently: a real section
+    container that simply has no heading element yields "" rather than reaching
+    outward for one."""
+    html = ('<div class="section"><div>not a heading</div>'
+            '<input id="a" type="text"><label for="a">A</label></div>')
+    assert parse_controls(html)[0].section == ""
+
+
+def test_a_section_takes_its_FIRST_own_heading_not_its_last():
+    """`_own_heading_text` documents "first"; returning the last passed every test,
+    because no case had two own headings in one section. Real forms do: a card with
+    a title and a sub-title, or a legend followed by a note. The first is the one a
+    human reads as the section's name, and for drafting it is the one carrying the
+    "submit a URL" instruction — a later sub-heading would displace it."""
+    html = (
+        '<div class="section"><h4>Video Prompts: submit a URL</h4>'
+        '<h5>Prompt guidance</h5>'
+        '<input id="a" type="text"><label for="a">A</label></div>'
+    )
+    assert parse_controls(html)[0].section == "Video Prompts: submit a URL"
+
+
+def test_a_control_outside_every_section_has_no_section():
+    """The concrete divergence from the positional rule, which no captured fixture
+    happens to contain: "nearest preceding heading in document order" hands this
+    control the heading of a section it is not in. With "Video Prompts" as that
+    heading, drafting would refuse a perfectly draftable question."""
+    html = (
+        '<div class="section"><h4>Video Prompts: submit a URL</h4>'
+        '<textarea id="a"></textarea><label for="a">Prompt 1</label></div>'
+        '<textarea id="b"></textarea><label for="b">Anything else?</label>'
+    )
+    found = {c.label: c.section for c in parse_controls(html)}
+    assert found == {"Prompt 1": "Video Prompts: submit a URL", "Anything else?": ""}
+
+
+# What "nearest preceding heading in document order" actually produces on each
+# captured fixture, measured. Lever agrees with containment exactly; the other two
+# do not, and what they produce is not a section heading at all.
+_POSITIONAL_RULE_MEASURED = {
+    "lever": None,  # agrees with containment on all 65 controls
+    # 19 of 20 fields would be filed under a WIDGET's title ("Autofill from
+    # resume"), and one under job-posting metadata from the page header.
+    "ashby": {"Autofill from resume": 19, "Department": 1},
+    # Every field under the form's own H2 — which is the whole form, not a section.
+    "greenhouse": {"Apply for this job": 15},
+}
+
+
+def _positional_sections(board: str) -> list[str]:
+    """The section each control would get under the positional rule. Local to this
+    test so the rule being rejected is not implemented in the module."""
+    root = locate_dom._parse(_html(board))
+    nodes = list(root.descendants())
+    order = {id(n): i for i, n in enumerate(nodes)}
+    headings = [
+        (order[id(n)], locate_dom._clean_label(locate_dom._text_of(n)))
+        for n in nodes
+        if n.tag in locate_dom._SECTION_HEADING_TAGS and locate_dom._text_of(n).strip()
+    ]
+    out = []
+    for node in nodes:
+        if not locate_dom._is_fillable(node):
+            continue
+        best = ""
+        for pos, text in headings:
+            if pos < order[id(node)]:
+                best = text
+        out.append(best)
+    return out
+
+
+@pytest.mark.parametrize("board", BOARDS)
+def test_what_the_positional_section_rule_would_have_produced(board):
+    """The measured justification for reading sections by CONTAINMENT, replacing a
+    justification that was simply false (see the test below).
+
+    On LEVER the two rules agree on every one of the 65 controls — so a fixture
+    comparison alone does not choose between them, and it is worth saying so rather
+    than implying Lever settles it. On the other two boards the positional rule
+    attaches a heading that is not a section heading at all: a widget's title
+    ("Autofill from resume") to 19 of Ashby's 20 fields, and the form's own H2
+    ("Apply for this job") to all 15 of Greenhouse's. Task 7 would then group every
+    Greenhouse question under one meaningless heading, and drafting would treat a
+    widget title as evidence about what a box wants.
+    """
+    positional = _positional_sections(board)
+    containment = [c.section for c in parse_controls(_html(board))]
+    assert len(positional) >= len(containment) > 0
+
+    expected = _POSITIONAL_RULE_MEASURED[board]
+    if expected is None:
+        assert positional == _positional_sections(board)
+        assert collections.Counter(positional) == collections.Counter(
+            locate_dom._section_heading(n)
+            for n in locate_dom._parse(_html(board)).descendants()
+            if locate_dom._is_fillable(n)
+        ), "lever: the two rules agree, so this fixture does not choose between them"
+    else:
+        assert dict(collections.Counter(positional)) == expected
+        assert set(containment) == {""}, "containment reports no section, correctly"
+
+
+def test_ashby_has_no_what_we_expect_heading_in_its_parsed_markup():
+    """Pins the correction. The prose here and in `locate_dom` used to justify the
+    containment rule by claiming Ashby's `<h3>WHAT WE EXPECT :` would be stamped on
+    the whole form. It would not: that string lives only inside `<script>` payloads,
+    which `html.parser` hands over as CDATA text, so it is never a node. A false
+    justification gets checked, found false, and the logic it defends gets removed."""
+    root = locate_dom._parse(_html("ashby"))
+    headings = [
+        locate_dom._clean_label(locate_dom._text_of(n))
+        for n in root.descendants()
+        if n.tag in locate_dom._SECTION_HEADING_TAGS
+    ]
+    assert headings == [
+        "Software Engineer Intern - Berlin (2026)",
+        "Location", "Employment Type", "Department", "Autofill from resume",
+    ]
+    assert "WHAT WE EXPECT" in _html("ashby"), "it IS in the file — inside <script>"

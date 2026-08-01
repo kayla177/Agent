@@ -84,3 +84,72 @@ def client(temp_db, monkeypatch):
 
     with TestClient(app) as c:
         yield c
+
+
+# ---------------------------------------------------------------------------
+# No test may reach a real model
+# ---------------------------------------------------------------------------
+class ModelCalledInTest(BaseException):
+    """Raised when a test reaches the model layer without stubbing it.
+
+    Derived from `BaseException`, NOT `Exception`, and that is load-bearing:
+    every model caller in this repo deliberately catches `Exception` so a model
+    outage degrades instead of crashing (`agents/job_applier/drafting.draft_one`,
+    `agents/resume_generator/nodes/draft.draft_node`). An `AssertionError` from a
+    guard is an `Exception`, so it gets swallowed into a perfectly innocent
+    looking blank/error result and the test passes for the wrong reason. That is
+    not hypothetical — it happened: with an `AssertionError` guard, a mutation
+    that routed a question which must never be drafted straight to the model
+    passed all 56 tests of the file that was supposed to catch it.
+    """
+
+
+def _model_calls_are_forbidden(*args, **kwargs):
+    raise ModelCalledInTest(
+        "this test called a real model. Stub the caller's `llm` "
+        "(monkeypatch.setattr(<module>, 'llm', ...)), pass `llm_fn=`, or stub "
+        "`litellm.completion` — never let a test depend on Ollama being up."
+    )
+
+
+@pytest.fixture(autouse=True)
+def no_real_model(monkeypatch):
+    """Suite-wide, because a per-file guard protects exactly one file.
+
+    This started life as an autouse fixture inside `tests/test_applier_drafting.py`
+    and that was a bug with a measured consequence: a one-line test in a DIFFERENT
+    file calling `drafting.draft_one` without stubbing reached the live Ollama on
+    the development machine and came back `source="drafted"`. It passed here and
+    would have failed on any machine without Ollama running. Tasks 6, 7 and 8 all
+    consume `agents.job_applier.drafting`, so the first test written outside that
+    one file silently became a network test.
+
+    Two layers, because each catches what the other cannot:
+
+      1. Every module-level `llm` name bound to `shell.model_router.llm` is
+         repointed. This is what produces a readable failure naming the fix, and
+         it covers `from shell.model_router import llm` — the form every caller in
+         this repo uses, which rebinds the function into the importing module and
+         therefore cannot be intercepted by patching `model_router` alone.
+      2. `litellm.completion` — the actual network boundary — is repointed as the
+         backstop, for a caller imported after this fixture ran, or one that calls
+         `model_router.llm` directly. `shell.model_router.llm` ITSELF is
+         deliberately left alone: `tests/test_prompt_budgets.py` calls it on
+         purpose to measure the kwargs it builds, with `litellm.completion`
+         stubbed. Its own monkeypatch runs after this fixture and wins.
+    """
+    import litellm  # noqa: PLC0415 — imported here so conftest stays cheap
+
+    from shell import model_router
+
+    real = model_router.llm
+    for module in list(sys.modules.values()):
+        if module is None or module is model_router:
+            continue
+        name = getattr(module, "__name__", "") or ""
+        if not (name.startswith("agents") or name.startswith("shell")
+                or name.startswith("server") or name in ("scripts",)):
+            continue
+        if getattr(module, "llm", None) is real:
+            monkeypatch.setattr(module, "llm", _model_calls_are_forbidden)
+    monkeypatch.setattr(litellm, "completion", _model_calls_are_forbidden)

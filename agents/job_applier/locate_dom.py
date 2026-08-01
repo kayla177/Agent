@@ -864,10 +864,42 @@ def _group_container(node: _Node) -> _Node | None:
 # unlisted YouTube video" ONLY in the section heading, never in the labels of
 # the two textareas it governs.
 #
-# Read from a CONTAINMENT relationship, not from position: "the nearest
-# preceding heading in document order" is the other obvious rule and it
-# over-reaches badly — Ashby's job description ends in `<h3>WHAT WE EXPECT :`,
-# which would then be stamped on every field of the application form below it.
+# Read from a CONTAINMENT relationship, not from position. "The nearest preceding
+# heading in document order" is the other obvious rule; here is what it actually
+# produces, MEASURED on the three captured fixtures
+# (`test_what_the_positional_section_rule_would_have_produced`):
+#
+#   Lever        0 of 65 controls differ — the two rules agree exactly, so this
+#                fixture does not choose between them.
+#   Ashby        19 of 20 fields get "Autofill from resume", which is a WIDGET's
+#                title, and 1 gets "Department", which is job-posting metadata
+#                from the page header. Containment reports "" for all 20.
+#   Greenhouse   all 15 get "Apply for this job" — the form's own H2, i.e. the
+#                whole form rather than a section of it. Containment: "" for all.
+#
+# So on two of three real boards the positional rule invents a grouping out of
+# whatever heading happens to sit above the form, which Task 7 would then show the
+# human as the section name and drafting would read as evidence about what a box
+# wants. Containment says "" instead, which is the honest answer.
+#
+# (An earlier version of this comment justified the choice by claiming the
+# positional rule would stamp Ashby's `<h3>WHAT WE EXPECT :` onto the whole
+# application form. That is FALSE. Ashby's parsed markup has exactly five
+# headings — the job title, Location, Employment Type, Department, "Autofill from
+# resume" — and "WHAT WE EXPECT" appears only inside `<script>` payloads, which
+# `html.parser` hands over as CDATA text and `_NON_TEXT` discards, so it is never a
+# node. `test_ashby_has_no_what_we_expect_heading_in_its_parsed_markup` pins the
+# correction. A false justification is worse than none: the next maintainer checks
+# it, finds it does not hold, and concludes the containment logic is unjustified
+# complexity — then swaps in the rule that is actually wrong on two boards.)
+#
+# Two further divergences have no fixture at all and are pinned by CONSTRUCTED
+# tests, because both would hurt drafting specifically:
+#   * a control that sits outside every section inherits the last heading it
+#     happens to follow — a field after the "Video Prompts" card would be refused
+#     as non-prose;
+#   * with nested sections, a control in the OUTER section that follows the inner
+#     one gets the inner heading.
 #
 # The container test is `<section>` (the HTML element) or the whitespace-token
 # class `section`. That class is Lever's, and reading it is the same trade

@@ -10,11 +10,13 @@ through it, and this file is where they are pinned rather than asserted in prose
     `source="blank"` with a reason, including a model that is down, empty,
     terse, or honest about not knowing.
 
-HERMETIC BY CONSTRUCTION: `no_real_model` (autouse) points this module's `llm`
-at a function that fails the test. Ollama is up on the development machine, so a
-test that forgot to stub the model would otherwise pass by silently calling it —
-and then break on any machine without it, or quietly assert nothing at all about
-prompt content. A test that wants a model stubs one explicitly.
+HERMETIC BY CONSTRUCTION, and NOT from this file. The `no_real_model` guard
+lives in `tests/conftest.py` so it covers the whole suite; it used to live here as
+a file-local autouse fixture, and that was a bug — see the fixture's docstring for
+the measured consequence. It is deliberately NOT redefined here, because a
+same-named fixture in this file would SHADOW the suite-wide one and quietly switch
+off the `litellm.completion` backstop for exactly the file that needs it most. A
+test that wants a model stubs one explicitly (`stub`/`calls` below).
 
 The free-text corpus is the REAL captured Lever form
 (`tests/fixtures/ats/lever-form.html`, provenance in `test_applier_locate.py`),
@@ -27,6 +29,7 @@ from __future__ import annotations
 import ast
 import inspect
 import pathlib
+import re
 from dataclasses import replace
 
 import pytest
@@ -42,6 +45,7 @@ from agents.job_applier.drafting import (
     draft,
     draft_one,
     is_marked,
+    mark,
     topic_of,
 )
 from agents.job_applier.locate_dom import discover_questions
@@ -94,29 +98,6 @@ def q(label, *, required=True, kind="textarea", options=()):
         key=label[:24].lower().replace(" ", "_") or "k",
         label=label, required=required, kind=kind, options=list(options),
     )
-
-
-class ModelWasCalled(BaseException):
-    """Raised by the hermeticity guard when a test reaches the model unstubbed.
-
-    Derived from `BaseException`, NOT `Exception`, and that is the whole point:
-    `draft_one` catches `Exception` deliberately (a model failure must become a
-    blank, never a traceback), which means an `AssertionError` from the guard was
-    being swallowed into a perfectly innocent-looking blank answer. A mutation
-    that routed the "give us three numbers" question straight to the model still
-    passed every refusal test in this file, because the guard's own failure was
-    caught and reported as the refusal the test was looking for.
-    """
-
-
-@pytest.fixture(autouse=True)
-def no_real_model(monkeypatch):
-    """Any unstubbed model call fails the test instead of reaching Ollama."""
-    def _forbidden(*args, **kwargs):
-        raise ModelWasCalled(
-            "this test called the real model; stub drafting.llm or pass llm_fn"
-        )
-    monkeypatch.setattr(drafting, "llm", _forbidden)
 
 
 def stub(reply="", *, raises=None, record=None):
@@ -201,6 +182,33 @@ def test_an_empty_model_reply_yields_a_blank(monkeypatch, reply):
     answer = draft_one(q("Why do you want to work at Palantir?"), job=JOB, profile=FAKE)
     assert (answer.value, answer.source) == ("", "blank")
     assert answer.note
+
+
+@pytest.mark.parametrize("reply", ["", "   ", None])
+def test_an_empty_reply_says_nothing_came_back_not_that_something_short_did(
+    monkeypatch, reply
+):
+    """The `if not text:` branch is redundant with `_MIN_DRAFT_CHARS` for the
+    SAFETY property — deleting it still yields a blank — which is why a mutation
+    removing it survived 89 tests. What it is not redundant for is the note: the
+    too-short branch quotes what came back, and with nothing to quote it reads
+    "the AI drafter returned only “”", which looks like a bug in the tool rather
+    than a fact about the model. So the distinction is pinned here, deliberately
+    as a message property and not as a safety one."""
+    monkeypatch.setattr(drafting, "llm", stub(reply))
+    note = draft_one(q("Why do you want to work at Palantir?"), job=JOB, profile=FAKE).note
+    assert "nothing at all" in note
+    assert "returned only" not in note
+
+
+def test_a_short_reply_quotes_what_came_back():
+    """The other side of the same distinction, so the pair cannot collapse."""
+    note = draft_one(
+        q("Why do you want to work at Palantir?"), job=JOB, profile=FAKE,
+        llm_fn=lambda *a, **k: "N/A",
+    ).note
+    assert "returned only" in note and "N/A" in note
+    assert "nothing at all" not in note
 
 
 def test_a_one_word_model_reply_yields_a_blank(monkeypatch):
@@ -592,8 +600,12 @@ def test_the_worst_case_prompt_fits_the_pinned_context():
         experience=huge, company_research=huge,
     )
     assert len(prompt) <= drafting._MAX_PROMPT_CHARS
-    # ~4 chars/token for English; 4x headroom even at a pessimistic 2.
+    # ~4 chars/token for English. At a pessimistic 2 chars/token the worst case is
+    # 24000/2 + 700 = 12,700 tokens against 32,768 — 2.58x headroom, not the "4x"
+    # an earlier version of this comment claimed. The arithmetic below is what is
+    # actually asserted; the number in the prose now matches it.
     assert len(prompt) / 2 + drafting._MAX_TOKENS < config.OLLAMA_NUM_CTX
+    assert config.OLLAMA_NUM_CTX / (len(prompt) / 2 + drafting._MAX_TOKENS) > 2.5
 
 
 def test_draft_answers_the_whole_question_list_and_never_leaks_an_unmarked_draft(monkeypatch):
@@ -831,3 +843,168 @@ def test_the_lever_sections_that_must_not_refuse_their_questions(calls):
     three = next(x for x in by_label.values() if x.label.startswith("Give us three numbers"))
     assert three.section == "An Inflection Point"
     assert topic_of(three) == "unknown", "unknown for its own reasons, not the section's"
+
+
+# ------------------------------------------------------------ fix-round-2 pins
+
+
+def test_is_marked_says_no_to_text_a_human_wrote():
+    """`is_marked` is the helper Tasks 6 and 7 are told to use INSTEAD of the
+    literal, so an over-permissive version mislabels every hand-typed answer as
+    AI-drafted — and a mutation replacing its body with `return True` passed all 89
+    tests, because every existing caller only ever asked about a marked value."""
+    assert is_marked(mark("anything")) is True
+    for value in ["", "   ", "I wrote this myself.",
+                  "AI", "draft", "[AI-DRAFTED]", DRAFT_MARKER[:-1], None]:
+        assert is_marked(value) is False, repr(value)
+
+
+def test_is_marked_finds_the_marker_anywhere_not_only_at_the_start():
+    """`mark` puts it first and a test pins that; `is_marked` is deliberately
+    laxer, because a human who edits the draft may leave the marker mid-text and it
+    must still be detected."""
+    assert is_marked(f"Some preamble\n{DRAFT_MARKER}\nbody") is True
+
+
+def test_the_experience_corpus_reaches_an_experience_prompt_and_nothing_else():
+    """The `if pool and topic == "experience"` gate governs how much of the user's
+    own data reaches the model, and the docstring says the corpus is an
+    `experience`-topic input. Dropping the topic condition sends the whole master
+    résumé into every motivation prompt too; the mutation survived because no test
+    looked."""
+    marker = "UNIQUE_EXPERIENCE_TOKEN"
+    pool = f"{marker} — built a SQLite-backed job tracker."
+    experience_prompt = build_prompt(
+        q(PROJECT_Q), "experience", job=JOB, profile=FAKE, experience=pool)
+    motivation_prompt = build_prompt(
+        q("Why do you want to work at Palantir?"), "motivation",
+        job=JOB, profile=FAKE, experience=pool)
+    assert marker in experience_prompt
+    assert marker not in motivation_prompt
+
+
+def test_llm_fn_is_used_instead_of_the_module_level_llm(monkeypatch):
+    """`llm_fn` is the injected-model seam Task 8 will use. It had zero callers and
+    zero coverage: every test patched the module global, so a regression that
+    ignored the parameter would have gone unnoticed. Proven by making the module
+    global explode — if `llm_fn` were ignored, this raises instead of drafting."""
+    def boom(*args, **kwargs):
+        raise AssertionError("llm_fn was ignored; the module-level llm was called")
+    monkeypatch.setattr(drafting, "llm", boom)
+    record = []
+    answer = draft_one(
+        q("Why do you want to work at Palantir?"), job=JOB, profile=FAKE,
+        llm_fn=stub(GOOD_DRAFT, record=record),
+    )
+    assert answer.source == "drafted" and is_marked(answer.value)
+    assert len(record) == 1 and record[0]["role"] == "local"
+
+
+def test_llm_fn_receives_the_same_call_shape_as_the_module_level_llm(monkeypatch):
+    """Two seams, one contract — otherwise swapping between them changes behaviour."""
+    via_global, via_param = [], []
+    monkeypatch.setattr(drafting, "llm", stub(GOOD_DRAFT, record=via_global))
+    draft_one(q("Why do you want to work at Palantir?"), job=JOB, profile=FAKE)
+    draft_one(q("Why do you want to work at Palantir?"), job=JOB, profile=FAKE,
+              llm_fn=stub(GOOD_DRAFT, record=via_param))
+    assert via_global == via_param
+
+
+def test_a_failing_llm_fn_is_caught_like_any_other_model_failure():
+    answer = draft_one(
+        q("Why do you want to work at Palantir?"), job=JOB, profile=FAKE,
+        llm_fn=stub(raises=RuntimeError("injected model is down")),
+    )
+    assert (answer.value, answer.source) == ("", "blank")
+    assert "injected model is down" in answer.note
+
+
+# ------------------------------------------------- the scrubber, corpus-checked
+
+# Figures that really do appear in a résumé, and MUST come through byte-identical.
+# Every entry marked (#) contains the profile phone's digit run 5550100 in some
+# rendering — that is the shape the previous test corpus missed entirely, and the
+# reason three real metrics were being destroyed:
+#     "$5,550,100 in ARR"        -> "$[redacted] in ARR"
+#     "Processed 5 550 100 rows" -> "Processed [redacted] rows"
+#     "Team of 5550100"          -> "Team of [redacted]"
+# `_digit_run_re` joined the phone's digits with `\D{0,2}`, i.e. any two non-digits
+# between every digit, while its own comment claimed to be "conservative".
+RESUME_NUMBERS_THAT_MUST_SURVIVE = [
+    "$5,550,100 in ARR",                                  # (#) thousands separators
+    "Processed 5 550 100 rows",                            # (#) space-grouped count
+    "Team of 5550100",                                     # (#) bare digit run
+    "Scaled to 5,550,100 events/day",                      # (#)
+    "Cut latency 555 ms to 100 ms",                        # (#) split by words
+    "Employee #5550100",                                   # (#)
+    "Grew revenue from $1.2M to $5.5M (2024-2026)",
+    "Reduced p99 from 1,250 ms to 310 ms",
+    "Shipped v2.10.3 on 2026-07-31",
+    "Coverage 98.6%; 1,204 tests",
+    "GPA 3.95/4.00",
+    "Range: 100-150 hours",
+    "ISO 27001 audit",
+    "2019-2023 B.Sc. Computer Engineering",
+]
+
+# Renderings of the profile's OWN number (+1-555-0100) that must be redacted.
+OWN_NUMBER_RENDERINGS = [
+    "+1-555-0100", "+1 555 0100", "+1.555.0100", "+15550100",
+    "555-0100", "555.0100", "(555) 0100", "555 0100",
+    "Tel: +1 (555) 0100",
+]
+
+
+@pytest.mark.parametrize("text", RESUME_NUMBERS_THAT_MUST_SURVIVE)
+def test_a_real_resume_figure_survives_the_scrubber_byte_identical(text):
+    assert drafting._scrub_contact(text, FAKE) == text
+
+
+@pytest.mark.parametrize("text", OWN_NUMBER_RENDERINGS)
+def test_every_rendering_of_the_users_own_number_is_redacted(text):
+    assert "[redacted]" in drafting._scrub_contact(text, FAKE)
+    assert "555" not in drafting._scrub_contact(text, FAKE)
+
+
+def test_at_least_one_surviving_figure_shares_the_phones_digit_run():
+    """The property the old one-string test lacked. Without this, the corpus above
+    could drift into shapes that never collide with the phone and the whole
+    over-redaction defect would be invisible again."""
+    digits = re.sub(r"\D", "", FAKE["phone"])[-7:]
+    colliding = [
+        t for t in RESUME_NUMBERS_THAT_MUST_SURVIVE
+        if digits in re.sub(r"\D", "", t)
+    ]
+    assert len(colliding) >= 3, colliding
+
+
+def test_a_unicode_dash_no_longer_hides_a_phone_number():
+    """`_normalize` folds these dashes for label matching; `_scrub_contact` did not,
+    and `[\\s.\\-]` is ASCII-only — so a résumé header written with U+2011 or an en
+    dash walked straight through the NANP rule."""
+    for dash in ("‑", "–", "—", "−"):
+        text = f"416{dash}555{dash}9999"
+        assert "[redacted]" in drafting._scrub_contact(text, FAKE), repr(dash)
+
+
+def test_the_scrubber_does_not_collapse_the_newlines_of_the_grounding_text():
+    """It runs over a whole prompt. Folding punctuation must not fuse the résumé's
+    lines together, which is why `_fold_punctuation` is not `_normalize`."""
+    text = "Line one\nLine two\n\nLine three"
+    assert drafting._scrub_contact(text, FAKE) == text
+
+
+@pytest.mark.parametrize("phone", ["", "   ", "12-34", "555", None])
+def test_a_profile_with_no_usable_phone_produces_no_own_number_pattern(phone):
+    """Too few digits to be a phone number, so matching it would fire on prose."""
+    assert drafting._own_number_res(phone or "") == []
+    assert drafting._scrub_contact("Team of 5550100", {"phone": phone}) == "Team of 5550100"
+
+
+def test_a_separatorless_profile_phone_is_matched_exactly():
+    """With no separators there are no group boundaries to reason about, so the
+    value is matched literally rather than expanded into guessed groupings."""
+    profile = {"phone": "4165559999"}
+    assert "[redacted]" in drafting._scrub_contact("call 4165559999 now", profile)
+    assert drafting._scrub_contact("call 416-555-9998 now", profile) == "call [redacted] now"
+    assert drafting._scrub_contact("Team of 41655599990", profile) == "Team of 41655599990"
