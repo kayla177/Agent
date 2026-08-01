@@ -342,7 +342,25 @@ def test_resolver_touches_no_io():
 
 Lever and Ashby publish no form schema, so questions are discovered from the page. Match on the **accessible label**, not CSS classes — labels are what a human reads and are far more stable than generated class names.
 
-- [ ] **Step 1: Capture form fixtures (dev probe)** — save the real application pages for one Lever, one Ashby, and one Greenhouse posting into `tests/fixtures/ats/`. Record which URLs and when, in a comment at the top of the test.
+- [ ] **Step 1: Capture form fixtures (dev probe)** — save the real application pages for one Lever,
+one Ashby, and one Greenhouse posting into `tests/fixtures/ats/`. Record which URLs and when, in a
+comment at the top of the test.
+
+> **Measured 2026-07-31 — a plain GET is NOT enough for two of the three.** This plan originally
+> assumed fetching the apply URL would yield a usable form. It does not:
+>
+> | ATS | GET result | Capture method |
+> |---|---|---|
+> | Lever | server-rendered — 1 `<form>`, 69 `<input>`, 50 `<label>`, 3 `<textarea>` | plain GET |
+> | Greenhouse | JS shell — **0 inputs** in 254 KB | render in a browser, dump `page.content()` |
+> | Ashby | JS shell — **0 inputs** in 42 KB | render in a browser, dump `page.content()` |
+>
+> So the capture probe needs Playwright (Task 1's `launch_context`) for Greenhouse and Ashby.
+> That is a dev probe only — it loads a public page read-only and MUST NOT type into or submit
+> anything. The tests themselves stay pure: they parse the saved HTML and never open a browser.
+>
+> Note this also reinforces the Greenhouse split: its form *schema* comes from the questions API
+> without rendering at all, and the browser is needed only to LOCATE elements on the live page.
 
 - [ ] **Step 2: Failing tests** — from each fixture, discover the identity questions (name/email/phone/resume) with correct `kind`; assert a label-matched lookup finds the right element for each; assert an unmatched label returns `None` rather than a wrong guess; assert matching is case- and punctuation-insensitive ("Email" / "Email Address" / "E-mail *").
 
