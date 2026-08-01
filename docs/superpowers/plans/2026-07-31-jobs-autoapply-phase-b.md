@@ -349,6 +349,8 @@ comment at the top of the test.
 > **Measured 2026-07-31 — a plain GET is NOT enough for two of the three.** This plan originally
 > assumed fetching the apply URL would yield a usable form. It does not:
 >
+> **⚠️ SUPERSEDED — the Greenhouse and Lever rows below are WRONG. See the correction that follows.**
+>
 > | ATS | GET result | Capture method |
 > |---|---|---|
 > | Lever | server-rendered — 1 `<form>`, 69 `<input>`, 50 `<label>`, 3 `<textarea>` | plain GET |
@@ -370,6 +372,20 @@ comment at the top of the test.
 > `aria-required` / `role="group"` attributes the locator depends on. Ashby genuinely needs a browser
 > (41 KB shell, 0 inputs). Capture probe committed as `scripts/capture_ats_fixtures.py`
 > (`--verify` re-runs the locator against the live pages, read-only, `.count()` only).
+>
+> The Lever row was wrong too: it is **74** `<input>`, **51** `<label>`, **8** `<textarea>`. Both
+> errors were mine, from a probe that didn't follow the 301 and counts I then repeated without
+> re-measuring. Corrected table:
+>
+> | ATS | plain GET of the apply URL | capture used |
+> |---|---|---|
+> | Lever | server-rendered — 1 `<form>`, 74 `<input>`, 51 `<label>`, 8 `<textarea>` | httpx GET |
+> | Greenhouse | server-rendered after the 301 — 1 `<form>`, 18 `<input>`, 16 `<label>` | rendered anyway¹ |
+> | Ashby | JS shell — 0 inputs in 41 KB | rendered (required) |
+>
+> ¹ Greenhouse is captured rendered even though a GET would suffice, because rendering is what the
+> live locator sees and it picks up the JS-injected `aria-required` / `role="group"` attributes the
+> locator depends on.
 
 - [x] **Step 2: Failing tests** — from each fixture, discover the identity questions (name/email/phone/resume) with correct `kind`; assert a label-matched lookup finds the right element for each; assert an unmatched label returns `None` rather than a wrong guess; assert matching is case- and punctuation-insensitive ("Email" / "Email Address" / "E-mail *").
 
@@ -385,12 +401,42 @@ comment at the top of the test.
 > - Radio/checkbox controls sharing a `name` collapse to ONE `Question` with the members as
 >   `options`. A radio group's `kind` is `select` (single choice from a fixed list), reusing Task 2's
 >   five-value vocabulary rather than inventing a sixth.
-> - **Known gap for Task 6:** Lever's custom "card" questions keep their title in a *sibling*
->   `<div class="application-label">` — reachable only via a generated class name, which the
->   label-not-classes rule forbids, and via no ARIA relationship at all. 12 of Lever's 65 controls
->   therefore fall through to a `name`-derived label like `cards[<uuid>][field0]` and are
->   effectively human-fill-only. Fixing that needs a DOM-proximity heuristic; that is a guess, so it
->   needs an explicit ruling before anyone adds it.
+> - **Lever's custom "card" questions — RESOLVED in `5aceb86`; the paragraph that stood here was
+>   superseded and is preserved below only so its reasoning can be audited.** It read: *"Lever's
+>   custom card questions keep their title in a sibling `div.application-label` — reachable only via
+>   a generated class name, which the label-not-classes rule forbids… 12 of Lever's 65 controls
+>   therefore fall through to a `name`-derived label like `cards[<uuid>][field0]` and are effectively
+>   human-fill-only. Fixing that needs a DOM-proximity heuristic; that is a guess."*
+>
+>   Two premises were wrong. `application-label`/`application-field` are **not** generated names —
+>   they appear in Lever's own stylesheet selectors — and the relationship is **containment**, not
+>   proximity: the question text and its control are the two children of one wrapper inside a single
+>   `li.application-question`. That is the same class of evidence as a wrapping `<label>`. I
+>   authorized it, scoped to that ancestor, ranked above the `placeholder` and `name` tiers.
+>
+>   What the old text got badly wrong was calling the fallthrough "human-fill-only". The `placeholder`
+>   and `name` tiers do not fail safe — they emit **confident wrong labels**. Two distinct questions
+>   both surfaced as `'Type your response'`; a textarea whose real label is "High School Name"
+>   surfaced as `cards[d54adf7b-…][field0]`. And the work-authorization and sponsorship questions —
+>   both in `BLOCKING_KINDS` — came back with `label=''`, so they never reached `resolver.blocking()`
+>   and would have been absent from Task 7's blocking list. Measured after the fix: 29 answerable
+>   (was 24), 0 unreadable (was 5), 0 `name`-labelled (was 12), 0 `placeholder`-labelled (was 2),
+>   pinned by `test_the_name_tier_no_longer_fires_on_any_real_board`.
+> - **Task 6 MUST locate by `Question.label`, never a literal string.** `find_control` with a short
+>   query prefix-matches with no ambiguity to detect: on the Lever fixture `find_control("Name")`
+>   returns the *pronunciation* field. A token-count cap was considered and rejected — it would break
+>   `"Resume"` → `"Resume/CV and supporting documents"` — so the rule is structural: drive filling
+>   from the `Question` objects `discover_questions` returns. Short queries are diagnostics only.
+> - **`resolver.py` gained a `name_meta` class** (`18f0e70`), because reading Lever's labels correctly
+>   exposed that `'Name Pronunciation | How do you pronounce your name?'` classified as `full_name`
+>   and auto-filled the applicant's name — a wrong value, unflagged. The principle generalizes: *a
+>   label that asks something ABOUT an attribute is not asking FOR it.* Note `pronounc\w*` is
+>   deliberately not `pronoun\w*`, so a pronouns question is not quietly relabelled as a name
+>   question.
+> - **Also available to Tasks 5-7:** `unreadable_questions()` (questions with no readable label —
+>   surface these to the human rather than dropping them) and `find_group_options()` (per-option
+>   selectors for radio/checkbox groups, whose members share one `name`). `find_control` on a group
+>   heading correctly returns `None`; a group has no single element.
 > - `discover_questions` now applies the SAME EEO content screen as
 >   `schema_greenhouse.parse_questions`, via a new public `is_eeo_label`. Greenhouse hands its
 >   demographic questions over in a separate array Task 2 never reads; Lever and Ashby have no such
