@@ -50,13 +50,26 @@ in front of a real employer:
         What, why, and how did you create it? (90 seconds max)"
 
    under a section heading explaining that the answer is a URL to an unlisted
-   YouTube video. The section heading is NOT part of `Question.label`, so the
-   only evidence in reach is "(90 seconds max)" — a duration budget, which
-   belongs to a recording and never to a paragraph. A drafted paragraph in that
-   box is worse than a blank, and note that the label also matches the
-   `experience` rule ("something you've built"), so `_NOT_PROSE_RULES` is checked
-   BEFORE the draftable topics. That ordering is load-bearing, and pinned by a
-   test against the real fixture.
+   YouTube video, and a drafted paragraph in that box is worse than a blank.
+
+   The evidence comes from two places, in this order of authority:
+
+     * `Question.section` — the section heading. This is the AUTHORITATIVE
+       signal, and closing the gap it fills is why `Question` gained the field:
+       "please submit a URL to an unlisted YouTube video" states outright what
+       the box wants. `_SECTION_NOT_PROSE_RULES` is the deliberately narrower
+       subset applied at this scope, because one heading match refuses every
+       question in the section.
+     * the label itself — a heuristic, and the only thing available on
+       Greenhouse and Ashby, which publish no section headings at all. For these
+       two prompts the label's whole contribution is a parenthesised
+       "(90 seconds max)": a duration budget, which belongs to a recording and
+       never to a paragraph.
+
+   Each half is pinned by a test that strips the other one out. And note that
+   the label also matches the `experience` rule ("something you've built"), so
+   `_NOT_PROSE_RULES` is checked BEFORE the draftable topics. That ordering is
+   load-bearing, and pinned by a test against the real fixture.
 
 The anti-fabrication precedent is `agents/resume_generator/nodes/draft.py`, and
 the system prompt here mirrors its discipline: real facts may be reordered,
@@ -168,10 +181,17 @@ def _normalize(label: str) -> str:
 #
 # Vocabulary choices that are narrower than they look, and why:
 #
-#   * `record(?:ing|ings)` but NOT bare "record". "Do you have a criminal
-#     record?" and "a proven track record" are not requests for a video, and a
-#     note telling the user this question wants a recording would simply be
-#     false.
+#   * "record" is matched as a NOUN only in its `-ing`/`-ings` forms, and as a
+#     VERB only when an object follows it (`record a|an|your|yourself`). Bare
+#     `\brecord\b` is never matched, because "track record", "academic record",
+#     "criminal record" and "record of employment" are all real phrasings and
+#     none is a video prompt — and a note telling the user this question wants a
+#     recording would simply be false. The verb rule requires WHITESPACE after
+#     "record", which is what keeps "For the record, are you over 18?" out: the
+#     comma blocks it. The `pre-?` prefix is spelled out because
+#     /usr/share/dict/words has no "prerecorded"/"prerecording" entry, so the
+#     stem check that justified the anchor could not have found them — the same
+#     lesson as `resolver.py`'s `(?:mis)?spell`.
 #   * The duration rule is DIGITS + A TIME UNIT ("90 seconds", "2 minutes"),
 #     never a bare time word: "Tell us about a time when…" is the most common
 #     prose prompt there is, and "…a ranking, a time." appears verbatim in the
@@ -179,24 +199,42 @@ def _normalize(label: str) -> str:
 #     matched — that is a prose question with a length limit.
 #   * `\bfiles?\b` and `\blinks?\b` are word-anchored, so "profile" and
 #     "filing" do not satisfy them.
-_NOT_PROSE_RULES: tuple[tuple[str, re.Pattern[str]], ...] = (
+#
+# The third element is SECTION-SAFE: may this rule be applied to a section
+# heading, where one match refuses every question in the section? Four
+# categories are — a heading that asks for a URL, a video, a recording or a file
+# is describing every box under it. The other two are NOT, purely because of
+# blast radius: "you have 30 minutes to complete this application" and "answer
+# how many of the following apply" are the kinds of thing a heading says in
+# passing, and at heading scope an incidental match silently blanks a whole
+# section. At label scope the same rules stay on, as a second line of defence
+# for boards that publish no section heading at all (Greenhouse, Ashby).
+_NOT_PROSE_RULES: tuple[tuple[str, re.Pattern[str], bool], ...] = (
     ("a video or audio recording", re.compile(
-        r"\bvideos?\b|\brecord(?:ing|ings)\b|\bre-?record\b|\baudio\b"
+        r"\bvideos?\b|\b(?:pre-?)?record(?:ing|ings)\b|\bpre-?recorded\b"
+        r"|\brecord\s+(?:a|an|your|yourself)\b|\bre-?record\b"
+        r"|\bself-?tape\b|\baudio\b"
         r"|\bvoice\s*(?:note|memo|recording)\b|\bwebcam\b|\bscreencast\b"
         r"|\byoutube\b|\bvimeo\b|\bloom\b|\bclips?\b",
-        re.IGNORECASE)),
+        re.IGNORECASE), True),
     ("a recording or another timed answer, not a paragraph", re.compile(
-        r"\b\d+\s*(?:seconds?|secs?|minutes?|mins?|hours?)\b", re.IGNORECASE)),
+        r"\b\d+\s*(?:seconds?|secs?|minutes?|mins?|hours?)\b", re.IGNORECASE), False),
     ("a URL or a link", re.compile(
-        r"\burls?\b|\blinks?\b|\bhttps?\b|\bwww\.", re.IGNORECASE)),
+        r"\burls?\b|\blinks?\b|\bhttps?\b|\bwww\.", re.IGNORECASE), True),
     ("a file or an attachment", re.compile(
-        r"\bupload\w*\b|\battach\w*\b|\bfiles?\b|\bpdfs?\b|\bdocx?\b", re.IGNORECASE)),
+        r"\bupload\w*\b|\battach\w*\b|\bfiles?\b|\bpdfs?\b|\bdocx?\b",
+        re.IGNORECASE), True),
     ("a number, a date or a single figure", re.compile(
         r"\bhow\s+many\b|\bhow\s+much\b|\bwhat\s+year\b|\bwhich\s+year\b"
         r"|\bdate\s+of\b|\bmm\s*/\s*(?:dd|yy)|\byyyy\b|\bnumeric\b|\bgpa\b"
         r"|\b(?:salary|compensation)\s+expectations?\b"
         r"|\b(?:expected|desired|current)\s+(?:salary|compensation|base)\b",
-        re.IGNORECASE)),
+        re.IGNORECASE), False),
+)
+
+# Derived, never hand-copied, so the two lists cannot drift apart.
+_SECTION_NOT_PROSE_RULES: tuple[tuple[str, re.Pattern[str]], ...] = tuple(
+    (wants, pattern) for wants, pattern, section_safe in _NOT_PROSE_RULES if section_safe
 )
 
 # The applicant's own history. Draftable ONLY against a non-empty experience
@@ -230,14 +268,49 @@ _MOTIVATION_RE = re.compile(
 )
 
 
-def not_prose_reason(label: str) -> str:
+def _shorten(text: str, cap: int = 120) -> str:
+    """`text` normalised and short enough to quote inside a note.
+
+    Lever's video-prompt heading is ~500 characters and quoting all of it buries
+    the note it is supposed to explain. 120 is measured against that heading
+    rather than picked round: it is the shortest cap that still reaches "please
+    submit a URL to an unlisted YouTube video", which is the phrase that makes
+    the refusal self-evident to the user. A shorter cap truncated mid-word at
+    "…unlisted YouTube vid…" and left the note arguing from an ellipsis."""
+    text = _normalize(text)
+    return text if len(text) <= cap else text[: cap - 1].rstrip() + "…"
+
+
+def not_prose_reason(label: str, section: str = "") -> str:
     """The thing a non-prose box appears to want, or "" when it reads as prose.
 
-    Public because it is the rule most likely to need checking against a new
-    captured form, and because `topic_of` collapses its result to a topic name.
+    `section` — `Question.section`, the heading of the form section the question
+    sits under — is checked FIRST and with the `_SECTION_NOT_PROSE_RULES` subset,
+    because it is the AUTHORITATIVE evidence when it exists. Lever's video
+    prompts are the case that forced it: their own labels say nothing except a
+    parenthesised "(90 seconds max)", while the heading above them reads "Video
+    Prompts: After recording your clips, please submit a URL to an unlisted
+    YouTube video …". Inferring "probably a recording" from a duration is a
+    heuristic; reading "submit a URL to an unlisted YouTube video" is evidence.
+
+    The label pass stays as a second line of defence — Greenhouse and Ashby
+    publish no section headings at all, so on those boards the heuristic is all
+    there is.
+
+    Public because these are the rules most likely to need checking against a
+    newly captured form, and because `topic_of` collapses the result to a topic.
     """
+    section_text = _normalize(section)
+    if section_text:
+        for wants, pattern in _SECTION_NOT_PROSE_RULES:
+            found = pattern.search(section_text)
+            if found:
+                return (
+                    f"{wants} — said by the section heading this question sits "
+                    f"under, “{_shorten(section)}” (matched “{found.group(0)}”)"
+                )
     text = _normalize(label)
-    for wants, pattern in _NOT_PROSE_RULES:
+    for wants, pattern, _ in _NOT_PROSE_RULES:
         found = pattern.search(text)
         if found:
             return f"{wants} (matched “{found.group(0)}”)"
@@ -258,7 +331,8 @@ def topic_of(question: Question) -> str:
       2. Non-prose shapes, BEFORE the draftable topics — the Lever video prompt
          "Show us something you've built … (90 seconds max)" matches
          `_EXPERIENCE_RE` too, and a paragraph in a box that wants a YouTube URL
-         is worse than a blank.
+         is worse than a blank. `question.section` is the authoritative evidence
+         here and is checked first; see `not_prose_reason`.
       3. `experience` before `motivation`: a label mentioning both a real
          project and an interest in the company must be gated on the experience
          corpus, which is the stricter of the two.
@@ -270,7 +344,7 @@ def topic_of(question: Question) -> str:
     if kind != "free_text":
         return "not_free_text"
     label = _normalize(question.label)
-    if not_prose_reason(label):
+    if not_prose_reason(label, question.section):
         return "not_prose"
     if _EXPERIENCE_RE.search(label):
         return "experience"
@@ -333,8 +407,9 @@ def _refusal_note(question: Question, topic: str) -> str:
     if topic == "not_prose":
         return (
             f"this box does not want a paragraph: it reads as a request for "
-            f"{not_prose_reason(question.label)}. A drafted paragraph would be the "
-            f"wrong kind of answer here, so fill it in yourself."
+            f"{not_prose_reason(question.label, question.section)}. A drafted "
+            f"paragraph would be the wrong kind of answer here, so fill it in "
+            f"yourself."
         )
     return _UNKNOWN_NOTE
 

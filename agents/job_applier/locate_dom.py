@@ -446,6 +446,15 @@ class Control:
     a bug: it means "this one is the human's to fill", which is the safe outcome.
     See `_selector_for` for what "unique" is counted over, and why.
 
+    `section` is the heading of the enclosing form SECTION — a coarser grouping
+    than `group_label`, covering several unrelated questions rather than one
+    question's options. It is `""` for most controls and the two are independent:
+    Lever's video prompts have `group_label=""` (they are textareas, not choice
+    controls, so no question block heading applies) and
+    `section="Video Prompts: After recording your clips, please submit a URL…"`,
+    which is the only place on the page that says what those boxes actually want.
+    See `_section_heading`.
+
     `group_label` holds the shared question text of the group this control
     belongs to, while `label` holds the control's own text. For a radio/checkbox
     that means `label` is the OPTION ("Yes") and `group_label` is the question
@@ -474,6 +483,7 @@ class Control:
     element_id: str = ""
     selector: str | None = None
     group_label: str = ""
+    section: str = ""
 
 
 # Inline styles that mean "not on the page". Deliberately NOT a general CSS
@@ -844,6 +854,77 @@ def _group_container(node: _Node) -> _Node | None:
     return None
 
 
+# ---------------------------------------------------------------------------
+# Form sections
+# ---------------------------------------------------------------------------
+# A SECTION is a coarser grouping than `_group_container`: several unrelated
+# questions under one heading ("Video Prompts", "Work Authorization"), rather
+# than one question's options. Two consumers want it — see `Question.section` —
+# and the second, drafting, needs it because Lever states "submit a URL to an
+# unlisted YouTube video" ONLY in the section heading, never in the labels of
+# the two textareas it governs.
+#
+# Read from a CONTAINMENT relationship, not from position: "the nearest
+# preceding heading in document order" is the other obvious rule and it
+# over-reaches badly — Ashby's job description ends in `<h3>WHAT WE EXPECT :`,
+# which would then be stamped on every field of the application form below it.
+#
+# The container test is `<section>` (the HTML element) or the whitespace-token
+# class `section`. That class is Lever's, and reading it is the same trade
+# already justified at length for `li.application-question`: a short, semantic,
+# stylesheet-stable name, not a build hash like `_input_80epu_28`. Measured
+# against the three captured fixtures, it fires on Lever only — Ashby's form
+# section is `_section_5yu8i_86 ashby-application-form-section-container` (no
+# bare `section` token, and no heading element inside it anyway) and Greenhouse
+# groups nothing. Both therefore report `""`, which is correct: no heading is
+# better than an invented one.
+_SECTION_CLASS = "section"
+_SECTION_HEADING_TAGS = frozenset({"h1", "h2", "h3", "h4", "h5", "h6"})
+
+
+def _is_section(node: _Node) -> bool:
+    return node.tag == "section" or node.has_class(_SECTION_CLASS)
+
+
+def _section_container(node: _Node) -> _Node | None:
+    """The NEAREST enclosing section, so a nested section wins over its parent."""
+    for ancestor in node.ancestors():
+        if _is_section(ancestor):
+            return ancestor
+    return None
+
+
+def _own_heading_text(section: _Node) -> str:
+    """The first heading belonging to `section` ITSELF, skipping any that sits
+    inside a nested section — that one describes the nested section, and
+    inheriting it upward would give a parent the wrong heading."""
+    for desc in section.descendants():
+        if desc.tag not in _SECTION_HEADING_TAGS:
+            continue
+        nested = False
+        for ancestor in desc.ancestors():
+            if ancestor is section:
+                break
+            if _is_section(ancestor):
+                nested = True
+                break
+        if nested:
+            continue
+        text = _text_of(desc)
+        if text:
+            return text
+    return ""
+
+
+def _section_heading(node: _Node) -> str:
+    """The section heading covering `node`, or `""`. Cleaned like every other
+    label so a required marker in the heading never reaches a phrase matcher."""
+    section = _section_container(node)
+    if section is None:
+        return ""
+    return _clean_label(_own_heading_text(section))
+
+
 def _group_label_text(group: _Node, by_id: dict[str, list[_Node]]) -> str:
     """The shared question text for a grouping container.
 
@@ -1167,6 +1248,7 @@ def parse_controls(html: str) -> list[Control]:
                 element_id=node.attr("id").strip(),
                 selector=_selector_for(node, by_id, name_counts, name_value_counts),
                 group_label=group_label,
+                section=_section_heading(node),
             )
         )
     return controls
@@ -1376,6 +1458,9 @@ def _questions_from(html: str) -> list[Question]:
                 required=any(c.required for c in unit),
                 kind=first.kind,
                 options=options,
+                # From the FIRST member: a choice group's controls all sit in the
+                # same section by construction, so there is nothing to reconcile.
+                section=first.section,
             )
         )
 

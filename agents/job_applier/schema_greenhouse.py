@@ -138,6 +138,32 @@ class Question:
     `options` is populated only for `select`/`checkbox` kinds, since those
     are the only kinds the resolver needs an allowed-values list for; it is
     `[]` for every other kind.
+
+    `section` is the heading of the form section this question sits under
+    ("Video Prompts: …", "Work Authorization", "Additional Questions"), or `""`
+    when the board publishes no such grouping. It is OPTIONAL and defaults to
+    `""` precisely so every existing construction site — including this
+    module's own `_build_question` — keeps working unchanged. It exists for
+    **two** independent consumers, and neither is hypothetical, so do not
+    delete it as single-use:
+
+      1. `drafting.not_prose_reason` needs it as EVIDENCE. Lever's video
+         prompts are textareas whose own labels give away nothing except a
+         parenthesised "(90 seconds max)"; the fact that the answer must be a
+         URL to an unlisted YouTube video is stated only in the section
+         heading. Without it, drafting writes a paragraph into a box that
+         wants a link.
+      2. The Task 7 handoff report groups what it shows the human by section.
+         "Work Authorization / Video Prompts / Additional Questions" is a
+         materially more reviewable form than a flat list of 29 questions.
+
+    Greenhouse's JSON payload has no equivalent: a `questions` entry carries
+    `label`, `required`, `fields` and an optional per-question `description`,
+    but nothing that groups several questions under a shared heading. So
+    `parse_questions` leaves `section` at `""` rather than inventing one — see
+    `locate_dom` for the DOM-derived version, which populates it for Lever and
+    leaves it `""` for Ashby (whose one form section carries no heading
+    element at all).
     """
 
     key: str
@@ -145,6 +171,7 @@ class Question:
     required: bool
     kind: str  # "text" | "textarea" | "file" | "select" | "checkbox"
     options: list[str] = field(default_factory=list)
+    section: str = ""
 
 
 def _slugify(label: str) -> str:

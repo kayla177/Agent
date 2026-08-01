@@ -27,6 +27,7 @@ from __future__ import annotations
 import ast
 import inspect
 import pathlib
+from dataclasses import replace
 
 import pytest
 
@@ -427,17 +428,59 @@ def test_an_unrecognised_free_text_question_never_reaches_the_model(prefix, call
     assert calls == []
 
 
-def test_the_video_prompts_are_refused_and_the_reason_says_why(calls):
-    """The section heading ("submit a URL to an unlisted YouTube video") is not
-    part of the label, so the only evidence is "(90 seconds max)". The note quotes
-    what it matched, so the user can check the claim."""
-    for prefix in ("Prompt 1: Show us something you", "Prompt 2: Tell us about a piece"):
-        question = next(x for x in lever_free_text() if x.label.startswith(prefix))
+VIDEO_PREFIXES = ("Prompt 1: Show us something you", "Prompt 2: Tell us about a piece")
+
+
+def video_prompts():
+    return [
+        next(x for x in lever_free_text() if x.label.startswith(prefix))
+        for prefix in VIDEO_PREFIXES
+    ]
+
+
+def test_the_video_prompts_are_refused_and_the_reason_cites_the_section(calls):
+    """The authoritative evidence is `Question.section`: "Video Prompts: After
+    recording your clips, please submit a URL to an unlisted YouTube video…". The
+    note quotes the heading AND the token it matched, so the user can check the
+    claim rather than take it on faith."""
+    for question in video_prompts():
+        assert question.section.startswith("Video Prompts:"), "premise: the heading is there"
         answer = draft_one(question, job=JOB, profile=FAKE, experience=EXPERIENCE)
         assert (answer.value, answer.source) == ("", "blank")
-        assert "90 seconds" in answer.note
+        assert "section heading" in answer.note
+        assert "unlisted YouTube video" in answer.note
         assert "paragraph" in answer.note
     assert calls == [], "a box that wants a YouTube URL must not reach the model"
+
+
+def test_the_video_prompts_are_still_refused_with_the_duration_stripped(calls):
+    """The half of the evidence chain the section closes. "(90 seconds max)" is the
+    label's entire contribution; delete it and the labels read as ordinary
+    experience prompts ("Show us something you've built", "Tell us about a piece
+    of Palantir coverage") — which is exactly what they drafted as before
+    `Question.section` existed."""
+    for question in video_prompts():
+        bare = replace(question, label=question.label.replace(" (90 seconds max)", ""))
+        assert "second" not in bare.label, "premise: no duration left in the label"
+        assert drafting.not_prose_reason(bare.label, "") == "", (
+            "premise: the label alone no longer gives it away"
+        )
+        assert topic_of(bare) == "not_prose"
+        answer = draft_one(bare, job=JOB, profile=FAKE, experience=EXPERIENCE)
+        assert (answer.value, answer.source) == ("", "blank")
+    assert calls == []
+
+
+def test_the_video_prompts_are_still_refused_with_the_section_stripped(calls):
+    """The other half. Greenhouse and Ashby publish no section headings at all, so
+    on those boards the label heuristic is the only line of defence and has to
+    keep working on its own."""
+    for question in video_prompts():
+        bare = replace(question, section="")
+        assert topic_of(bare) == "not_prose"
+        assert "90 seconds" in drafting.not_prose_reason(bare.label, bare.section)
+        assert draft_one(bare, job=JOB, profile=FAKE).source == "blank"
+    assert calls == []
 
 
 def test_not_prose_is_checked_before_the_draftable_topics():
@@ -644,3 +687,147 @@ def test_the_resolver_does_not_import_drafting():
     import agents.job_applier.resolver as resolver
     imported, _ = _module_imports(resolver)
     assert not any("drafting" in name for name in imported)
+
+
+# --------------------------------------------- the "record" vocabulary, checked
+
+# Phrasings that ARE asking for a recording. "Record your answer." is the one the
+# label rules missed before Task 5's fix round: appended to any question it turns
+# a prose prompt into a video prompt, and nothing in the old vocabulary saw it.
+RECORD_POSITIVES = [
+    "Record your answer.",
+    "Record a video of yourself explaining it.",
+    "Please record yourself answering this question.",
+    "Submit a recording of your response.",
+    "Send us a prerecorded clip.",
+    "Upload a self-tape.",
+    "Re-record if you are not happy with the first take.",
+]
+
+# Phrasings that contain "record" and are NOT. Task 4's lesson applied: a token is
+# not safe in isolation, so the negatives get pinned as hard as the positives. A
+# note telling the user "What is your academic record?" wants a video would be
+# confidently, checkably false — and `resolver.py` records what one wrong note
+# costs the user's trust in every other note the handoff shows.
+RECORD_NEGATIVES = [
+    "What is your academic record?",
+    "Do you have a track record of shipping?",
+    "Do you have a criminal record? Please explain.",
+    "Describe your record of employment.",
+    "For the record, are you over 18?",
+    "Tell us about a time you broke a record.",
+    "Our record of achievement matters; why do you want to work here?",
+]
+
+
+@pytest.mark.parametrize("label", RECORD_POSITIVES)
+def test_a_request_to_record_something_is_refused(label, calls):
+    assert "a video or audio recording" in drafting.not_prose_reason(label)
+    assert topic_of(q(label)) == "not_prose"
+    assert draft_one(q(label), job=JOB, profile=FAKE).source == "blank"
+    assert calls == []
+
+
+@pytest.mark.parametrize("label", RECORD_NEGATIVES)
+def test_the_word_record_alone_does_not_make_a_question_a_video_prompt(label):
+    assert drafting.not_prose_reason(label) == ""
+    assert topic_of(q(label)) != "not_prose"
+
+
+def test_a_prose_question_with_a_record_instruction_appended_is_refused(calls):
+    """The exact regression: "Why do you want to work at Palantir?" is the one
+    question on the real form that drafts, so appending "Record your answer." to it
+    is the shape where a missed rule costs a paragraph in a video box."""
+    label = "Why do you want to work at Palantir? Record your answer."
+    assert topic_of(q(label)) == "not_prose", "and NOT motivation"
+    assert draft_one(q(label), job=JOB, profile=FAKE, company_research=RESEARCH).source == "blank"
+    assert calls == []
+
+
+# ------------------------------------------------- section-heading evidence
+
+
+def test_a_section_heading_asking_for_a_url_refuses_a_prose_looking_question(calls):
+    """The whole point of `Question.section`: the label reads as a perfectly
+    ordinary motivation prompt, and only the heading says what the box wants."""
+    question = replace(
+        q("Why do you want to work at Palantir?"),
+        section="Video Prompts: please submit a URL to an unlisted YouTube video",
+    )
+    assert topic_of(q("Why do you want to work at Palantir?")) == "motivation", "premise"
+    assert topic_of(question) == "not_prose"
+    answer = draft_one(question, job=JOB, profile=FAKE, company_research=RESEARCH)
+    assert (answer.value, answer.source) == ("", "blank")
+    assert "section heading" in answer.note
+    assert calls == []
+
+
+@pytest.mark.parametrize("section", [
+    "Video Prompts",
+    "Please submit a link to your work",
+    "Attach the following documents",
+    "Upload your materials",
+])
+def test_the_four_section_safe_categories_refuse_everything_under_them(section):
+    """URL, video, recording, file — the four the section rules cover."""
+    assert topic_of(replace(q("Why do you want to work here?"), section=section)) == "not_prose"
+
+
+@pytest.mark.parametrize("section", [
+    "Additional Questions (you have 30 minutes to complete this application)",
+    "Answer how many of the following apply to you",
+    "An Inflection Point",
+    "Supplementary Questions",
+    "Work Authorization",
+])
+def test_a_heading_does_not_refuse_a_section_on_a_duration_or_a_count(section):
+    """Deliberate scope limit, not an oversight. One heading match refuses EVERY
+    question in the section, and a duration or a "how many" is the kind of thing a
+    heading says in passing — at that blast radius an incidental match silently
+    blanks a whole page. Both rules stay ON at label scope, where the radius is
+    one box. `_SECTION_NOT_PROSE_RULES` is the subset; this test is what fails if
+    someone "simplifies" it to the full list."""
+    assert topic_of(replace(q("Why do you want to work here?"), section=section)) == "motivation"
+
+
+def test_the_section_rule_subset_is_exactly_the_four_documented_categories():
+    """Derived from `_NOT_PROSE_RULES`, never hand-copied — but the DERIVATION is
+    what this pins, so the two lists cannot silently diverge in either direction."""
+    section_safe = {wants for wants, _ in drafting._SECTION_NOT_PROSE_RULES}
+    all_rules = {wants for wants, _, _ in drafting._NOT_PROSE_RULES}
+    assert section_safe == {
+        "a video or audio recording",
+        "a URL or a link",
+        "a file or an attachment",
+    }
+    assert section_safe < all_rules
+    assert all_rules - section_safe == {
+        "a recording or another timed answer, not a paragraph",
+        "a number, a date or a single figure",
+    }
+
+
+def test_the_label_heuristic_still_runs_when_there_is_no_section():
+    """Greenhouse and Ashby publish no section headings at all, so a regression
+    that made the section pass mandatory would silently disable the whole rule on
+    two of three boards."""
+    for board in ("greenhouse-form.html", "ashby-form.html"):
+        questions = discover_questions(
+            (pathlib.Path(__file__).parent / "fixtures" / "ats" / board).read_text()
+        )
+        assert all(x.section == "" for x in questions), "premise: no headings there"
+    assert topic_of(q("Share a link to a video")) == "not_prose"
+
+
+def test_the_lever_sections_that_must_not_refuse_their_questions(calls):
+    """Read from the real form: the two draftable questions sit under "Additional
+    Questions", and the three-numbers pair under "An Inflection Point". Neither
+    heading may trip the section rules, or the section signal would have cost more
+    than it bought."""
+    by_label = {x.label: x for x in lever_free_text()}
+    draftable = by_label["Why do you want to work at Palantir?"]
+    assert draftable.section == "Additional Questions"
+    assert topic_of(draftable) == "motivation"
+    three = next(x for x in by_label.values() if x.label.startswith("Give us three numbers"))
+    assert three.section == "An Inflection Point"
+    assert topic_of(three) == "unknown", "unknown for its own reasons, not the section's"

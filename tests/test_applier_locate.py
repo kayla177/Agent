@@ -2111,3 +2111,109 @@ def test_refresh_invalidates_the_question_cache_too():
     locator.refresh()
     locator.questions()
     assert page.content_calls == 2
+
+
+# ---------------------------------------------------------------------------
+# Form sections
+# ---------------------------------------------------------------------------
+# Added for Task 5. `Question.section` is a coarser grouping than `group_label`
+# — several unrelated questions under one heading — and it exists for two
+# consumers: `drafting.not_prose_reason` needs it as evidence (Lever states
+# "submit a URL to an unlisted YouTube video" ONLY in the section heading, never
+# in the two textarea labels it governs) and Task 7's handoff report groups what
+# it shows the human by it. Measured values are pinned the way the question
+# counts above are, so a fixture recapture or a parser change surfaces here.
+
+# Section heading -> number of answerable questions under it, in the real
+# captured Lever form. Measured 2026-08-01.
+_LEVER_SECTIONS = {
+    "Submit your application": 6,
+    "Links": 3,
+    "Supplementary Questions": 3,
+    "Work Authorization": 2,
+    "High School Name & Graduation Year": 2,
+    "University": 1,
+    "How did you hear about this internship opportunity?": 1,
+    "Year of Graduation": 1,
+    "Month of Graduation": 1,
+    "An Inflection Point": 2,
+    "Additional Questions": 2,
+    "AU Clearance Confirmation": 2,
+    "Additional information": 1,
+}
+_LEVER_VIDEO_SECTION_PREFIX = (
+    "Video Prompts: After recording your clips, please submit a URL to an "
+    "unlisted YouTube video"
+)
+
+
+def test_lever_questions_all_carry_their_section_heading(questions):
+    """Lever wraps each card in `div.section` with an `<h4>` heading, so every
+    question on that form has one. `_section_heading` reads it through a
+    CONTAINMENT relationship — "the nearest preceding heading in document order"
+    is the other obvious rule and it would stamp Ashby's `<h3>WHAT WE EXPECT :`
+    from the job description onto the whole application form."""
+    counts = collections.Counter(q.section for q in questions["lever"])
+    video = [s for s in counts if s.startswith(_LEVER_VIDEO_SECTION_PREFIX)]
+    assert len(video) == 1, "the video-prompt section heading is read verbatim"
+    assert counts.pop(video[0]) == 2, "and it covers exactly the two prompts"
+    assert dict(counts) == _LEVER_SECTIONS
+    assert all(q.section for q in questions["lever"])
+
+
+@pytest.mark.parametrize("board", ("ashby", "greenhouse"))
+def test_a_board_with_no_section_heading_reports_no_section(board, questions):
+    """Not a gap to be filled with a guess. Ashby's one form section is
+    `_section_5yu8i_86 ashby-application-form-section-container` — no bare
+    `section` class token, and no heading element inside it either — and
+    Greenhouse groups nothing at all. "" is the honest answer for both."""
+    assert [q.section for q in questions[board]] == [""] * len(questions[board])
+
+
+def test_the_greenhouse_schema_path_reports_no_section():
+    """Greenhouse's JSON carries `label`, `required`, `fields` and an optional
+    per-question `description`, but nothing grouping questions under a shared
+    heading — so `parse_questions` must not invent one."""
+    payload = json.loads((FIXTURES / "greenhouse-questions.json").read_text())
+    parsed = parse_questions(payload)
+    assert parsed, "premise: the payload has questions"
+    assert all(q.section == "" for q in parsed)
+
+
+def test_section_is_optional_so_every_existing_construction_site_still_works():
+    """The field was added strictly additively. A `Question` built without it —
+    which is every call site outside `locate_dom` — must still be constructible
+    and must report "" rather than raising."""
+    assert Question(key="k", label="L", required=False, kind="text").section == ""
+    assert Control(
+        tag="input", input_type="text", label="L", label_source="label",
+        kind="text", required=False, required_source="",
+    ).section == ""
+
+
+def test_a_nested_section_heading_does_not_leak_up_to_its_parent():
+    """A heading inside a nested section describes THAT section. Inheriting it
+    upward would give the outer section a heading that belongs to part of it."""
+    html = (
+        '<div class="section"><div class="section"><h4>Inner</h4>'
+        '<input id="a" type="text"><label for="a">A</label></div>'
+        '<input id="b" type="text"><label for="b">B</label></div>'
+    )
+    found = {c.label: c.section for c in parse_controls(html)}
+    assert found == {"A": "Inner", "B": ""}
+
+
+def test_the_nearest_section_wins_when_both_have_headings():
+    html = (
+        '<section><h2>Outer</h2><section><h3>Inner</h3>'
+        '<input id="a" type="text"><label for="a">A</label></section>'
+        '<input id="b" type="text"><label for="b">B</label></section>'
+    )
+    found = {c.label: c.section for c in parse_controls(html)}
+    assert found == {"A": "Inner", "B": "Outer"}
+
+
+def test_a_section_heading_is_cleaned_of_its_required_marker():
+    html = ('<section><h3>Video Prompts ✱</h3>'
+            '<input id="a" type="text"><label for="a">A</label></section>')
+    assert parse_controls(html)[0].section == "Video Prompts"
