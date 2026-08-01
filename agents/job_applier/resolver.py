@@ -225,6 +225,35 @@ def _rx(*alternatives: str) -> re.Pattern[str]:
 _BARE_NAME_RE = re.compile(r"^[\s*]*(?:your\s+|full\s+|legal\s+)?name[\s*:?]*$", re.IGNORECASE)
 
 _LABEL_RULES: tuple[tuple[str, re.Pattern[str]], ...] = (
+    # A label that asks something ABOUT a name is not asking FOR one. FIRST in
+    # this list, because almost every rule below it can read a name request out
+    # of such a label: "Name Pronunciation | How do you pronounce your name?"
+    # matched `full_name`'s `your\s+name` and was filled with the applicant's
+    # actual name, with no note and nothing flagging it — a wrong value in a
+    # real application, which is worse than leaving the field blank. It also has
+    # to beat `free_text`, or a phrasing like "Please describe how you pronounce
+    # your name" would be handed to the drafting model, which would invent a
+    # fact about the user.
+    #
+    # Kept deliberately NARROW and token-anchored: it matches the vocabulary of
+    # *form and sound* — pronunciation, phonetic spelling, "how do you say" —
+    # and nothing else. A broad `\bname\b` denylist here would swallow
+    # "Full name", "Preferred Name" and "Legal name" and blank out the fields
+    # this resolver exists to fill.
+    #
+    # `pronounc\w*` and `pronunciation` are both spelled out because neither
+    # contains the other ("pronunc" vs "pronounc"), and `pronounc` specifically
+    # — not `pronoun` — because "pronouns" is a protected-characteristic
+    # question, a different concern with its own handling, and must not be
+    # quietly relabelled as a name question.
+    ("name_meta", re.compile(
+        r"\bpronunciation\b"
+        r"|\bpronounc\w*\b"
+        r"|\bphonetic\w*\b"
+        r"|\bhow\s+(?:do|would|should)\s+(?:you|we|i|one)\s+say\b"
+        r"|\bspelling\s+of\b",
+        re.IGNORECASE)),
+
     # A name field that is conditional on something this system cannot know:
     # whether the user's legal/previous/preferred name differs from the one
     # they typed. Must beat every generic name rule. All the near-misses of
@@ -676,6 +705,13 @@ def _resolve_one(question: Question, profile: dict) -> Answer:
             question, kind,
             "this asks for a name only if it differs from the one above, and your "
             "profile stores one name — fill it in only if yours differs.",
+        )
+
+    if kind == "name_meta":
+        return _blank(
+            question, kind,
+            "this asks about how your name is said or spelled, not for the name "
+            "itself — your profile has no answer to it, so type it in yourself.",
         )
 
     if kind == "relocation":

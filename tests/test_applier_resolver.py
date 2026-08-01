@@ -252,6 +252,169 @@ def test_bare_name_label_only_matches_when_the_whole_label_is_name():
     assert resolve([q("Current Employer Name")], FAKE)[0].value == ""
 
 
+# ------------------------------------------- a label ABOUT a name, not FOR one
+
+# Phrasings that ask about the FORM or SOUND of a name. The first entry is real:
+# it is on the captured Lever fixture (Palantir), and until `name_meta` existed
+# it classified as `full_name` and was auto-filled with the applicant's actual
+# name — no note, not blocking. A wrong value in a real application is worse than
+# a blank one, so this corpus is the invariant, not the one string.
+NAME_META_CORPUS = [
+    "Name Pronunciation | How do you pronounce your name?",
+    "How do you pronounce your name?",
+    "How do you pronounce your first name?",
+    "HOW DO YOU PRONOUNCE YOUR NAME",
+    "how would you pronounce your name?",
+    "Name pronunciation",
+    "Name Pronunciation (optional)",
+    "Preferred name pronunciation",
+    "Pronunciation",
+    "Phonetic spelling",
+    "Phonetic spelling of your name",
+    "What is the phonetic pronunciation of your name?",
+    "Please provide the phonetic spelling of your first name",
+    "How do you say your name?",
+    "How should we say your name?",
+    "Spelling of your name (if unusual)",
+]
+
+# Labels that DO ask for a name (or for something else entirely) and must be
+# completely unaffected. `name_meta` is first in the rule list, so if its pattern
+# ever widens into a `\bname\b` denylist this is what catches it — every one of
+# these would go blank and the resolver would stop doing its job.
+NAME_REQUEST_CORPUS = [
+    ("Name", "full_name"),
+    ("Full name", "full_name"),
+    ("Full Name", "full_name"),
+    ("Your name", "full_name"),
+    ("Legal name", "full_name"),
+    ("Full legal name", "full_name"),
+    ("Candidate Name", "full_name"),
+    ("First Name", "first_name"),
+    ("Last Name", "last_name"),
+    ("Given name", "first_name"),
+    ("Surname", "last_name"),
+    ("Preferred Name | What would you like us to call you?", "name_alt"),
+    ("Other Legal Name", "name_alt"),
+    ("High School Name", "school"),
+    ("Name of your university", "school"),
+    ("Current Company Name", "other"),
+]
+
+
+@pytest.mark.parametrize("label", NAME_META_CORPUS)
+def test_a_question_about_a_name_is_classified_name_meta(label):
+    assert classify(q(label)) == "name_meta"
+
+
+@pytest.mark.parametrize("label", NAME_META_CORPUS)
+def test_a_question_about_a_name_is_never_answered_from_the_profile(label):
+    """The whole point: blank, with a reason, for every phrasing — and the
+    reason must not be the empty string, or the handoff has nothing to show."""
+    ans = resolve([q(label)], RICH)[0]
+    assert ans.source == "blank"
+    assert ans.value == ""
+    assert ans.note.strip()
+    assert RICH["full_name"] not in ans.note
+
+
+@pytest.mark.parametrize("label", NAME_META_CORPUS)
+def test_a_question_about_a_name_explains_itself_rather_than_falling_back(label):
+    """Deleting the `name_meta` branch in `_resolve_one` still yields blank — the
+    generic tail does that — so the safety outcome alone cannot tell the two
+    apart. What differs is the note the handoff shows the human: "this asks about
+    how your name is said, not for the name itself" versus "not derivable from a
+    typed profile field". Compared against the generic note rather than pinned to
+    a wording, so rephrasing is free but deleting the branch is not.
+    """
+    generic = resolve([q("Do you own a bicycle?")], RICH)[0]
+    assert generic.kind == "other"  # sanity: this really is the fallback note
+    ans = resolve([q(label)], RICH)[0]
+    assert ans.note != generic.note
+
+
+@pytest.mark.parametrize("label", NAME_META_CORPUS)
+def test_a_question_about_a_name_is_never_handed_to_the_drafting_model(label):
+    """`name_meta` also has to beat `free_text`, or "Please describe how you
+    pronounce your name" as a textarea would be drafted — i.e. a model inventing
+    a fact about the user."""
+    ans = resolve([q(label, kind="textarea")], RICH)[0]
+    assert ans.kind == "name_meta"
+    assert ans.source == "blank"
+    assert "draft" not in ans.note.lower()
+
+
+@pytest.mark.parametrize("label,expected", NAME_REQUEST_CORPUS)
+def test_a_question_asking_for_a_name_is_untouched(label, expected):
+    assert classify(q(label)) == expected
+
+
+def test_the_name_fields_still_fill_after_the_name_meta_rule():
+    got = {a.question.label: a.value for a in resolve(
+        [q("Full name"), q("First Name"), q("Last Name"), q("Legal name")], FAKE)}
+    assert got == {
+        "Full name": "Testy McTestface",
+        "First Name": "Testy",
+        "Last Name": "McTestface",
+        "Legal name": "Testy McTestface",
+    }
+
+
+def test_a_pronouns_question_is_not_relabelled_as_a_name_question():
+    """`pronounc\\w*`, not `pronoun\\w*`. "Pronouns" is a
+    protected-characteristic question with its own handling upstream; quietly
+    reclassifying it as a name question would hide it from whatever screens for
+    that."""
+    for label in ("What are your pronouns?", "Preferred pronouns", "Pronouns"):
+        assert classify(q(label)) != "name_meta", label
+
+
+def test_name_meta_is_not_itself_a_submission_gate():
+    """`name_meta` is blank-with-a-note, not a BLOCKING_KIND: a pronunciation
+    field does not decide whether an application is considered, and padding
+    BLOCKING_KINDS makes the handoff's "needs your attention" list less useful.
+
+    It still surfaces when the FORM marks it required, via the separate
+    "required field left blank" arm of `blocking` — which is the right reason to
+    surface it, and is why an optional one stays quiet.
+    """
+    assert "name_meta" not in BLOCKING_KINDS
+    optional = resolve([q("Name pronunciation", required=False)], RICH)
+    assert blocking(optional) == []
+    mandatory = resolve([q("Name pronunciation", required=True)], RICH)
+    assert [a.kind for a in blocking(mandatory)] == ["name_meta"]
+
+
+def test_real_lever_pronunciation_question_is_not_filled_with_a_name():
+    """End-to-end against the captured Lever fixture, which is where this bug
+    was found. Pure: parses saved HTML, no browser, no network."""
+    from agents.job_applier.locate_dom import discover_questions
+
+    lever = pathlib.Path(__file__).parent / "fixtures" / "ats" / "lever-form.html"
+    questions = discover_questions(lever.read_text())
+    pronunciation = next(qq for qq in questions if "Pronunciation" in qq.label)
+    ans = resolve([pronunciation], RICH)[0]
+    assert ans.kind == "name_meta"
+    assert ans.value == ""
+    assert ans.note.strip()
+    # ...and its sibling, which asks FOR a name conditionally, is still name_alt.
+    preferred = next(qq for qq in questions if qq.label.startswith("Preferred Name"))
+    assert classify(preferred) == "name_alt"
+
+
+def test_no_lever_question_is_auto_filled_with_the_profile_name_by_accident():
+    """The invariant behind the specific bug: the applicant's name may only be
+    typed into a field the resolver classified as a name REQUEST."""
+    from agents.job_applier.locate_dom import discover_questions
+
+    lever = pathlib.Path(__file__).parent / "fixtures" / "ats" / "lever-form.html"
+    answers = resolve(discover_questions(lever.read_text()), RICH)
+    name_kinds = {"full_name", "first_name", "last_name"}
+    for ans in answers:
+        if ans.value and RICH["full_name"] in ans.value:
+            assert ans.kind in name_kinds, (ans.question.label, ans.kind)
+
+
 def test_referral_source_is_blank_and_never_drafted():
     ans = resolve([q("How did you hear about this job?", kind="textarea")], FAKE)[0]
     assert ans.source == "blank" and ans.value == ""

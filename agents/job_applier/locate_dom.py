@@ -591,6 +591,20 @@ _QUESTION_TEXT_CLASS = "text"
 # for its questions, so the containment rule would happily read "What is your
 # gender?" straight out of it. Excluded structurally, ahead of everything else:
 # a control anywhere under `.eeo-survey` is not a question this module reports.
+#
+# PROVENANCE, so nobody assumes a fixture covers this: the captured Lever fixture
+# contains NO such block. `eeo-survey` occurs 386 times in that file and every
+# one is a CSS selector inside an inline `<style>`; with `<style>`/`<script>`
+# stripped, the markup has zero occurrences of it — and zero of gender, veteran,
+# ethnic, disabilit, demographic or self-identif. Pinned by
+# `test_the_captured_lever_fixture_has_no_eeo_block_in_its_markup`, so this
+# exclusion is DEFENSIVE and is exercised only by synthetic HTML.
+#
+# Kept anyway on its own merits rather than on fixture evidence: such a block
+# would reuse `application-label`, and its options ("Female" / "Male" / "Decline
+# to self-identify") match NO term in `schema_greenhouse._EEO_TERMS`, so the text
+# screen alone would not catch it. Structure is the right instrument when the
+# structure itself says "this is the demographic survey".
 _EEO_BLOCK_CLASS = "eeo-survey"
 
 # Required markers to strip from a stored label. `span.required` renders U+2731
@@ -686,20 +700,29 @@ def _associated_label_text(
                 return _text_of(labels[0], stop_tags=_LABEL_STOP), "label"
         return "", ""
 
-    # Steps 1b and 1c: the wrapping `<label>` and Lever's question block. Which
-    # of the two goes first depends on what a wrapping label CONVENTIONALLY
-    # holds for this kind of control, and both conventions show up on the one
-    # Lever form:
+    # Steps 1b and 1c: the wrapping `<label>` and Lever's question block.
     #
-    #   * around a checkbox/radio it holds the OPTION text
-    #     (`<label><input type=radio value=Yes><span>Yes</span></label>`), and
+    # DO NOT "simplify" this into a single precedence order. The two swap by
+    # control kind, deliberately, because a wrapping `<label>` holds DIFFERENT
+    # THINGS for the two kinds — and both conventions appear on the one Lever
+    # form, so either fixed order is wrong for half of it:
+    #
+    #   * around a checkbox/radio, a wrapping label holds the OPTION text
+    #     (`<label><input type=radio value=Yes><span>Yes</span></label>`) while
     #     the question ("Are you legally authorized to work…") is the block's.
-    #     So for a choice control the wrapping label wins, and the block becomes
-    #     the control's `group_label`.
-    #   * around anything else it holds the field label — but Lever's résumé
-    #     label also encloses the upload button, so it reads
+    #     So the wrapping label wins and the block becomes `group_label`.
+    #     Get this backwards and every option is labelled with the whole
+    #     question, so the group's `options` list becomes N copies of its own
+    #     heading — "Yes"/"No" is lost and nothing can pick an answer.
+    #   * around anything else, a wrapping label holds the field label — but
+    #     Lever's résumé label also encloses the upload button, so it reads
     #     "Resume/CV ✱ATTACH RESUME/CV" where `div.application-label` holds
-    #     exactly "Resume/CV ✱". So for a non-choice control the block wins.
+    #     exactly "Resume/CV ✱". So the block wins. Get THIS backwards and the
+    #     résumé field's label carries button chrome.
+    #
+    # Both directions are pinned by name:
+    # `test_the_wrapping_label_beats_the_question_block_for_a_choice_control`
+    # and `test_the_question_block_beats_the_wrapping_label_for_a_non_choice_control`.
     is_choice = node.tag == "input" and _kind_of(node) in ("checkbox", "select")
 
     def wrapping() -> tuple[str, str]:
@@ -1105,11 +1128,28 @@ def find_control(controls: list[Control], label_query: str) -> Control | None:
     Both the control's own label and its group heading are candidates, because
     the group heading is what `discover_questions` reports as the question (a
     Greenhouse file input's own label is the button word "Attach"; its group
-    heading is "Resume/CV*", which is what a caller will ask for).
+    heading is "Resume/CV", which is what a caller will ask for).
 
     `None` is returned for no match **and** for more than one match at the
     winning tier. Never a best guess: a wrong element means a wrong value typed
     into a real application (decision 3).
+
+    **Pass a question's FULL label. A short query is for diagnostics only.** The
+    prefix tier can silently resolve a short handle to the wrong control when
+    exactly one label happens to start with it — no ambiguity exists to detect,
+    so nothing warns. Worked example, real, on the captured Lever form:
+
+        find_control(controls, "Name")
+        -> 'Name Pronunciation | How do you pronounce your name?'
+
+    because after the containment rule that is the one and only label whose first
+    token is "name". It is not the field a caller asking for "Name" wants. The
+    rule is behaving as specified; the mistake is the short query.
+
+    Production code must therefore drive filling from the `Question` objects
+    `discover_questions` returns and locate by `question.label`, which hits the
+    exact tier — never from a literal string. `test_a_bare_short_query_is_not_a_
+    safe_way_to_address_a_field` pins both halves of that.
     """
     if not label_query or not label_query.strip():
         return None
