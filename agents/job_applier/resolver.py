@@ -235,24 +235,59 @@ _LABEL_RULES: tuple[tuple[str, re.Pattern[str]], ...] = (
     # your name" would be handed to the drafting model, which would invent a
     # fact about the user.
     #
-    # Kept deliberately NARROW and token-anchored: it matches the vocabulary of
-    # *form and sound* — pronunciation, phonetic spelling, "how do you say" —
-    # and nothing else. A broad `\bname\b` denylist here would swallow
-    # "Full name", "Preferred Name" and "Legal name" and blank out the fields
-    # this resolver exists to fill.
+    # Kept deliberately NARROW: a meta token is not enough on its own, a NAME
+    # token has to co-occur with it. The first version matched the meta
+    # vocabulary alone, which made "How do you say hello in Spanish?" and "Please
+    # provide the correct spelling of your address" both `name_meta` — blank,
+    # which is safe, but with a note reading "this asks about how your name is
+    # said or spelled", which is simply untrue of those questions. A wrong
+    # explanation costs the user trust in every other note the handoff shows, so
+    # it is not a cosmetic problem.
+    #
+    # Equally, a broad `\bname\b` denylist would swallow "Full name", "Preferred
+    # Name" and "Legal name" and blank out the fields this resolver exists to
+    # fill — hence: name token AND meta token, both word-anchored, in either
+    # order.
     #
     # `pronounc\w*` and `pronunciation` are both spelled out because neither
     # contains the other ("pronunc" vs "pronounc"), and `pronounc` specifically
     # — not `pronoun` — because "pronouns" is a protected-characteristic
     # question, a different concern with its own handling, and must not be
     # quietly relabelled as a name question.
+    #
+    # `\bnames?\b` is anchored so "username" and "surname" do not satisfy the
+    # name half: "What is the correct spelling of your username?" is a username
+    # field, and the note would be wrong about it.
+    # The LEADING word boundary is dropped for the two "pronounce" stems and kept
+    # for the others, and that asymmetry is measured, not aesthetic. Checked
+    # against /usr/share/dict/words (236k entries) for which words the anchored
+    # and unanchored forms disagree on:
+    #
+    #   pronounc / pronunciation -> mispronounce, unpronounceable, unpronounced,
+    #       repronounce, overpronounced, nonpronunciation. EVERY one is about
+    #       pronouncing something, so the boundary only ever produced a false
+    #       negative — and a false negative here is not benign: "How often do
+    #       people mispronounce your name?" fell through to `full_name` and was
+    #       auto-filled with the applicant's name. Exactly the defect this class
+    #       exists to prevent, reintroduced by a boundary doing its job too well.
+    #   spell -> gospellike, dispeller, bespell, indispellable. NOT about
+    #       spelling, so here the boundary is protective and stays; `mis` is
+    #       allowed explicitly for the one real prefix ("misspelled").
+    #   phonetic -> euphonetic, symphonetic (about sound harmony, not names).
+    #       Boundary stays; no evidence of a false negative that matters.
+    #
+    # A word boundary is not automatically the safe choice. It depends entirely on
+    # what the neighbouring words in the language actually are.
     ("name_meta", re.compile(
-        r"\bpronunciation\b"
-        r"|\bpronounc\w*\b"
+        r"(?=.*\bnames?\b)"
+        r".*(?:"
+        r"\w*pronunciation\b"
+        r"|\w*pronounc\w*\b"
         r"|\bphonetic\w*\b"
         r"|\bhow\s+(?:do|would|should)\s+(?:you|we|i|one)\s+say\b"
-        r"|\bspelling\s+of\b",
-        re.IGNORECASE)),
+        r"|\b(?:mis)?spell(?:ing|ed|s)?\b"
+        r")",
+        re.IGNORECASE | re.DOTALL)),
 
     # A name field that is conditional on something this system cannot know:
     # whether the user's legal/previous/preferred name differs from the one

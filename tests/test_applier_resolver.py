@@ -94,11 +94,58 @@ def test_free_text_question_is_left_for_the_drafting_node():
 
 def test_resolver_touches_no_io():
     """Pure function: importing and calling it must not need a browser, a
-    network, or a model. Guards the safety boundary against future drift."""
-    import inspect, agents.job_applier.resolver as r
-    src = inspect.getsource(r)
-    for forbidden in ("httpx", "playwright", "llm(", "requests"):
-        assert forbidden not in src, f"resolver must stay pure; found {forbidden}"
+    network, a database, a file, or a model. Guards the safety boundary against
+    future drift.
+
+    Checks IMPORTS via the AST rather than grepping the whole source, because the
+    docstrings legitimately discuss the browser and the DOM ("attach the file
+    yourself in the open browser window") and a text grep either false-positives
+    on that prose or gets weakened until it stops meaning anything.
+
+    The original list was `httpx` / `playwright` / `llm(` / `requests` only —
+    which left `sqlite3`, `open()`, `store_db`, `locate_dom` and `browser`
+    unguarded. Purity held, but by the import list happening to be short, not
+    because this test enforced it.
+    """
+    import ast
+    import inspect
+
+    import agents.job_applier.resolver as r
+
+    tree = ast.parse(inspect.getsource(r))
+    imported: set[str] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            imported.update(alias.name.split(".")[0] for alias in node.names)
+        elif isinstance(node, ast.ImportFrom) and node.module:
+            imported.add(node.module.split(".")[0])
+            imported.add(node.module)
+
+    forbidden_modules = {
+        "httpx", "requests", "urllib", "socket", "http",      # network
+        "playwright", "selenium",                              # browser
+        "sqlite3", "store_db", "server",                       # database
+        "os", "pathlib", "shutil", "subprocess", "tempfile",  # filesystem
+        "openai", "anthropic", "ollama",                       # models
+    }
+    leaked = imported & forbidden_modules
+    assert not leaked, f"resolver must stay pure; it imports {sorted(leaked)}"
+
+    # Sibling modules that would drag a browser or a DOM in transitively.
+    for module in imported:
+        assert "locate_dom" not in module, "resolver must not import DOM code"
+        assert "browser" not in module, "resolver must not import browser code"
+
+    # And no I/O call sites, checked on docstring-stripped code.
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.Module, ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef)):
+            body = node.body
+            if body and isinstance(body[0], ast.Expr) and isinstance(body[0].value, ast.Constant):
+                if isinstance(body[0].value.value, str):
+                    node.body = body[1:] or [ast.Pass()]
+    code = ast.unparse(ast.fix_missing_locations(tree))
+    for call in ("open(", "connect(", "read_text(", "write_text(", "urlopen(", "llm("):
+        assert call not in code, f"resolver must stay pure; found {call}"
 
 
 # ------------------------------------------------- classification, ordered
@@ -268,14 +315,43 @@ NAME_META_CORPUS = [
     "Name pronunciation",
     "Name Pronunciation (optional)",
     "Preferred name pronunciation",
-    "Pronunciation",
-    "Phonetic spelling",
     "Phonetic spelling of your name",
     "What is the phonetic pronunciation of your name?",
     "Please provide the phonetic spelling of your first name",
     "How do you say your name?",
     "How should we say your name?",
     "Spelling of your name (if unusual)",
+    "How is your name spelled?",
+    "Pronunciation of your first name",
+    # `mis`-prefixed forms. A word boundary excluded these, so they fell through
+    # to `full_name` and were auto-filled with the applicant's name — the same
+    # defect the class exists to prevent. Found by mutation-testing the boundaries.
+    "How often do people mispronounce your name?",
+    "Common mispronunciation of your name",
+    "Is your name frequently misspelled?",
+    "How do people usually misspell your name?",
+    "Is your name unpronounceable in English?",
+    "Is your name commonly unpronounced correctly?",
+]
+
+# A meta token with NO name token. These must NOT be `name_meta`: the rule
+# requires both halves, because matching the meta vocabulary alone made "How do
+# you say hello in Spanish?" and "Please provide the correct spelling of your
+# address" into `name_meta` — blank, which is safe, but with a note reading "this
+# asks about how your name is said or spelled", which is untrue of those
+# questions. A wrong explanation costs the user trust in every other note.
+#
+# The accepted cost: a field labelled only "Pronunciation", sitting next to a
+# name field, loses its specific note and gets the generic one. It still goes
+# blank, so nothing is typed wrongly — and asserting something possibly false
+# about a question is worse than being unspecific about it.
+NAME_META_NEAR_MISS_CORPUS = [
+    "How do you say hello in Spanish?",
+    "Please provide the correct spelling of your address",
+    "What is the correct spelling of your username?",
+    "How do you pronounce our company's product?",
+    "Pronunciation",
+    "Phonetic spelling",
 ]
 
 # Labels that DO ask for a name (or for something else entirely) and must be
@@ -347,6 +423,51 @@ def test_a_question_about_a_name_is_never_handed_to_the_drafting_model(label):
 @pytest.mark.parametrize("label,expected", NAME_REQUEST_CORPUS)
 def test_a_question_asking_for_a_name_is_untouched(label, expected):
     assert classify(q(label)) == expected
+
+
+@pytest.mark.parametrize("label", NAME_META_NEAR_MISS_CORPUS)
+def test_a_meta_token_without_a_name_token_is_not_name_meta(label):
+    """Both halves are required. Without this, the note shown to the human claims
+    the question is about their name when it is about their address, a username,
+    or Spanish."""
+    assert classify(q(label)) != "name_meta"
+
+
+@pytest.mark.parametrize("label", NAME_META_NEAR_MISS_CORPUS)
+def test_a_near_miss_never_gets_the_name_meta_explanation(label):
+    """The note is the thing at stake, so assert on the note directly: whatever
+    these classify as, the human must not be told the question is about their
+    name."""
+    note = resolve([q(label)], RICH)[0].note.lower()
+    assert "how your name is said" not in note
+
+
+def test_a_prefixed_pronounce_stem_is_matched_but_a_prefixed_spell_stem_is_not():
+    """The measured asymmetry, pinned. Checked against /usr/share/dict/words:
+    every word containing "pronounc"/"pronunciation" non-initially is about
+    pronouncing something (mispronounce, unpronounceable, repronounce), so a
+    leading boundary there only produced false negatives — and a false negative
+    fell through to `full_name` and typed the applicant's name in. Words
+    containing "spell" non-initially are mostly NOT about spelling (gospellike,
+    dispeller, bespell), so the boundary is protective there and stays.
+
+    A word boundary is not automatically the safe choice; it depends on what the
+    neighbouring words in the language actually are.
+    """
+    for label in ("Is your name unpronounceable in English?",
+                  "How often do people mispronounce your name?",
+                  "Common mispronunciation of your name"):
+        assert classify(q(label)) == "name_meta", label
+    # `spell` keeps its boundary: `mis` is allowed explicitly, others are not.
+    assert classify(q("Is your name frequently misspelled?")) == "name_meta"
+    assert classify(q("Which gospellike name do you prefer?")) != "name_meta"
+
+
+def test_the_name_half_is_word_anchored_not_a_substring():
+    """`\bnames?\b`, so "username" and "surname" do not satisfy it — dropping
+    those boundaries is what makes a username field claim to be about a name."""
+    assert classify(q("What is the correct spelling of your username?")) != "name_meta"
+    assert classify(q("How do you pronounce your name?")) == "name_meta"
 
 
 def test_the_name_fields_still_fill_after_the_name_meta_rule():

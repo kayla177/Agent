@@ -95,13 +95,24 @@ _MUTATING = (
 )
 
 
-def test_module_has_no_mutating_call():
-    """No code path in Phase B may ever click a submit button, and this module
-    is supposed to only *read*. Cheap textual guard, but it is the one that
-    would actually catch a future edit adding a `.fill()` "just for testing"."""
-    tree = ast.parse(pathlib.Path(locate_dom.__file__).read_text())
-    # Drop docstrings and comments — the prose legitimately names these calls
-    # while explaining why they are absent — and check what is left to execute.
+# The read-only code paths of Phase B, as file paths. `capture_ats_fixtures.py`
+# matters most of the three: it is the ONE committed file that drives a real
+# browser, and until now its safety rested entirely on its own docstring saying
+# "grep this file". THE ONE RULE should not be enforced by a comment.
+_READ_ONLY_FILES = (
+    pathlib.Path(locate_dom.__file__),
+    pathlib.Path(__file__).parent.parent / "scripts" / "capture_ats_fixtures.py",
+)
+
+
+def _strip_docstrings(tree: ast.AST) -> ast.AST:
+    """Remove every docstring from `tree`, in place, and return it.
+
+    Necessary for any source-scanning guard here: the prose legitimately names
+    the calls and terms being banned, precisely in order to explain why they are
+    absent. Scanning raw text therefore either false-positives on the
+    explanation or (worse) gets "fixed" by weakening the check to exact matching.
+    """
     for node in ast.walk(tree):
         if not isinstance(node, (ast.Module, ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef)):
             continue
@@ -109,9 +120,41 @@ def test_module_has_no_mutating_call():
         if body and isinstance(body[0], ast.Expr) and isinstance(body[0].value, ast.Constant):
             if isinstance(body[0].value.value, str):
                 node.body = body[1:] or [ast.Pass()]
-    code = ast.unparse(ast.fix_missing_locations(tree))
+    return ast.fix_missing_locations(tree)
+
+
+def _executable_source(path: pathlib.Path) -> str:
+    """`path`'s code with docstrings and comments removed."""
+    return ast.unparse(_strip_docstrings(ast.parse(path.read_text())))
+
+
+def _code_string_literals(path: pathlib.Path) -> list[str]:
+    """Every string literal in `path` that is NOT a docstring."""
+    return [
+        node.value
+        for node in ast.walk(_strip_docstrings(ast.parse(path.read_text())))
+        if isinstance(node, ast.Constant) and isinstance(node.value, str)
+    ]
+
+
+@pytest.mark.parametrize("path", _READ_ONLY_FILES, ids=lambda p: p.name)
+def test_module_has_no_mutating_call(path):
+    """No code path in Phase B may ever click a submit button, and these files are
+    supposed to only *read*. Cheap textual guard, but it is the one that would
+    actually catch a future edit adding a `.fill()` "just for testing"."""
+    code = _executable_source(path)
     for call in _MUTATING:
-        assert call not in code, f"locate_dom.py must never call {call}"
+        assert call not in code, f"{path.name} must never call {call}"
+
+
+def test_the_capture_probe_is_covered_by_the_one_rule_guard():
+    """Belt and braces on the parametrisation itself: if someone renames or moves
+    the capture script, the guard must fail loudly rather than silently cover one
+    fewer file."""
+    names = {p.name for p in _READ_ONLY_FILES}
+    assert "capture_ats_fixtures.py" in names
+    for path in _READ_ONLY_FILES:
+        assert path.is_file(), path
 
 
 def test_module_does_not_import_playwright():
@@ -743,12 +786,74 @@ def test_clean_label_strips_only_marker_characters(raw, expected):
     assert locate_dom._clean_label(raw) == expected
 
 
+@pytest.mark.parametrize(
+    "raw,expected",
+    [
+        ("Email (required)", "email"),
+        ("Email (Required)", "email"),
+        ("Email required", "email"),
+        ("Work authorization required", "work authorization"),
+        ("Email *", "email"),
+        ("Email ✱", "email"),
+    ],
+)
+def test_normalize_label_strips_a_spelled_out_required_suffix(raw, expected):
+    """Ruling 3 required tolerance of a trailing "(required)", and
+    `_REQUIRED_SUFFIX_RE` is the ONLY thing that provides it — `_NON_WORD_RE`
+    folds "*"/"✱" to a space but leaves the WORD "required" as a token, so
+    "Email (required)" would normalize to "email required".
+
+    Asserted as an equality on `normalize_label` rather than through
+    `find_control`, because the prefix tier masks it: "email" is a token prefix of
+    "email required" either way, so every lookup-level test passed with this
+    substitution deleted.
+    """
+    assert normalize_label(raw) == expected
+
+
+def test_the_marker_character_lists_in_code_and_tests_agree():
+    """U+00B7 MIDDLE DOT was in the module's marker list and not in this file's,
+    which is exactly why nothing caught a label like "Team ·" being reported
+    required. Pinning them equal makes that class of drift impossible."""
+    assert set(locate_dom._REQUIRED_MARK_CHARS) == set(_MARKER_CHARS)
+
+
+@pytest.mark.parametrize("label", ["Team ·", "Role·", "Notes · ", "A · B ·"])
+def test_a_separator_is_not_a_required_marker(label):
+    """An interpunct is a separator, not an asterisk variant. It used to make a
+    label report `required=True, required_source="label-marker"` out of nowhere."""
+    control = parse_controls(f'<label for="x">{label}</label><input id="x" type="text">')[0]
+    assert control.required is False
+    assert control.required_source == ""
+    assert "·" in control.label, "the separator stays in the label; it is content"
+
+
 def test_a_label_whose_whole_content_is_a_marker_falls_through_the_chain():
     """`<label for="x">*</label>` reads as blank to a human, so the chain must
     CONTINUE rather than accept it and then drop the control entirely."""
     html = '<label for="x">*</label><input id="x" type="text" placeholder="you@example.com">'
     control = parse_controls(html)[0]
     assert (control.label, control.label_source) == ("you@example.com", "placeholder")
+
+
+def test_a_marker_only_aria_label_falls_through_to_the_placeholder():
+    """The OUTER `_clean_label` guard in `_derive_label`, as distinct from the
+    sub-step guard in `_associated_label_text`. The documented `<label for=x>*`
+    example is caught by the inner one, which left the outer half untested and
+    deletable — it IS reachable, via a marker-only `aria-label`/`placeholder`/
+    `name`, and without it the chain stops at the useless value and the control
+    is dropped instead of falling through."""
+    control = parse_controls('<input type="text" aria-label="*" placeholder="you@example.com">')[0]
+    assert (control.label, control.label_source) == ("you@example.com", "placeholder")
+
+
+def test_a_marker_only_placeholder_falls_through_to_the_name():
+    control = parse_controls('<input type="text" placeholder="✱" name="_systemfield_email">')[0]
+    assert (control.label, control.label_source) == ("_systemfield_email", "name")
+
+
+def test_a_control_whose_every_label_source_is_a_marker_is_dropped():
+    assert parse_controls('<input type="text" aria-label="*" placeholder="✱" name="*">') == []
 
 
 def test_a_marker_only_label_falls_through_to_the_NEXT_step_1_substep():
@@ -1551,6 +1656,107 @@ def test_a_quote_in_a_selector_value_is_escaped():
     assert parse_controls(html)[0].selector == 'input[name="a\\"b"]'
 
 
+def test_a_filtered_out_twin_does_not_free_its_name_for_a_selector():
+    """`selector` must resolve to exactly one element IN THE DOCUMENT, not among
+    the controls this module chose to report. A hidden twin sharing the `name` is
+    invisible to `parse_controls` and perfectly visible to a CSS selector, so
+    counting only the survivors declared `input[name="agree"]` unique when it
+    matched two elements — on the one code path Task 6 calls directly.
+
+    Same class of bug as `find_by_key`'s: a filtered-out control freeing its
+    identifier.
+    """
+    html = (
+        '<input type="hidden" name="agree" value="0">'
+        "<label>I agree<input type=\"checkbox\" name=\"agree\" value=\"1\"></label>"
+    )
+    control = parse_controls(html)[0]
+    assert control.selector != 'input[name="agree"]'
+    # The `value` half still distinguishes it from the hidden twin.
+    assert control.selector == 'input[name="agree"][value="1"]'
+
+
+@pytest.mark.parametrize(
+    "twin",
+    [
+        '<input type="hidden" name="dup">',
+        '<input type="text" name="dup" aria-hidden="true">',
+        '<div style="display:none"><input type="text" name="dup"></div>',
+        '<template><input type="text" name="dup"></template>',
+        '<textarea name="g-recaptcha-response"></textarea><input type="text" name="dup">',
+    ],
+)
+def test_every_filter_reason_still_counts_toward_name_uniqueness(twin):
+    """Whatever the reason a control was filtered out, it still occupies its
+    `name` as far as a selector is concerned."""
+    html = twin + '<label for="v">Visible</label><input id="v" type="text" name="dup">'
+    control = find_control(parse_controls(html), "Visible")
+    assert control is not None
+    # `id` is unique here, so that route wins — the point is that the `name`
+    # route must NOT be what answers, since `name="dup"` is not unique.
+    assert control.selector == '[id="v"]'
+    no_id = twin + "<label>Visible<input type=\"text\" name=\"dup\"></label>"
+    hit = find_control(parse_controls(no_id), "Visible")
+    if hit is not None:
+        assert hit.selector != 'input[name="dup"]'
+
+
+def test_two_group_members_sharing_name_and_value_get_no_selector():
+    """HTML imposes NO requirement that radio/checkbox group members have
+    distinct `value`s — an earlier justification for the name+value route claimed
+    it does, which is false. So the pair is uniqueness-checked like anything else,
+    and deleting that check is not covered by the live `count()==1` guard in
+    `PageLocator`, because `Control.selector` and `find_selector` are public and
+    bypass it entirely.
+    """
+    html = (
+        '<input type="radio" name="g" value="Yes" style="display:none">'
+        "<label>Yes<input type=\"radio\" name=\"g\" value=\"Yes\"></label>"
+    )
+    assert parse_controls(html)[0].selector is None
+
+    # Two *visible* members sharing name+value: neither is addressable.
+    both = (
+        "<label>Yes<input type=\"radio\" name=\"g\" value=\"Yes\"></label>"
+        "<label>Yes please<input type=\"radio\" name=\"g\" value=\"Yes\"></label>"
+    )
+    assert [c.selector for c in parse_controls(both)] == [None, None]
+
+
+def test_the_name_value_route_still_addresses_a_normal_group(controls):
+    """The other half of the contract: distinct values ARE addressable, which is
+    what makes Lever's 33 language checkboxes and its Yes/No radios actionable."""
+    members = locate_dom.find_group_options(
+        controls["lever"],
+        "Are you legally authorized to work in the country for which you are applying?",
+    )
+    assert [m.selector for m in members] == [
+        'input[name="cards[1c719ca9-5069-4afe-9e82-39ca420e0edb][field0]"][value="Yes"]',
+        'input[name="cards[1c719ca9-5069-4afe-9e82-39ca420e0edb][field0]"][value="No"]',
+    ]
+
+
+@pytest.mark.parametrize("board", BOARDS)
+def test_no_selector_in_a_real_fixture_matches_two_elements(board, controls):
+    """The invariant `_selector_for` promises, checked against the real captures by
+    re-parsing and counting matches by hand — no browser needed. It happens to
+    hold in all three today, which is why the hidden-twin bug was latent rather
+    than live."""
+    html = _html(board)
+    for control in controls[board]:
+        if control.selector is None:
+            continue
+        if control.selector.startswith("[id="):
+            wanted = control.element_id
+            hits = len(re.findall(r'\bid="' + re.escape(wanted) + r'"', html))
+        else:
+            wanted = control.name
+            hits = len(re.findall(r'\bname="' + re.escape(wanted) + r'"', html))
+            if "[value=" in control.selector:
+                continue  # name+value pairs are checked by construction above
+        assert hits == 1, (control.selector, hits)
+
+
 @pytest.mark.parametrize("value", ["a\nb", "a\tb", "a\x00b", "a>>b", "a\x1fb"])
 def test_a_value_that_cannot_be_safely_embedded_yields_no_selector(value):
     """A raw control character is a CSS string parse error and `>>` is
@@ -1645,15 +1851,27 @@ def test_the_eeo_screen_is_shared_with_the_schema_path_not_reimplemented():
     be the one that let a question through."""
     source = pathlib.Path(locate_dom.__file__).read_text()
     assert "is_eeo_label" in source
-    # No EEO term may appear as a *string literal* in this module — mentioning
-    # them in prose is fine, re-listing them in code is the drift risk.
-    literals = {
-        node.value.lower()
-        for node in ast.walk(ast.parse(source))
-        if isinstance(node, ast.Constant) and isinstance(node.value, str)
-    }
-    for term in ("veteran", "ethnicity", "disability", "pronoun"):
-        assert term not in literals, f"term list must live in schema_greenhouse only ({term})"
+
+    # No EEO term may appear ANYWHERE INSIDE a non-docstring string literal in
+    # this module. Two details, both of which this test got wrong before:
+    #
+    #   * SUBSTRING, not set membership. The old version collected literals into
+    #     a set and asserted `term not in literals`, which only ever caught a
+    #     literal spelled exactly "veteran" — adding
+    #     `("veteran status", "disability status", "your pronouns")` left the
+    #     suite green while re-implementing the very list it was guarding.
+    #   * docstrings excluded, which is what makes substring matching usable at
+    #     all: `discover_questions`' own docstring lists these words on purpose.
+    #
+    # The terms come from `schema_greenhouse` itself rather than a hand-copy, so
+    # this cannot drift from the list it is protecting either.
+    literals = [text.lower() for text in _code_string_literals(pathlib.Path(locate_dom.__file__))]
+    for term in schema_greenhouse._EEO_TERMS:
+        for text in literals:
+            assert term not in text, (
+                f"the EEO term list must live in schema_greenhouse only; "
+                f"found {term!r} inside the literal {text!r}"
+            )
     assert schema_greenhouse.is_eeo_label("What is your gender?") is True
     assert schema_greenhouse.is_eeo_label("Milwaukee") is False
 
@@ -1825,3 +2043,71 @@ def test_page_locator_questions_reads_the_live_dom():
     page = _StubPage(_html("greenhouse"))
     found = PageLocator(page).questions()
     assert [q.key for q in found][:3] == ["first_name", "last_name", "email"]
+
+
+class _MutatingStubPage(_StubPage):
+    """A page whose DOM CHANGES between reads — which is what a progressively
+    mounting Ashby form actually does."""
+
+    def __init__(self, first: str, second: str) -> None:
+        super().__init__(first)
+        self._second = second
+
+    def content(self) -> str:
+        html = super().content()
+        self._html = self._second
+        return html
+
+
+def test_every_accessor_uses_one_snapshot():
+    """`questions()` used to call `page.content()` itself, so `controls` and
+    `questions()` could describe two DIFFERENT DOMs of the same form — and a
+    caller would then act on selectors from one snapshot using questions from
+    another. Correctness, not performance."""
+    first = '<label for="a">Email</label><input id="a" type="text">'
+    second = (
+        '<label for="a">Email</label><input id="a" type="text">'
+        '<label for="b">Phone</label><input id="b" type="text">'
+    )
+    page = _MutatingStubPage(first, second)
+    locator = PageLocator(page)
+    assert [c.label for c in locator.controls] == ["Email"]
+    assert [q.label for q in locator.questions()] == ["Email"], "must not re-read the page"
+    assert page.content_calls == 1
+    # ...and refresh() is the only way to see the newer DOM.
+    locator.refresh()
+    assert [q.label for q in locator.questions()] == ["Email", "Phone"]
+
+
+def test_all_three_buckets_share_a_single_parse():
+    """Task 7 wants answerable + unreadable + withheld together. One
+    `page.content()` for all three, and they still partition the form."""
+    page = _StubPage(_html("lever"))
+    locator = PageLocator(page)
+    answerable = locator.questions()
+    unreadable = locator.unreadable()
+    withheld = locator.withheld_eeo()
+    assert page.content_calls == 1
+    assert len(answerable) == 29
+    assert unreadable == [] and withheld == []
+    keys = [q.key for q in answerable + unreadable + withheld]
+    assert len(keys) == len(set(keys))
+
+
+def test_the_adapter_buckets_agree_with_the_module_level_functions():
+    """The cached path must not become a second, drifting implementation."""
+    html = _html("lever")
+    locator = PageLocator(_StubPage(html))
+    assert locator.questions() == discover_questions(html)
+    assert locator.unreadable() == locate_dom.unreadable_questions(html)
+    assert locator.withheld_eeo() == locate_dom.excluded_eeo_questions(html)
+
+
+def test_refresh_invalidates_the_question_cache_too():
+    page = _StubPage(_html("greenhouse"))
+    locator = PageLocator(page)
+    locator.questions()
+    assert page.content_calls == 1
+    locator.refresh()
+    locator.questions()
+    assert page.content_calls == 2

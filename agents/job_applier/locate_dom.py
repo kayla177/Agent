@@ -329,7 +329,13 @@ def _split_text_around(
 # breaks a naive `rstrip("*")`. Greenhouse and Ashby render the marker via CSS
 # or a separate node; "(required)" is included because plenty of other forms
 # spell it out.
-_REQUIRED_MARK_CHARS = "*✱＊∗٭·"
+#
+# Every character here is a genuine asterisk variant. U+00B7 MIDDLE DOT (·) was
+# in this list and should not have been: it is a separator, not a required
+# marker, so a label like "Team ·" was reported `required=True` with
+# `required_source="label-marker"`. Nothing caught it because the test file's own
+# marker list never included it — the two lists are now asserted to agree.
+_REQUIRED_MARK_CHARS = "*✱＊∗٭"
 _REQUIRED_SUFFIX_RE = re.compile(
     r"(?:\s*\(\s*required\s*\)|\s*\brequired\b|[" + re.escape(_REQUIRED_MARK_CHARS) + r"\s])+$",
     re.IGNORECASE,
@@ -434,14 +440,26 @@ _WEAK_LABEL_SOURCES = frozenset({"placeholder", "name"})
 class Control:
     """One fillable form control found in a document.
 
-    `selector` is a CSS selector that addresses *this* control and no other, or
-    `None` when the control carries nothing unique to address it by (Ashby's
-    location combobox has neither `id` nor `name`). `None` is not a bug: it
-    means "this one is the human's to fill", which is the safe outcome.
+    `selector` is a CSS selector that resolves to exactly one element in the
+    whole document, or `None` when the control carries nothing unique to address
+    it by (Ashby's location combobox has neither `id` nor `name`). `None` is not
+    a bug: it means "this one is the human's to fill", which is the safe outcome.
+    See `_selector_for` for what "unique" is counted over, and why.
 
-    `group_label` is set only for a radio/checkbox group member, and holds the
-    group's shared question text (from the enclosing `<fieldset>`), while
-    `label` holds the individual option's text.
+    `group_label` holds the shared question text of the group this control
+    belongs to, while `label` holds the control's own text. For a radio/checkbox
+    that means `label` is the OPTION ("Yes") and `group_label` is the question
+    ("Are you legally authorized to work…"). It is also set for a lone control
+    whose group heading is the real question — Greenhouse's résumé `<input
+    type=file>` has `label="Attach"` (the button word) and
+    `group_label="Resume/CV"`.
+
+    Four sources feed it, all structural rather than class-based except the last,
+    tried in this order (`_group_label_text`, then `parse_controls`' fallback):
+    a group container's `aria-labelledby`, its `aria-label`, its `<legend>`, its
+    non-labelling "heading" `<label>` — and for a choice control with no such
+    container at all, Lever's `li.application-question` block
+    (`_question_block_label`). `""` when none applies.
     """
 
     tag: str
@@ -723,7 +741,7 @@ def _associated_label_text(
     # Both directions are pinned by name:
     # `test_the_wrapping_label_beats_the_question_block_for_a_choice_control`
     # and `test_the_question_block_beats_the_wrapping_label_for_a_non_choice_control`.
-    is_choice = node.tag == "input" and _kind_of(node) in ("checkbox", "select")
+    is_choice = _is_choice(node.tag, _kind_of(node))
 
     def wrapping() -> tuple[str, str]:
         for ancestor in node.ancestors():
@@ -835,12 +853,18 @@ def _group_label_text(group: _Node, by_id: dict[str, list[_Node]]) -> str:
     — a "heading" label, which is what Ashby emits for each radio question.
     All four are standard HTML/ARIA, not generated class names.
 
-    Returns "" when none applies — for instance Lever, which groups its
-    checkboxes in a bare `<ul>` and puts the question text in a sibling
-    `<div class="application-label">`, reachable only via a generated class name
-    that decision 1 forbids. "" propagates into a `Question` with no label,
-    which the resolver leaves blank for the human. That is the correct trade:
-    no label beats a guessed one.
+    Returns "" when none applies, which is the common case for Lever: it groups
+    its checkboxes in a bare `<ul>` with no `<fieldset>` and no `role="group"`, so
+    `_group_container` finds nothing and this function is never even reached for
+    them. Lever's headings are read by `_question_block_label` instead — see
+    `parse_controls`, which falls back to it for choice controls. (This docstring
+    used to say Lever's heading was "reachable only via a generated class name
+    that decision 1 forbids"; that stopped being true when the question-block
+    rule landed, and a test now asserts those headings ARE read.)
+
+    A "" that survives both sources propagates into a `Question` with no label,
+    which `discover_questions` withholds as unreadable rather than offering as
+    answerable. That is the correct trade: no label beats a guessed one.
     """
     labelledby = _aria_labelledby_text(group, by_id)
     if labelledby:
@@ -865,6 +889,18 @@ def _group_label_text(group: _Node, by_id: dict[str, list[_Node]]) -> str:
         if text:
             return text
     return ""
+
+
+# `<select>`-kinded and checkbox-kinded INPUTS — i.e. radios and checkboxes — as
+# opposed to a real `<select>` element or a text field. Extracted because this
+# predicate is load-bearing in four places (the step-1b/1c precedence swap, the
+# group-heading source, the grouping in `discover_questions`, and its option
+# list) and it decides which of two labels a control gets. Three hand-written
+# copies would desynchronise on the first edit.
+def _is_choice(tag: str, kind: str) -> bool:
+    """True for a radio or checkbox `<input>`: one option among several, whose
+    own `<label>` holds the OPTION text while the question lives on the group."""
+    return tag == "input" and kind in ("checkbox", "select")
 
 
 def _kind_of(node: _Node) -> str:
@@ -973,19 +1009,34 @@ def _selector_for(
     name_counts: dict[str, int],
     name_value_counts: dict[tuple[str, str], int],
 ) -> str | None:
-    """A CSS selector addressing exactly this control, or `None`.
+    """A CSS selector that resolves to exactly one element **in the whole
+    document**, or `None`.
 
     Only `id`, `name`, and `name`+`value` are used — never `:nth-of-type` or any
     other positional form (module docstring, decision 2). `None` when none of
     them is unique, which makes the control un-fillable by design rather than
     fillable by luck.
 
+    "In the whole document" is the load-bearing part, and getting it wrong was a
+    real bug twice. Uniqueness must be counted over **every** control element,
+    not over the discovered ones: a control this module filtered out (hidden,
+    `type=hidden`, `aria-hidden`, reCAPTCHA) is invisible to `parse_controls` but
+    still perfectly visible to a CSS selector. So
+
+        <input type="hidden" name="agree" value="0">
+        <label>I agree<input type="checkbox" name="agree" value="1"></label>
+
+    used to yield `input[name="agree"]` for the checkbox — a selector matching
+    two elements, on the one code path Task 6 will call directly.
+
     The `name`+`value` pair exists for radio/checkbox groups, where every member
     deliberately shares one `name` and Lever gives them no `id` at all. Without
     it, all 33 of Lever's language checkboxes and both of its Yes/No radio groups
-    were reported as questions that nothing could ever act on. `value` is an
-    exact attribute match that HTML requires to differ between members of a
-    group, so this is identity, not position.
+    were reported as questions that nothing could ever act on. Note that HTML
+    imposes **no** requirement that group members have distinct `value`s — an
+    earlier version of this docstring claimed it does, which is false — so that
+    pair is checked for uniqueness like any other, and two radios sharing
+    `name` *and* `value` both get `None`.
     """
     node_id = node.attr("id").strip()
     if node_id and len(by_id.get(node_id, [])) == 1:
@@ -1015,16 +1066,24 @@ def parse_controls(html: str) -> list[Control]:
     by_for, by_id = _label_index(root)
 
     fillable = [n for n in root.descendants() if _is_fillable(n)]
+    # Uniqueness for selector building is counted over EVERY control element in
+    # the document, not over `fillable` — exactly as `by_id` already is. A
+    # control we filtered out is still matched by a CSS selector, so counting
+    # only the survivors declares a `name` unique when it is not. See
+    # `_selector_for`.
     name_counts: dict[str, int] = {}
     name_value_counts: dict[tuple[str, str], int] = {}
-    for node in fillable:
+    for node in root.descendants():
+        if node.tag not in _CONTROL_TAGS:
+            continue
         name = node.attr("name").strip()
-        if name:
-            name_counts[name] = name_counts.get(name, 0) + 1
-            value = node.attr("value")
-            if value:
-                pair = (name, value)
-                name_value_counts[pair] = name_value_counts.get(pair, 0) + 1
+        if not name:
+            continue
+        name_counts[name] = name_counts.get(name, 0) + 1
+        value = node.attr("value")
+        if value:
+            pair = (name, value)
+            name_value_counts[pair] = name_value_counts.get(pair, 0) + 1
 
     # Which grouping container (if any) each control sits in, and how many
     # fillable controls that container holds. A group heading only describes a
@@ -1078,7 +1137,7 @@ def parse_controls(html: str) -> list[Control]:
             shared_name = len(names) == 1 and names != {""}
             if len(siblings) == 1 or shared_name:
                 raw_group_label = _group_label_text(group, by_id)
-        if not raw_group_label and node.tag == "input" and kind in ("checkbox", "select"):
+        if not raw_group_label and _is_choice(node.tag, kind):
             # Lever has neither `<fieldset>` nor `role="group"`, so a choice
             # control's heading comes from its `li.application-question` block.
             # Restricted to choice controls because that is the only case where
@@ -1282,7 +1341,7 @@ def _questions_from(html: str) -> list[Question]:
     units: list[list[Control]] = []
     slot: dict[str, int] = {}
     for control in controls:
-        choice = control.tag == "input" and control.kind in ("checkbox", "select") and control.name
+        choice = _is_choice(control.tag, control.kind) and control.name
         if choice and control.name in slot:
             units[slot[control.name]].append(control)
             continue
@@ -1303,7 +1362,7 @@ def _questions_from(html: str) -> list[Question]:
             # or text field keeps whatever options it has of its own. Reading
             # `first.options` for a radio gave `[]`, because a radio has no
             # `<option>` children — the option text is its label.
-            is_choice = first.tag == "input" and first.kind in ("checkbox", "select")
+            is_choice = _is_choice(first.tag, first.kind)
             label = first.group_label
             options = [first.label] if is_choice else list(first.options)
         else:
@@ -1361,11 +1420,24 @@ def discover_questions(html: str) -> list[Question]:
        So the invariant is: **every question returned here has a non-empty
        human-readable label.** See `unreadable_questions`.
     """
-    return [
-        q
-        for q in _questions_from(html)
-        if normalize_label(q.label) and not is_eeo_label(q.label)
-    ]
+    return _answerable(_questions_from(html))
+
+
+# The three buckets, as predicates over an already-parsed question list. Split out
+# so `PageLocator` can partition ONE snapshot three ways instead of re-parsing the
+# page per bucket — Task 7 wants all three, and a full parse of the Lever fixture
+# is ~40 ms. The module-level functions below keep taking `html` so the public API
+# is unchanged.
+def _answerable(questions: list[Question]) -> list[Question]:
+    return [q for q in questions if normalize_label(q.label) and not is_eeo_label(q.label)]
+
+
+def _eeo_withheld(questions: list[Question]) -> list[Question]:
+    return [q for q in questions if is_eeo_label(q.label)]
+
+
+def _unreadable(questions: list[Question]) -> list[Question]:
+    return [q for q in questions if not normalize_label(q.label)]
 
 
 def excluded_eeo_questions(html: str) -> list[Question]:
@@ -1376,7 +1448,7 @@ def excluded_eeo_questions(html: str) -> list[Question]:
     so a caller can report "N questions were withheld as protected-characteristic
     content" instead of the questions vanishing.
     """
-    return [q for q in _questions_from(html) if is_eeo_label(q.label)]
+    return _eeo_withheld(_questions_from(html))
 
 
 def unreadable_questions(html: str) -> list[Question]:
@@ -1388,7 +1460,7 @@ def unreadable_questions(html: str) -> list[Question]:
     the point — a handoff that says "4 questions on this form could not be read"
     is honest, whereas silently returning 24 of 28 questions is not.
     """
-    return [q for q in _questions_from(html) if not normalize_label(q.label)]
+    return _unreadable(_questions_from(html))
 
 
 # ---------------------------------------------------------------------------
@@ -1406,16 +1478,30 @@ class PageLocator:
 
     Read-only, like the rest of this module: it hands back `Locator` objects and
     never acts on them. Filling is Task 6's job, and submitting is nobody's.
+
+    **One DOM snapshot per `refresh()`, shared by everything.** Every accessor —
+    `controls`, `questions`, `unreadable`, `withheld_eeo`, `locator_for_*` — is
+    computed from the same captured HTML, and only `refresh()` (or the first
+    access) calls `page.content()`. That is a correctness property, not a
+    performance one: these forms mount fields progressively, so a
+    `questions()` that re-read the page could describe a *different* DOM than the
+    `controls`/selectors a caller is about to act on. `questions()` used to do
+    exactly that.
     """
 
     def __init__(self, page: Any) -> None:
         self._page = page
+        self._html: str | None = None
         self._controls: list[Control] | None = None
+        self._questions: list[Question] | None = None
 
     def refresh(self) -> list[Control]:
         """Re-read the DOM. Needed because these forms are client-rendered and
-        mount fields progressively, so a snapshot taken too early is stale."""
-        self._controls = parse_controls(self._page.content())
+        mount fields progressively, so a snapshot taken too early is stale.
+        Invalidates everything derived from the previous snapshot."""
+        self._html = self._page.content()
+        self._controls = parse_controls(self._html)
+        self._questions = None
         return self._controls
 
     @property
@@ -1424,8 +1510,29 @@ class PageLocator:
             return self.refresh()
         return self._controls
 
+    @property
+    def html(self) -> str:
+        """The captured snapshot the other accessors are computed from."""
+        if self._html is None:
+            self.refresh()
+        return self._html or ""
+
+    def _partition(self) -> list[Question]:
+        if self._questions is None:
+            self._questions = _questions_from(self.html)
+        return self._questions
+
     def questions(self) -> list[Question]:
-        return discover_questions(self._page.content())
+        """The answerable questions, from the SAME snapshot as `controls`."""
+        return _answerable(self._partition())
+
+    def unreadable(self) -> list[Question]:
+        """Questions withheld for having no readable label (`unreadable_questions`)."""
+        return _unreadable(self._partition())
+
+    def withheld_eeo(self) -> list[Question]:
+        """Questions withheld by the EEO screen (`excluded_eeo_questions`)."""
+        return _eeo_withheld(self._partition())
 
     def locator_for_label(self, label_query: str) -> Any | None:
         """A Playwright `Locator` for the control labelled `label_query`, or
