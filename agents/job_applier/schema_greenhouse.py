@@ -115,6 +115,14 @@ def _is_eeo_question(label: str) -> bool:
     return bool(_EEO_PATTERN.search(label or ""))
 
 
+def is_eeo_label(label: str) -> bool:
+    """Public alias for `_is_eeo_question`, so the DOM discovery path
+    (`locate_dom.discover_questions`, for Lever/Ashby, which have no schema to
+    screen) applies the SAME content backstop as this module rather than
+    duplicating `_EEO_TERMS` and letting the two copies drift apart."""
+    return _is_eeo_question(label)
+
+
 @dataclass(frozen=True)
 class Question:
     """One normalized application-form question.

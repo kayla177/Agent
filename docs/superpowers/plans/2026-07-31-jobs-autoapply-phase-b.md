@@ -342,7 +342,7 @@ def test_resolver_touches_no_io():
 
 Lever and Ashby publish no form schema, so questions are discovered from the page. Match on the **accessible label**, not CSS classes — labels are what a human reads and are far more stable than generated class names.
 
-- [ ] **Step 1: Capture form fixtures (dev probe)** — save the real application pages for one Lever,
+- [x] **Step 1: Capture form fixtures (dev probe)** — save the real application pages for one Lever,
 one Ashby, and one Greenhouse posting into `tests/fixtures/ats/`. Record which URLs and when, in a
 comment at the top of the test.
 
@@ -362,9 +362,40 @@ comment at the top of the test.
 > Note this also reinforces the Greenhouse split: its form *schema* comes from the questions API
 > without rendering at all, and the browser is needed only to LOCATE elements on the live page.
 
-- [ ] **Step 2: Failing tests** — from each fixture, discover the identity questions (name/email/phone/resume) with correct `kind`; assert a label-matched lookup finds the right element for each; assert an unmatched label returns `None` rather than a wrong guess; assert matching is case- and punctuation-insensitive ("Email" / "Email Address" / "E-mail *").
+> **CORRECTION, measured 2026-08-01 during Task 4 execution.** The Greenhouse row above is
+> reproducible only if the 301 is not followed. `boards.greenhouse.io/<org>/jobs/<id>` 301s to
+> `job-boards.greenhouse.io/...`, and that host **is** server-rendered: 67 KB, 18 `<input>`,
+> 16 `<label>`. So a plain GET is sufficient for 2 of 3, not 1 of 3. Greenhouse was still captured
+> rendered, because rendering is what the live locator sees and it picks up the JS-injected
+> `aria-required` / `role="group"` attributes the locator depends on. Ashby genuinely needs a browser
+> (41 KB shell, 0 inputs). Capture probe committed as `scripts/capture_ats_fixtures.py`
+> (`--verify` re-runs the locator against the live pages, read-only, `.count()` only).
 
-- [ ] **Step 3: Implement using Playwright's `get_by_label` semantics, with an explicit fallback chain** (label → `aria-label` → `placeholder` → `name` attribute), each step documented. Never fall back to positional indexing — a wrong element gets a wrong value typed into it.
+- [x] **Step 2: Failing tests** — from each fixture, discover the identity questions (name/email/phone/resume) with correct `kind`; assert a label-matched lookup finds the right element for each; assert an unmatched label returns `None` rather than a wrong guess; assert matching is case- and punctuation-insensitive ("Email" / "Email Address" / "E-mail *").
+
+- [x] **Step 3: Implement using Playwright's `get_by_label` semantics, with an explicit fallback chain** (label → `aria-label` → `placeholder` → `name` attribute), each step documented. Never fall back to positional indexing — a wrong element gets a wrong value typed into it.
+
+> **Task 4 decisions worth carrying into Tasks 5-7.**
+> - Matching is **exact-or-token-prefix only**, ambiguity-checked per tier. "Email" finds
+>   "Email Address"; "mail" does not find "Email"; "Name" does not find "First Name". Suffix/infix
+>   matching is deliberately absent — that is how a full name lands in a first-name box.
+> - `Control.selector` is built from `id` or `name` only, and is `None` when neither is unique.
+>   `None` means "the human fills this one", which is the safe outcome (Ashby's location combobox
+>   has no `id` and no `name` at all).
+> - Radio/checkbox controls sharing a `name` collapse to ONE `Question` with the members as
+>   `options`. A radio group's `kind` is `select` (single choice from a fixed list), reusing Task 2's
+>   five-value vocabulary rather than inventing a sixth.
+> - **Known gap for Task 6:** Lever's custom "card" questions keep their title in a *sibling*
+>   `<div class="application-label">` — reachable only via a generated class name, which the
+>   label-not-classes rule forbids, and via no ARIA relationship at all. 12 of Lever's 65 controls
+>   therefore fall through to a `name`-derived label like `cards[<uuid>][field0]` and are
+>   effectively human-fill-only. Fixing that needs a DOM-proximity heuristic; that is a guess, so it
+>   needs an explicit ruling before anyone adds it.
+> - `discover_questions` now applies the SAME EEO content screen as
+>   `schema_greenhouse.parse_questions`, via a new public `is_eeo_label`. Greenhouse hands its
+>   demographic questions over in a separate array Task 2 never reads; Lever and Ashby have no such
+>   separation, so the label screen was the only thing between a protected-characteristic question
+>   and the resolver. Withheld questions stay retrievable via `locate_dom.excluded_eeo_questions`.
 
 ---
 
