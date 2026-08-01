@@ -15,28 +15,44 @@ nothing else: "what is on this form?" and "which element is this label?".
 Design decisions, and why
 =========================
 
-**1. Match on the accessible label, never on CSS classes.** Lever's and
-Ashby's class names are build-hashed (`_input_80epu_28`, `_heading_f7cvd_52`)
-and change on every deploy; the words a human reads next to the box do not. So
-every lookup goes through the label.
+**1. Match on the accessible label, never on *generated* CSS classes.** Ashby's
+and Greenhouse's class names are build-hashed (`_input_80epu_28`,
+`remix-css-1a0ro4n-*`) and change on every deploy; the words a human reads next
+to the box do not. So every lookup goes through the label.
+
+  The one deliberate exception is Lever's `li.application-question` /
+  `div.application-label` pair, which is a *semantic, stylesheet-stable*
+  containment relationship rather than a build hash — see
+  `_question_block_label`, which justifies it at length. Refusing to read it was
+  not failing safe: it left Lever's work-authorization and sponsorship questions
+  with `label=""`, and made two different questions both surface as the
+  placeholder "Type your response".
 
 **2. The fallback chain is explicit and ordered.** For each control:
 
-  1. an associated ``<label>``, tried three ways in this order:
+  1. an associated ``<label>`` or its structural equivalent:
      (a) ``<label for="…">`` pointing at the control's ``id``;
-     (b) a ``<label>`` that *wraps* the control — for its **first labelable
+     (b) Lever's **question block** — the `div.application-label` inside the
+         control's own `li.application-question` (`_question_block_label`);
+     (c) a ``<label>`` that *wraps* the control — for its **first labelable
          descendant only** (that is what HTML says a wrapping label labels; the
          alternative stamps one label on every control inside it), and using
          only the text that appears **before** the control, which is where a
          label's words actually sit (Lever's wrapping label also contains widget
          chrome like "ATTACH RESUME/CV" and "No location found. Try entering a
          different location" *after* the input, and gluing that on wrecks it);
-     (c) a ``<label for="X">`` where ``X`` matches no element's ``id`` but
+     (d) a ``<label for="X">`` where ``X`` matches no element's ``id`` but
          *does* match this control's unique ``name`` — a dangling reference.
          Ashby ships exactly this on its yes/no questions, and repairing it is
          the difference between the label "Will you require company
          sponsorship…" and the label ``28ff5b93-a104-45f7-9d46-2d13d3217dca``.
-     This step is first because it is the only one a human can verify by
+
+     (b) and (c) swap places for a **checkbox/radio**, because a wrapping
+     ``<label>`` around a choice control conventionally holds the OPTION text
+     ("Yes") while the block holds the question — so for those the wrapping
+     label is the control's own label and the block becomes its `group_label`.
+
+     This step group is first because it is the only one a human can verify by
      looking at the page. (WAI-ARIA would let ``aria-label`` override a visible
      ``<label>``; we deliberately invert that. If they disagree, the visible
      text is what the applicant is actually answering.)
@@ -49,10 +65,20 @@ every lookup goes through the label.
      (``_systemfield_email``), but stable and at least *derived from the field's
      own identity*.
 
+  Tiers 3 and 4 are additionally **duplicate-checked**: a placeholder or `name`
+  shared by two controls means two different questions wearing one label, which
+  is the same ambiguity `find_control` refuses, so both are demoted to
+  unlabelled (see `_WEAK_LABEL_SOURCES`).
+
   There is deliberately **no step 5 = "the Nth input"**. Positional indexing is
   precisely how a value ends up in the wrong box when a board reorders or
   A/B-tests a form. A control with no derivable label is simply not discovered
   and not locatable; the human fills it in themselves.
+
+  Whatever the source, the stored label is **cleaned of its required marker**
+  (`_clean_label`): Lever renders U+2731 and Greenhouse a plain `*` as a child of
+  the label element, and that character would otherwise reach Task 3's phrase
+  matching and Task 7's report.
 
 **3. Ambiguity returns ``None``, never a best guess.** If two controls match a
 query equally well, that is a *failure to locate*, not a coin flip
@@ -171,6 +197,11 @@ class _Node:
 
     def attr(self, name: str) -> str:
         return self.attrs.get(name, "") or ""
+
+    def has_class(self, name: str) -> bool:
+        """Whitespace-token match on `class`, never a substring: "application-label"
+        must not be satisfied by "application-label-wrapper"."""
+        return name in self.attr("class").split()
 
     def ancestors(self):
         node = self.parent
@@ -380,13 +411,23 @@ def _matches(query: str, label: str) -> bool:
 # Ordered names of the fallback chain steps, for reporting/telemetry and so a
 # caller can say "this label came from a placeholder, treat it with suspicion".
 LABEL_SOURCES = (
-    "label",           # step 1a/1b: <label for=id>, or a wrapping <label>
-    "label-for-name",  # step 1c: a dangling <label for=X> where X == unique name
+    "label",           # step 1a / 1c: <label for=id>, or a wrapping <label>
+    "question-block",  # step 1b: Lever's li.application-question containment
+    "label-for-name",  # step 1d: a dangling <label for=X> where X == unique name
     "aria-label",      # step 2
     "aria-labelledby",  # step 2 (dereferenced)
-    "placeholder",     # step 3
-    "name",            # step 4 — last resort
+    "placeholder",     # step 3 — weak: a hint, not a label
+    "name",            # step 4 — last resort, machine-ish
 )
+
+# The two tiers that are not really labels: a placeholder is a *hint* ("Type your
+# response") and a `name` is an identifier (`cards[<uuid>][field0]`). Both are
+# shared verbatim by unrelated fields on real forms, so a duplicate at these
+# tiers means two DIFFERENT questions wearing one label — the ambiguity that
+# `find_control` exists to refuse, arriving one layer earlier. Controls in that
+# situation are demoted to unlabelled (hence `unreadable_questions`) rather than
+# emitted as indistinguishable twins.
+_WEAK_LABEL_SOURCES = frozenset({"placeholder", "name"})
 
 
 @dataclass(frozen=True)
@@ -475,6 +516,14 @@ def _is_fillable(node: _Node) -> bool:
             return False
     if _is_hidden(node):
         return False
+    # Voluntary EEO self-identification, excluded STRUCTURALLY and ahead of
+    # everything else. Lever's `.eeo-survey` block reuses the same
+    # `application-label` classes as the rest of the form, so the containment
+    # rule would read "What is your gender?" out of it as happily as any other
+    # question — and a text-only screen is the wrong instrument when the
+    # structure already says "this is the demographic survey".
+    if _in_eeo_block(node):
+        return False
     return True
 
 
@@ -496,6 +545,111 @@ def _label_index(root: _Node) -> tuple[dict[str, list[_Node]], dict[str, list[_N
 
 
 _LABEL_STOP = frozenset({"label", "select", "button"})
+
+# --- Lever's question block -------------------------------------------------
+#
+# Lever is the one board that puts a question's text and its control in two
+# SIBLING elements, with no `<label>`, no `for`, and no ARIA relationship
+# between them:
+#
+#   <li class="application-question custom-question">
+#     <div>
+#       <div class="application-label full-width multiple-choice">
+#         <div class="text">Are you legally authorized to work…<span class="required">✱</span></div>
+#       </div>
+#       <div class="application-field full-width required-field">
+#         <ul data-qa="multiple-choice">
+#           <li><label><input type="radio" name="cards[<uuid>][field0]" value="Yes" required/>…
+#
+# Reading it requires naming two classes, which needs justifying against the
+# "match on the label, never on CSS classes" rule. Three reasons this is inside
+# that rule rather than an exception to it:
+#
+#   1. `application-question` / `application-label` are **semantic, stable**
+#      names Lever uses in its own stylesheet selectors — not build-hashed like
+#      Ashby's `_input_80epu_28` or Greenhouse's `remix-css-1a0ro4n-*`. The
+#      hazard the rule guards against is a name that changes every deploy.
+#   2. It is a **containment** relationship, scoped to one
+#      `li.application-question`: the same class of evidence as a wrapping
+#      `<label>`, which this module already trusts. It is NOT proximity — no
+#      "nearest preceding sibling", no distance, no ordering.
+#   3. Refusing to read it was not failing safe. On the captured Palantir form
+#      the two `BLOCKING_KINDS` questions ("legally authorized to work…",
+#      "…require sponsorship…") came back with `label=""`, which means Task 7
+#      would report a form as ready-to-review with work authorization and
+#      sponsorship silently unlabelled — and two *different* questions both
+#      surfaced as the placeholder text "Type your response". A confidently
+#      wrong label is worse than a class-name dependency.
+#
+# Scope is deliberately narrow: the block must be an `li` carrying
+# `application-question`. It is not generalized to arbitrary sibling divs.
+_QUESTION_BLOCK_CLASS = "application-question"
+_QUESTION_LABEL_CLASS = "application-label"
+_QUESTION_TEXT_CLASS = "text"
+
+# Lever's voluntary EEO self-identification block reuses `application-label`
+# for its questions, so the containment rule would happily read "What is your
+# gender?" straight out of it. Excluded structurally, ahead of everything else:
+# a control anywhere under `.eeo-survey` is not a question this module reports.
+_EEO_BLOCK_CLASS = "eeo-survey"
+
+# Required markers to strip from a stored label. `span.required` renders U+2731
+# HEAVY ASTERISK on Lever and a plain "*" on Greenhouse, and that character ends
+# up inside the label text because it is a child of the label element. Leaving it
+# there is not cosmetic: the stored `label` is what Task 3's resolver phrase-
+# matches on and what Task 7 shows the human.
+_LABEL_MARKER_STRIP_RE = re.compile(
+    r"^[\s" + re.escape(_REQUIRED_MARK_CHARS) + r"]+|[\s" + re.escape(_REQUIRED_MARK_CHARS) + r"]+$"
+)
+
+
+def _clean_label(text: str) -> str:
+    """The label as a human reads it: required marker removed, whitespace
+    collapsed, original casing kept.
+
+    Applied to EVERY label source, not just the containment one — Greenhouse
+    stores "First Name*" and Lever "Full name✱", and both must come back as the
+    words alone. Note this runs AFTER `_required_of` has seen the raw text, so
+    stripping the marker does not destroy the `label-marker` required signal.
+    """
+    return _collapse(_LABEL_MARKER_STRIP_RE.sub("", _collapse(text)))
+
+
+def _in_eeo_block(node: _Node) -> bool:
+    """True if `node` sits inside a voluntary EEO self-identification block."""
+    return any(a.has_class(_EEO_BLOCK_CLASS) for a in node.ancestors())
+
+
+def _question_block_label(node: _Node) -> str:
+    """The question text paired with `node` inside one `li.application-question`.
+
+    Returns "" unless the control has such an ancestor AND that block contains
+    an `application-label` element — so this is inert on every board except
+    Lever, and inert on a Lever block that does not follow the shape.
+
+    Prefers the label element's inner `div.text` when present (Lever's custom
+    questions nest one level deeper than its built-in fields do), and keeps the
+    `span.required` marker in the returned text so the required inference can
+    still see it; `_clean_label` removes it afterwards.
+    """
+    block = None
+    for ancestor in node.ancestors():
+        if ancestor.tag == "li" and ancestor.has_class(_QUESTION_BLOCK_CLASS):
+            block = ancestor
+            break
+    if block is None:
+        return ""
+
+    for desc in block.descendants():
+        if not desc.has_class(_QUESTION_LABEL_CLASS):
+            continue
+        inner = next(
+            (d for d in desc.descendants() if d.has_class(_QUESTION_TEXT_CLASS)), None
+        )
+        text = _text_of(inner if inner is not None else desc, stop_tags=_LABEL_STOP)
+        if text:
+            return text
+    return ""
 
 
 def _first_labelable(node: _Node) -> _Node | None:
@@ -524,37 +678,72 @@ def _associated_label_text(
     Two labels claiming the same `id`, or a duplicated `id`, yields "" for that
     sub-step: ambiguous, so we fall through rather than pick one.
     """
-    node_id = node.attr("id").strip()
-    if node_id and len(by_id.get(node_id, [])) == 1:
-        labels = by_for.get(node_id, [])
-        if len(labels) == 1:
-            text = _text_of(labels[0], stop_tags=_LABEL_STOP)
+    def for_id() -> tuple[str, str]:
+        node_id = node.attr("id").strip()
+        if node_id and len(by_id.get(node_id, [])) == 1:
+            labels = by_for.get(node_id, [])
+            if len(labels) == 1:
+                return _text_of(labels[0], stop_tags=_LABEL_STOP), "label"
+        return "", ""
+
+    # Steps 1b and 1c: the wrapping `<label>` and Lever's question block. Which
+    # of the two goes first depends on what a wrapping label CONVENTIONALLY
+    # holds for this kind of control, and both conventions show up on the one
+    # Lever form:
+    #
+    #   * around a checkbox/radio it holds the OPTION text
+    #     (`<label><input type=radio value=Yes><span>Yes</span></label>`), and
+    #     the question ("Are you legally authorized to work…") is the block's.
+    #     So for a choice control the wrapping label wins, and the block becomes
+    #     the control's `group_label`.
+    #   * around anything else it holds the field label — but Lever's résumé
+    #     label also encloses the upload button, so it reads
+    #     "Resume/CV ✱ATTACH RESUME/CV" where `div.application-label` holds
+    #     exactly "Resume/CV ✱". So for a non-choice control the block wins.
+    is_choice = node.tag == "input" and _kind_of(node) in ("checkbox", "select")
+
+    def wrapping() -> tuple[str, str]:
+        for ancestor in node.ancestors():
+            if ancestor.tag != "label":
+                continue
+            # Per HTML, a `<label>`'s labeled control is its FIRST labelable
+            # descendant — not all of them. Without this,
+            # `<label>Address<input name=street><input name=city><input name=zip>`
+            # labels all three "Address", and a caller asking for "Address" gets
+            # three candidates (or, worse, one wrong one once the others are
+            # filtered out).
+            if _first_labelable(ancestor) is not node:
+                break
+            before, after = _split_text_around(ancestor, node, stop_tags=_LABEL_STOP)
+            text = before or after
             if text:
                 return text, "label"
-
-    for ancestor in node.ancestors():
-        if ancestor.tag != "label":
-            continue
-        # Per HTML, a `<label>`'s labeled control is its FIRST labelable
-        # descendant — not all of them. Without this,
-        # `<label>Address<input name=street><input name=city><input name=zip>`
-        # labels all three "Address", and a caller asking for "Address" gets
-        # three candidates (or, worse, one wrong one once the others are filtered).
-        if _first_labelable(ancestor) is not node:
             break
-        before, after = _split_text_around(ancestor, node, stop_tags=_LABEL_STOP)
-        text = before or after
-        if text:
-            return text, "label"
-        break
+        return "", ""
 
-    name = node.attr("name").strip()
-    if name and name_counts.get(name, 0) == 1 and not by_id.get(name):
-        labels = by_for.get(name, [])
-        if len(labels) == 1:
-            text = _text_of(labels[0], stop_tags=_LABEL_STOP)
-            if text:
-                return text, "label-for-name"
+    def block() -> tuple[str, str]:
+        text = _question_block_label(node)
+        return (text, "question-block") if text else ("", "")
+
+    def for_name() -> tuple[str, str]:
+        name = node.attr("name").strip()
+        if name and name_counts.get(name, 0) == 1 and not by_id.get(name):
+            labels = by_for.get(name, [])
+            if len(labels) == 1:
+                return _text_of(labels[0], stop_tags=_LABEL_STOP), "label-for-name"
+        return "", ""
+
+    ordered = (
+        (for_id, wrapping, block, for_name)
+        if is_choice
+        else (for_id, block, wrapping, for_name)
+    )
+    for attempt in ordered:
+        text, source = attempt()
+        # A sub-step whose whole content is the required marker reads as blank to
+        # a human, so keep going rather than accept it.
+        if text and _clean_label(text):
+            return text, source
     return "", ""
 
 
@@ -573,26 +762,30 @@ def _derive_label(
     by_id: dict[str, list[_Node]],
     name_counts: dict[str, int],
 ) -> tuple[str, str]:
-    """Run the documented fallback chain. Returns (label_text, source_name).
+    """Run the documented fallback chain. Returns (raw_label_text, source_name).
+
+    The text is RAW — required marker still attached — because `_required_of`
+    needs to see it; `_clean_label` strips it for storage.
+
+    A step only wins if its text survives `_clean_label`. A `<label>` whose whole
+    content is the required marker (`<label for="x">*</label>`) contributes
+    nothing a human could read, so the chain must continue to the next step
+    rather than accept it and then discard the control.
 
     ("", "") means no step produced anything — the control is not discovered and
     not locatable. That is the designed outcome, not a failure to handle.
     """
+    candidates: list[tuple[str, str]] = []
     text, sub_source = _associated_label_text(node, by_for, by_id, name_counts)
     if text:
-        return text, sub_source
-    aria = node.attr("aria-label").strip()
-    if aria:
-        return aria, "aria-label"
-    labelledby = _aria_labelledby_text(node, by_id)
-    if labelledby:
-        return labelledby, "aria-labelledby"
-    placeholder = node.attr("placeholder").strip()
-    if placeholder:
-        return placeholder, "placeholder"
-    name = node.attr("name").strip()
-    if name:
-        return name, "name"
+        candidates.append((text, sub_source))
+    candidates.append((node.attr("aria-label").strip(), "aria-label"))
+    candidates.append((_aria_labelledby_text(node, by_id), "aria-labelledby"))
+    candidates.append((node.attr("placeholder").strip(), "placeholder"))
+    candidates.append((node.attr("name").strip(), "name"))
+    for raw, source in candidates:
+        if raw and _clean_label(raw):
+            return raw, source
     return "", ""
 
 
@@ -751,13 +944,25 @@ def _css_escape(value: str) -> str | None:
     return value.replace("\\", "\\\\").replace('"', '\\"')
 
 
-def _selector_for(node: _Node, by_id: dict[str, list[_Node]], name_counts: dict[str, int]) -> str | None:
+def _selector_for(
+    node: _Node,
+    by_id: dict[str, list[_Node]],
+    name_counts: dict[str, int],
+    name_value_counts: dict[tuple[str, str], int],
+) -> str | None:
     """A CSS selector addressing exactly this control, or `None`.
 
-    Only `id` and `name` are used, in that order — never `:nth-of-type` or any
-    other positional form (module docstring, decision 2). `None` when neither is
-    unique, which makes the control un-fillable by design rather than fillable
-    by luck.
+    Only `id`, `name`, and `name`+`value` are used — never `:nth-of-type` or any
+    other positional form (module docstring, decision 2). `None` when none of
+    them is unique, which makes the control un-fillable by design rather than
+    fillable by luck.
+
+    The `name`+`value` pair exists for radio/checkbox groups, where every member
+    deliberately shares one `name` and Lever gives them no `id` at all. Without
+    it, all 33 of Lever's language checkboxes and both of its Yes/No radio groups
+    were reported as questions that nothing could ever act on. `value` is an
+    exact attribute match that HTML requires to differ between members of a
+    group, so this is identity, not position.
     """
     node_id = node.attr("id").strip()
     if node_id and len(by_id.get(node_id, [])) == 1:
@@ -769,6 +974,11 @@ def _selector_for(node: _Node, by_id: dict[str, list[_Node]], name_counts: dict[
         escaped = _css_escape(name)
         if escaped is not None:
             return f'{node.tag}[name="{escaped}"]'
+    value = node.attr("value")
+    if name and value and name_value_counts.get((name, value), 0) == 1:
+        escaped_name, escaped_value = _css_escape(name), _css_escape(value)
+        if escaped_name is not None and escaped_value is not None:
+            return f'{node.tag}[name="{escaped_name}"][value="{escaped_value}"]'
     return None
 
 
@@ -783,10 +993,15 @@ def parse_controls(html: str) -> list[Control]:
 
     fillable = [n for n in root.descendants() if _is_fillable(n)]
     name_counts: dict[str, int] = {}
+    name_value_counts: dict[tuple[str, str], int] = {}
     for node in fillable:
         name = node.attr("name").strip()
         if name:
             name_counts[name] = name_counts.get(name, 0) + 1
+            value = node.attr("value")
+            if value:
+                pair = (name, value)
+                name_value_counts[pair] = name_value_counts.get(pair, 0) + 1
 
     # Which grouping container (if any) each control sits in, and how many
     # fillable controls that container holds. A group heading only describes a
@@ -803,15 +1018,32 @@ def parse_controls(html: str) -> list[Control]:
         groups[id(node)] = group
         members.setdefault(id(group), []).append(node)
 
-    controls: list[Control] = []
+    # Labels first, so a weak tier's duplicates can be spotted before any
+    # Control is built (see `_WEAK_LABEL_SOURCES`).
+    derived: list[tuple[_Node, str, str]] = []
     for node in fillable:
-        label, source = _derive_label(node, by_for, by_id, name_counts)
+        raw_label, source = _derive_label(node, by_for, by_id, name_counts)
+        if raw_label:
+            derived.append((node, raw_label, source))
+    weak_counts: dict[str, int] = {}
+    for _, raw_label, source in derived:
+        if source in _WEAK_LABEL_SOURCES:
+            key = normalize_label(raw_label)
+            weak_counts[key] = weak_counts.get(key, 0) + 1
+
+    controls: list[Control] = []
+    for node, raw_label, source in derived:
+        if source in _WEAK_LABEL_SOURCES and weak_counts.get(normalize_label(raw_label), 0) > 1:
+            # Two different questions wearing one placeholder/name. Refuse both.
+            continue
+        # `_required_of` sees the RAW text so the trailing-marker signal survives;
+        # the stored label is the cleaned one a human would read.
+        label = _clean_label(raw_label)
         if not label:
-            # No human-readable handle at all. Not discovered, not locatable.
             continue
         kind = _kind_of(node)
         group = groups.get(id(node))
-        group_label = ""
+        raw_group_label = ""
         if group is not None:
             siblings = members.get(id(group), [])
             names = {n.attr("name").strip() for n in siblings}
@@ -822,12 +1054,21 @@ def parse_controls(html: str) -> list[Control]:
             # without this guard all three inherited the heading "Phone".
             shared_name = len(names) == 1 and names != {""}
             if len(siblings) == 1 or shared_name:
-                group_label = _group_label_text(group, by_id)
-        required, required_source = _required_of(node, label, group)
-        if not required and group_label:
+                raw_group_label = _group_label_text(group, by_id)
+        if not raw_group_label and node.tag == "input" and kind in ("checkbox", "select"):
+            # Lever has neither `<fieldset>` nor `role="group"`, so a choice
+            # control's heading comes from its `li.application-question` block.
+            # Restricted to choice controls because that is the only case where
+            # the heading differs from the control's own label, and the block is
+            # per-question by construction, so it cannot over-reach the way a
+            # `role="group"` wrapping several unrelated fields can.
+            raw_group_label = _question_block_label(node)
+        group_label = _clean_label(raw_group_label)
+        required, required_source = _required_of(node, raw_label, group)
+        if not required and raw_group_label:
             # A group's required-ness is marked on the heading, not on each
-            # option.
-            group_required, group_source = _required_of(node, group_label, group)
+            # option — and on the RAW heading, since that is where the marker is.
+            group_required, group_source = _required_of(node, raw_group_label, group)
             if group_required:
                 required, required_source = True, group_source
         controls.append(
@@ -842,7 +1083,7 @@ def parse_controls(html: str) -> list[Control]:
                 options=_select_options(node) if node.tag == "select" else [],
                 name=node.attr("name").strip(),
                 element_id=node.attr("id").strip(),
-                selector=_selector_for(node, by_id, name_counts),
+                selector=_selector_for(node, by_id, name_counts, name_value_counts),
                 group_label=group_label,
             )
         )

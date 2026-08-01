@@ -38,6 +38,7 @@ import ast
 import collections
 import json
 import pathlib
+import re
 
 import pytest
 
@@ -419,16 +420,22 @@ def test_chain_1b_wrapping_label_uses_only_the_text_before_the_control():
         "<div>No location found. Try entering a different location</div></label>"
     )
     control = parse_controls(html)[0]
-    assert (control.label, control.label_source) == ("Current location ✱", "label")
+    # The ✱ is stripped from the STORED label (`_clean_label`) but was still
+    # visible to the required inference, which is why this comes back required.
+    assert (control.label, control.label_source) == ("Current location", "label")
+    assert control.required and control.required_source == "label-marker"
 
 
 def test_chain_1b_real_lever(controls):
-    """Lever wraps the input in an unnamed `<label>` and puts a dropdown's
-    "No location found…" chrome *after* it. Only the leading text is the label."""
+    """On the real Lever form this field has BOTH a wrapping `<label>` and a
+    question block, and the block wins for a non-choice control (see
+    `test_the_question_block_beats_the_wrapping_label_for_a_non_choice_control`).
+    Either way the trailing dropdown chrome must not reach the label."""
     control = find_control(controls["lever"], "Current location")
     assert control is not None
-    assert control.label == "Current location ✱"
-    assert control.label_source == "label"
+    assert control.label == "Current location"
+    assert control.label_source == "question-block"
+    assert "No location found" not in control.label
 
 
 def test_a_wrapping_label_labels_only_its_first_labelable_descendant():
@@ -495,6 +502,381 @@ def test_chain_1c_real_ashby(controls):
     assert sponsorship.name == "28ff5b93-a104-45f7-9d46-2d13d3217dca"
 
 
+# ---------------------------------------------------------------------------
+# Chain step 1b: Lever's li.application-question containment
+# ---------------------------------------------------------------------------
+
+_LEVER_BLOCK = (
+    '<li class="application-question custom-question"><div>'
+    '<div class="application-label full-width multiple-choice">'
+    '<div class="text">{question}<span class="required">✱</span></div></div>'
+    '<div class="application-field full-width required-field">{field}</div>'
+    "</div></li>"
+)
+
+
+def test_chain_1b_question_block_reads_a_sibling_label():
+    html = _LEVER_BLOCK.format(
+        question="High School Name", field='<textarea name="cards[abc][field0]" required></textarea>'
+    )
+    control = parse_controls(html)[0]
+    assert control.label == "High School Name"
+    assert control.label_source == "question-block"
+
+
+def test_the_question_block_is_scoped_to_li_application_question():
+    """Scope is the whole safety argument: this is a containment relationship
+    inside one question wrapper, not a "nearest preceding text" guess. Remove the
+    `li.application-question` requirement and the rule becomes exactly the
+    proximity heuristic that was ruled out."""
+    # Same label/field divs, but NOT inside an li.application-question.
+    loose = (
+        '<div><div class="application-label"><div class="text">High School Name</div></div>'
+        '<div class="application-field"><textarea name="cards[abc][field0]"></textarea></div></div>'
+    )
+    control = parse_controls(loose)[0]
+    assert control.label_source == "name"
+    assert control.label == "cards[abc][field0]"
+
+
+def test_the_question_block_requires_an_li_not_just_the_class():
+    """The scope is `li.application-question` — the element Lever actually uses
+    per question. Accepting the class on any element widens the containment to
+    whatever a page happens to wrap around several fields, which is how the rule
+    would drift back into a proximity guess."""
+    html = (
+        '<div class="application-question"><div>'
+        '<div class="application-label"><div class="text">High School Name</div></div>'
+        '<div class="application-field"><textarea name="cards[abc][field0]"></textarea></div>'
+        "</div></div>"
+    )
+    assert parse_controls(html)[0].label_source == "name"
+    # ...and the same markup in an `li` is read.
+    assert parse_controls(html.replace("div class=\"application-question\"", "li class=\"application-question\"", 1))[0].label_source == "question-block"
+
+
+def test_the_question_block_requires_an_application_label_element():
+    html = (
+        '<li class="application-question"><div>'
+        '<div class="something-else">High School Name</div>'
+        '<textarea name="cards[abc][field0]"></textarea></div></li>'
+    )
+    assert parse_controls(html)[0].label_source == "name"
+
+
+def test_the_question_block_class_match_is_token_not_substring():
+    """`application-label-wrapper` is a different class from `application-label`."""
+    html = (
+        '<li class="application-question-group"><div>'
+        '<div class="application-label"><div class="text">Nope</div></div>'
+        '<textarea name="cards[abc][field0]"></textarea></div></li>'
+    )
+    assert parse_controls(html)[0].label_source == "name"
+
+
+def test_real_lever_blocking_questions_are_discovered(questions):
+    """The two BLOCKING_KINDS questions on the captured Palantir form. Before the
+    containment rule BOTH came back with `label=""` — so Task 7 would have
+    reported a form as ready-to-review with work authorization and sponsorship
+    silently unlabelled, which is worse than a wrong element because nothing
+    signals it."""
+    by_label = {q.label: q for q in questions["lever"]}
+    work_auth = by_label[
+        "Are you legally authorized to work in the country for which you are applying?"
+    ]
+    sponsorship = by_label[
+        "Will you now or in the future require sponsorship for employment visa status "
+        "(e.g., H-1B, etc.)?"
+    ]
+    for question in (work_auth, sponsorship):
+        assert question.required is True, question.label
+        assert question.kind == "select", question.label  # radio group = single choice
+        assert question.options == ["Yes", "No"], question.label
+        assert question.key.startswith("cards[1c719ca9-5069-4afe-9e82-39ca420e0edb]")
+
+
+def test_real_lever_blocking_questions_are_locatable_per_option(controls):
+    """Reported is not enough — Task 6 has to be able to act on them. Each option
+    is addressed by name+value, which HTML requires to be unique within a group."""
+    for question in (
+        "Are you legally authorized to work in the country for which you are applying?",
+        "Will you now or in the future require sponsorship for employment visa status "
+        "(e.g., H-1B, etc.)?",
+    ):
+        members = locate_dom.find_group_options(controls["lever"], question)
+        assert [m.label for m in members] == ["Yes", "No"], question
+        assert all(m.selector for m in members), question
+        assert all("[value=" in m.selector for m in members), question
+
+
+def test_real_lever_two_placeholder_twins_are_now_distinct(questions):
+    """Both of these are `<input placeholder="Type here…">`, so the placeholder
+    tier collapsed them into two questions labelled "Type your response" —
+    indistinguishable, and the ambiguity went undetected because it happened one
+    layer below `find_control`. Asserting the labels DIFFER is what makes the
+    collapse unable to come back silently."""
+    labels = [q.label for q in questions["lever"]]
+    preferred = "Preferred Name | What would you like us to call you?"
+    pronunciation = "Name Pronunciation | How do you pronounce your name?"
+    assert preferred in labels
+    assert pronunciation in labels
+    assert preferred != pronunciation
+    assert "Type your response" not in labels
+    assert len(labels) == len(set(labels)), "two questions must never share a label"
+
+
+def test_real_lever_high_school_name_is_read_not_keyed(controls):
+    control = find_control(controls["lever"], "High School Name")
+    assert control is not None
+    assert control.label == "High School Name"
+    assert control.kind == "textarea"
+    assert not control.label.startswith("cards[")
+
+
+def test_the_question_block_beats_the_wrapping_label_for_a_non_choice_control():
+    """Lever's résumé field has both, and the wrapping label also encloses the
+    upload button — so it reads "Resume/CV ✱ATTACH RESUME/CV" where the block
+    holds exactly "Resume/CV ✱"."""
+    html = (
+        '<li class="application-question"><div>'
+        '<div class="application-label">Resume/CV <span class="required">✱</span></div>'
+        '<div class="application-field"><label>'
+        '<a><span class="default-label">ATTACH RESUME/CV</span>'
+        '<input id="resume-upload-input" name="resume" type="file"></a></label></div>'
+        "</div></li>"
+    )
+    control = parse_controls(html)[0]
+    assert control.label == "Resume/CV"
+    assert control.label_source == "question-block"
+
+
+def test_real_lever_resume_label_has_no_button_text(controls):
+    control = find_control(controls["lever"], "Resume/CV")
+    assert control is not None
+    assert control.label == "Resume/CV"
+    assert "ATTACH" not in control.label
+    assert control.required is True
+
+
+def test_the_wrapping_label_beats_the_question_block_for_a_choice_control():
+    """The other convention: a wrapping `<label>` around a radio holds the OPTION
+    text, and the block holds the question. Swap the order and every option comes
+    back labelled with the whole question, so the group's `options` list becomes N
+    copies of its own heading."""
+    html = _LEVER_BLOCK.format(
+        question="Authorized to work?",
+        field=(
+            "<ul>"
+            '<li><label><input type="radio" name="cards[x][f0]" value="Yes" required/>'
+            '<span>Yes</span></label></li>'
+            '<li><label><input type="radio" name="cards[x][f0]" value="No" required/>'
+            '<span>No</span></label></li></ul>'
+        ),
+    )
+    parsed = parse_controls(html)
+    assert [c.label for c in parsed] == ["Yes", "No"]
+    assert all(c.group_label == "Authorized to work?" for c in parsed)
+    question = discover_questions(html)[0]
+    assert question.label == "Authorized to work?"
+    assert question.options == ["Yes", "No"]
+
+
+def test_required_comes_from_the_question_blocks_span_required():
+    """`span.required` renders the ✱ inside the label text, so the existing
+    trailing-marker signal picks it up — which is why the marker is stripped only
+    AFTER the required inference has seen it."""
+    html = _LEVER_BLOCK.format(question="Why us?", field='<textarea name="cards[x][f0]"></textarea>')
+    control = parse_controls(html)[0]
+    assert control.required is True
+    assert control.required_source == "label-marker"
+    # ...and without the marker, the control is not claimed to be required.
+    html = html.replace('<span class="required">✱</span>', "")
+    assert parse_controls(html)[0].required is False
+
+
+def test_the_control_own_required_attribute_still_wins_over_the_marker():
+    html = _LEVER_BLOCK.format(
+        question="Why us?", field='<textarea name="cards[x][f0]" required="required"></textarea>'
+    )
+    assert parse_controls(html)[0].required_source == "required-attr"
+
+
+# ---------------------------------------------------------------------------
+# Required markers never reach a stored label
+# ---------------------------------------------------------------------------
+
+_MARKER_CHARS = "*✱＊∗٭"
+
+
+@pytest.mark.parametrize("board", BOARDS)
+def test_no_stored_label_contains_a_required_marker(board, controls):
+    """The stored label is what Task 3 phrase-matches on and what Task 7 shows a
+    human, so a stray "✱"/"*" is not cosmetic. Greenhouse rendered "First Name*"
+    and Lever "Full name✱"."""
+    for control in controls[board]:
+        for text in (control.label, control.group_label):
+            assert not any(ch in text for ch in _MARKER_CHARS), (control.label_source, text)
+
+
+@pytest.mark.parametrize("board", BOARDS)
+def test_no_discovered_question_label_contains_a_required_marker(board, questions):
+    for question in questions[board]:
+        assert not any(ch in question.label for ch in _MARKER_CHARS), question.label
+        for option in question.options:
+            assert not any(ch in option for ch in _MARKER_CHARS), option
+
+
+@pytest.mark.parametrize(
+    "raw,expected",
+    [
+        ("Full name✱", "Full name"),
+        ("First Name*", "First Name"),
+        ("  Email  ", "Email"),
+        ("✱ Email", "Email"),
+        ("Email (required)", "Email (required)"),  # words are not a marker char
+        ("Resume/CV ✱", "Resume/CV"),
+        ("*", ""),
+        ("✱", ""),
+    ],
+)
+def test_clean_label_strips_only_marker_characters(raw, expected):
+    assert locate_dom._clean_label(raw) == expected
+
+
+def test_a_label_whose_whole_content_is_a_marker_falls_through_the_chain():
+    """`<label for="x">*</label>` reads as blank to a human, so the chain must
+    CONTINUE rather than accept it and then drop the control entirely."""
+    html = '<label for="x">*</label><input id="x" type="text" placeholder="you@example.com">'
+    control = parse_controls(html)[0]
+    assert (control.label, control.label_source) == ("you@example.com", "placeholder")
+
+
+def test_a_marker_only_label_falls_through_to_the_NEXT_step_1_substep():
+    """The fall-through has to happen inside step 1's sub-chain, not just at the
+    top level. Here `<label for="x">*</label>` is useless but a wrapping `<label>`
+    two lines down holds the real text; accepting the marker-only label and only
+    then rejecting it would skip straight past the wrapping label to
+    `placeholder`."""
+    html = (
+        '<label for="x">*</label>'
+        '<label>Email Address<input id="x" type="text" placeholder="you@example.com"></label>'
+    )
+    control = parse_controls(html)[0]
+    assert (control.label, control.label_source) == ("Email Address", "label")
+
+
+# ---------------------------------------------------------------------------
+# The weak tiers refuse duplicates
+# ---------------------------------------------------------------------------
+
+
+def test_two_controls_sharing_a_placeholder_are_both_refused():
+    """Two DIFFERENT questions wearing one label is the ambiguity `find_control`
+    refuses, arriving one layer earlier. This is what produced two Lever questions
+    both labelled "Type your response"."""
+    html = (
+        '<input type="text" name="a" placeholder="Type your response">'
+        '<input type="text" name="b" placeholder="Type your response">'
+    )
+    assert parse_controls(html) == []
+    assert discover_questions(html) == []
+
+
+def test_a_unique_placeholder_is_still_accepted():
+    html = (
+        '<input type="text" name="a" placeholder="Type your response">'
+        '<input type="text" name="b" placeholder="Your website">'
+    )
+    assert sorted(c.label for c in parse_controls(html)) == ["Type your response", "Your website"]
+
+
+def test_duplicate_checking_does_not_apply_to_strong_label_sources():
+    """Two option labels reading "Yes" in two different groups is normal and must
+    keep working — the demotion is only for placeholder/`name`."""
+    html = """
+    <fieldset><legend>Authorized to work</legend>
+      <input type="radio" id="a1" name="g1"><label for="a1">Yes</label>
+      <input type="radio" id="a2" name="g1"><label for="a2">No</label></fieldset>
+    <fieldset><legend>Willing to relocate</legend>
+      <input type="radio" id="b1" name="g2"><label for="b1">Yes</label>
+      <input type="radio" id="b2" name="g2"><label for="b2">No</label></fieldset>
+    """
+    assert len(parse_controls(html)) == 4
+    assert len(discover_questions(html)) == 2
+
+
+def test_real_ashby_placeholder_survives_because_it_is_unique(controls):
+    """The demotion must not cost Ashby its location combobox, whose placeholder
+    is genuinely the only label available."""
+    placeholder_labelled = [c for c in controls["ashby"] if c.label_source == "placeholder"]
+    assert len(placeholder_labelled) == 1
+    assert placeholder_labelled[0].label == "Start typing..."
+
+
+# ---------------------------------------------------------------------------
+# Lever's EEO block is excluded structurally
+# ---------------------------------------------------------------------------
+
+_EEO_SURVEY = (
+    '<div class="section page-centered eeo-survey"><ul>'
+    '<li class="application-question"><div>'
+    '<div class="application-label"><div class="text">What is your gender?'
+    '<span class="required">✱</span></div></div>'
+    '<div class="application-field"><ul>'
+    '<li><label><input type="radio" name="eeo[gender]" value="Female"><span>Female</span></label></li>'
+    '<li><label><input type="radio" name="eeo[gender]" value="Male"><span>Male</span></label></li>'
+    '<li><label><input type="radio" name="eeo[gender]" value="decline">'
+    "<span>Decline to self-identify</span></label></li>"
+    "</ul></div></div></li></ul></div>"
+)
+_REAL_QUESTION = (
+    '<li class="application-question"><div>'
+    '<div class="application-label"><div class="text">Full name</div></div>'
+    '<div class="application-field"><input type="text" name="name"></div></div></li>'
+)
+
+
+def test_nothing_under_eeo_survey_is_discovered():
+    """`.eeo-survey` reuses the same `application-label` classes as the rest of the
+    form, so the containment rule would read "What is your gender?" out of it as
+    happily as any other question. Excluded structurally, ahead of the text screen —
+    and note the *options* here ("Female"/"Male"/"Decline to self-identify") match
+    no EEO term, so a text-only screen would not have caught this block."""
+    parsed = parse_controls(_EEO_SURVEY + _REAL_QUESTION)
+    assert [c.label for c in parsed] == ["Full name"]
+    assert [q.label for q in discover_questions(_EEO_SURVEY + _REAL_QUESTION)] == ["Full name"]
+
+
+def test_the_eeo_block_exclusion_leaves_nothing_in_any_bucket():
+    """Unlike the text screen, this one is a structural refusal to look: these are
+    not "withheld questions", they are not questions this module reports at all."""
+    html = _EEO_SURVEY + _REAL_QUESTION
+    assert locate_dom.unreadable_questions(html) == []
+    assert locate_dom.excluded_eeo_questions(html) == []
+    assert len(discover_questions(html)) == 1
+
+
+def test_the_eeo_block_class_match_is_a_whole_token():
+    """A class literally named `eeo-survey-results` is a different class."""
+    html = (
+        '<div class="not-eeo-surveyor">'
+        '<label for="a">Preferred pastry</label><input id="a" type="text"></div>'
+    )
+    assert len(parse_controls(html)) == 1
+
+
+def test_the_captured_lever_fixture_has_no_eeo_block_in_its_markup():
+    """Measured, and worth pinning because it is easy to assume otherwise: this
+    Palantir posting renders NO EEO block. `eeo-survey` appears 386 times in the
+    fixture but every one is a CSS selector inside an inline `<style>`, never a
+    class on an element. So the exclusion above is defensive, exercised only by
+    synthetic HTML, and the fixture's counts do not depend on it."""
+    html = _html("lever")
+    markup = re.sub(r"<(style|script)\b.*?</\1>", "", html, flags=re.S | re.I)
+    assert "eeo-survey" in html
+    assert "eeo-survey" not in markup
+
+
 def test_chain_2_aria_label():
     html = '<input type="text" aria-label="Email Address" name="e">'
     control = parse_controls(html)[0]
@@ -543,15 +925,15 @@ def test_chain_4_name_is_the_last_resort():
     assert (control.label, control.label_source) == ("_systemfield_custom", "name")
 
 
-def test_chain_4_real_lever(controls):
-    """Lever's custom "card" questions keep their title in a *sibling*
-    `<div class="application-label">`, reachable only through a generated class
-    name. So those fall all the way through to the `name` attribute — an
-    honestly useless label that no sensible query will match, which is the
-    intended outcome (see the module docstring)."""
-    by_name = [c for c in controls["lever"] if c.label_source == "name"]
-    assert len(by_name) == 12
-    assert all(c.label.startswith("cards[") for c in by_name)
+def test_the_name_tier_no_longer_fires_on_any_real_board(controls):
+    """It used to fire on 12 of Lever's 65 controls, emitting labels like
+    `cards[d54adf7b-…][field0]`. The question-block rule reads the real text, so
+    the `name` tier is now unreachable on all three captured boards — it survives
+    for boards we have not seen, not as a load-bearing path."""
+    for board in BOARDS:
+        assert [c for c in controls[board] if c.label_source == "name"] == []
+    # ...and it still works when it is genuinely the only thing available.
+    assert parse_controls('<input type="text" name="_systemfield_custom">')[0].label_source == "name"
 
 
 def test_chain_order_label_beats_aria_beats_placeholder_beats_name():
@@ -578,7 +960,8 @@ def test_a_control_with_no_derivable_label_is_dropped():
 
 def test_all_label_sources_are_declared():
     assert set(locate_dom.LABEL_SOURCES) == {
-        "label", "label-for-name", "aria-label", "aria-labelledby", "placeholder", "name",
+        "label", "question-block", "label-for-name",
+        "aria-label", "aria-labelledby", "placeholder", "name",
     }
 
 
@@ -643,14 +1026,42 @@ def test_label_lookup_finds_the_right_element(board, query, expected_selector, c
 
 
 @pytest.mark.parametrize("board", BOARDS)
-@pytest.mark.parametrize(
-    "query",
-    ["Favourite Dinosaur", "Blood Type", "Shoe Size", "Name", "Attach"],
-)
+@pytest.mark.parametrize("query", ["Favourite Dinosaur", "Blood Type", "Shoe Size", "Attach"])
 def test_an_unmatched_or_ambiguous_query_returns_none(board, query, controls):
-    """None of these is a question on any of the three real forms — and "Name"
-    and "Attach" are ambiguous rather than absent. Both must yield `None`."""
+    """None of these is a question on any of the three real forms — and "Attach"
+    is ambiguous (Greenhouse labels two file inputs that) rather than absent.
+    Both must yield `None`."""
     assert find_control(controls[board], query) is None
+
+
+def test_a_bare_short_query_is_not_a_safe_way_to_address_a_field(controls):
+    """Documented hazard, deliberately NOT patched over — read this before
+    hardcoding a short query anywhere.
+
+    On Greenhouse and Ashby, "Name" is ambiguous (First/Last/Legal Name) or
+    absent, so it returns `None`. On Lever it now resolves — to
+    "Name Pronunciation | How do you pronounce your name?", because after the
+    containment rule that is the one and only label whose first token is "name",
+    so the prefix tier has exactly one hit and no ambiguity to detect. It is not
+    the field a caller asking for "Name" wants.
+
+    The rule is doing what it was specified to do; the mistake would be querying
+    with a short handle at all. `discover_questions` hands back each question's
+    FULL label, and locating by that hits the exact tier — which is what Task 6
+    must do. Tightening the prefix tier (e.g. capping how many tokens a label may
+    add) would fix this case but would also break "Resume" -> "Resume/CV and
+    supporting documents", so it needs a ruling rather than a quiet heuristic.
+    """
+    assert find_control(controls["greenhouse"], "Name") is None
+    assert find_control(controls["ashby"], "Name") is None
+    lever_hit = find_control(controls["lever"], "Name")
+    assert lever_hit is not None
+    assert lever_hit.label.startswith("Name Pronunciation")
+    # Querying by the full label is exact and lands on the right field every time.
+    for question in discover_questions(_html("lever")):
+        found = find_control(controls["lever"], question.label)
+        if found is not None:  # None only for multi-option groups, by design
+            assert found.label == question.label or found.group_label == question.label
 
 
 def test_a_short_label_is_not_reachable_by_a_longer_query(controls):
@@ -765,20 +1176,17 @@ def test_real_ashby_radio_group_is_one_question(questions):
     assert us_person.options[0] == "I am a U.S. person"
 
 
-def test_real_lever_checkbox_group_collapses_to_one_unreadable_question():
-    """Lever's 33 language checkboxes are one question — but its title lives in
-    a sibling `<div class="application-label">`, reachable only via a generated
-    class name. So the question has all 33 options and NO label, which makes it
-    unanswerable, so it is reported via `unreadable_questions` rather than as an
-    answerable question. Deliberate: no label beats a guessed one."""
-    unreadable = locate_dom.unreadable_questions(_html("lever"))
-    language = next(q for q in unreadable if len(q.options) == 33)
+def test_real_lever_checkbox_group_is_one_labelled_question(questions):
+    """Lever's 33 language checkboxes are one question. Its title lives in a
+    sibling `div.application-label` inside the same `li.application-question`, so
+    the containment rule reads it — this used to come back with 33 options and NO
+    label at all."""
+    language = next(q for q in questions["lever"] if len(q.options) == 33)
     assert language.kind == "checkbox"
-    assert language.label == ""
+    assert language.label == "Language Skill(s) (Check all that apply)"
+    assert language.required is True
     assert "English (ENG)" in language.options
     assert "Choose not to disclose" in language.options
-    # ...and it is NOT in the answerable list.
-    assert all(q.label for q in discover_questions(_html("lever")))
 
 
 def test_a_multi_option_group_is_located_per_option_not_as_one_element():
@@ -887,8 +1295,8 @@ def test_a_group_heading_does_not_leak_onto_unrelated_controls():
 
 def test_real_greenhouse_phone_group_labels_stay_distinct(controls):
     by_id = {c.element_id: c.label for c in controls["greenhouse"]}
-    assert by_id["country"] == "Country*"
-    assert by_id["phone"] == "Phone*"
+    assert by_id["country"] == "Country"
+    assert by_id["phone"] == "Phone"
     assert by_id["iti-0__search-input"] == "Search"
 
 
@@ -994,7 +1402,7 @@ def test_which_required_signals_the_real_fixtures_actually_use(controls):
         board: dict(collections.Counter(c.required_source for c in controls[board]))
         for board in BOARDS
     }
-    assert counts["lever"] == {"required-attr": 54, "": 11}
+    assert counts["lever"] == {"required-attr": 54, "label-marker": 1, "": 10}
     assert counts["ashby"] == {"required-attr": 5, "": 14}
     assert counts["greenhouse"] == {
         "aria-required": 9,
@@ -1009,7 +1417,7 @@ def test_which_label_sources_the_real_fixtures_actually_use(controls):
         board: dict(collections.Counter(c.label_source for c in controls[board]))
         for board in BOARDS
     }
-    assert counts["lever"] == {"label": 51, "placeholder": 2, "name": 12}
+    assert counts["lever"] == {"question-block": 23, "label": 42}
     assert counts["ashby"] == {"label": 14, "label-for-name": 4, "placeholder": 1}
     assert counts["greenhouse"] == {"label": 14, "aria-label": 1}
 
@@ -1173,7 +1581,7 @@ def test_lever_bracketed_names_survive_into_a_selector(controls):
 
 @pytest.mark.parametrize("board", BOARDS)
 def test_discovery_finds_a_plausible_number_of_questions(board, questions):
-    counts = {"lever": 24, "ashby": 16, "greenhouse": 15}
+    counts = {"lever": 29, "ashby": 16, "greenhouse": 15}
     assert len(questions[board]) == counts[board]
 
 
@@ -1193,17 +1601,12 @@ def test_no_question_is_lost_between_the_three_buckets(board):
     assert len(keys) == len(set(keys))
 
 
-def test_real_lever_unreadable_question_count():
-    """5 of Lever's 29 questions cannot be read: the 33-checkbox language group
-    and four yes/no dropdown pairs, all titled through a generated class name.
-    Pinned so a future improvement that recovers them is noticed."""
-    unreadable = locate_dom.unreadable_questions(_html("lever"))
-    assert len(unreadable) == 5
-    assert [q.kind for q in unreadable] == ["checkbox", "select", "select", "select", "select"]
-
-
-@pytest.mark.parametrize("board", ["ashby", "greenhouse"])
-def test_ashby_and_greenhouse_have_no_unreadable_questions(board):
+@pytest.mark.parametrize("board", BOARDS)
+def test_no_real_fixture_has_an_unreadable_question(board):
+    """Was 5 on Lever (the 33-checkbox language group and four yes/no radio
+    pairs) before the containment rule. All three boards are now fully readable,
+    which is the point: `unreadable_questions` should be an escape hatch that
+    real forms do not need, not a bucket a third of the form falls into."""
     assert locate_dom.unreadable_questions(_html(board)) == []
 
 
@@ -1304,6 +1707,43 @@ def test_no_real_fixture_leaks_an_eeo_question(board):
     question in its main body, so the screen withholds nothing here. Asserting
     it anyway means a re-capture that DOES include one gets noticed."""
     assert locate_dom.excluded_eeo_questions(_html(board)) == []
+
+
+# ---------------------------------------------------------------------------
+# End-to-end with Task 3's resolver — still pure, still no browser
+# ---------------------------------------------------------------------------
+
+_FAKE_PROFILE = {
+    "full_name": "Test Applicant",
+    "email": "applicant@example.invalid",
+    "phone": "+1 555 0100",
+    "location": "San Francisco, CA",
+    "work_auth": "citizen",
+    "needs_sponsorship": False,
+}
+
+
+def test_the_lever_blocking_questions_reach_the_resolvers_blocking_list():
+    """The reason the containment rule matters, stated as an outcome rather than
+    a label: work authorization and sponsorship must arrive at
+    `resolver.blocking()` so Task 7's handoff can refuse to call the form ready.
+    While they had `label=""` they were unclassifiable and simply absent."""
+    from agents.job_applier import resolver
+
+    questions = discover_questions(_html("lever"))
+    blocking = resolver.blocking(resolver.resolve(questions, _FAKE_PROFILE))
+    labels = [a.question.label for a in blocking]
+    assert any("legally authorized to work" in label for label in labels)
+    assert any("require sponsorship for employment visa status" in label for label in labels)
+
+
+@pytest.mark.parametrize("board", BOARDS)
+def test_discovered_questions_are_resolvable_without_error(board):
+    """The DOM path and the schema path must hand the resolver the same shape."""
+    from agents.job_applier import resolver
+
+    answers = resolver.resolve(discover_questions(_html(board)), _FAKE_PROFILE)
+    assert len(answers) == len(discover_questions(_html(board)))
 
 
 # ---------------------------------------------------------------------------

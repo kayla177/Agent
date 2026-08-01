@@ -29,13 +29,16 @@ uploads a file, never submits. Grep this file: there is no `.fill(`, `.click(`,
 `.type(`, `.press(`, or `set_input_files(` anywhere in it, by design.
 `--verify` only calls `.count()` on the located elements.
 
-Why two capture methods:
+Why two capture methods. All figures below are re-measured from the committed
+fixtures, not inherited — the plan's original table said Lever was
+69 inputs / 50 labels / 3 textareas, which is wrong:
 
-    | ATS        | plain GET of the apply URL                 | used here |
-    |------------|--------------------------------------------|-----------|
-    | Lever      | server-rendered: 1 form, 74 inputs, 51 lbl | httpx GET |
-    | Ashby      | JS shell, 0 inputs in 41 KB                | rendered  |
-    | Greenhouse | see below                                  | rendered  |
+    | ATS        | plain GET of the apply URL                      | used here |
+    |------------|-------------------------------------------------|-----------|
+    | Lever      | server-rendered: 1 form, 74 input, 51 label,    | httpx GET |
+    |            | 8 textarea, 5 select                            |           |
+    | Ashby      | JS shell: 41 KB, 0 input, 0 label               | rendered  |
+    | Greenhouse | see below                                       | rendered  |
 
 Measured 2026-08-01, correcting the Task 4 brief: `boards.greenhouse.io/<org>/
 jobs/<id>` now 301s to `job-boards.greenhouse.io/...`, and *that* host serves a
