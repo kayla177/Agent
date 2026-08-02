@@ -373,13 +373,23 @@ _LABEL_RULES: tuple[tuple[str, re.Pattern[str]], ...] = (
     # WORD BOUNDARIES, measured rather than assumed — the same exercise the
     # `name_meta` rule above documents, and it came out differently at each end:
     #
-    #   * LEADING `\b`: kept, and it is DEFENSIVE, not load-bearing. Checked
-    #     against /usr/share/dict/words (235,976 entries): ZERO single words
-    #     contain any of these phrases, which is unsurprising because every
-    #     alternative but one is two words. Dropping it changes the behaviour of
-    #     nothing measurable, so a mutant that removes it is equivalent and
-    #     cannot be killed by any honest test. It stays because it costs nothing
-    #     and because the next token added here might not be two words.
+    #   * LEADING `\b`: LOAD-BEARING — and it was not, one revision ago. When
+    #     this rule held only pre-tertiary vocabulary the boundary was measured
+    #     to be equivalent: zero of /usr/share/dict/words' 235,976 entries
+    #     embedded any of the phrases, and the mutant that removed it was
+    #     reported as genuinely unkillable rather than papered over. Adding
+    #     `graduate school` changed that in one line: **"undergraduate school"
+    #     contains "graduate school"**, so without the boundary "Undergraduate
+    #     School" — the case that must keep resolving from the profile — starts
+    #     matching here and goes blank. `postgraduate` is the same shape and is
+    #     wanted, which is why it is spelled out as its own alternative rather
+    #     than left to a loosened boundary.
+    #     The general lesson, recorded because it is the branch's third
+    #     word-boundary surprise: whether a boundary is load-bearing is a
+    #     property of the VOCABULARY, not of the regex, so it has to be
+    #     re-measured every time the vocabulary grows. An "equivalent mutant"
+    #     is only equivalent for the alternation it was measured against.
+    #     (`test_the_leading_boundary_is_what_keeps_undergraduate_working`.)
     #
     #   * TRAILING `\b`: REMOVED from every alternative ending in
     #     "school"/"education", and replaced with `\w*`. A hard boundary there
@@ -398,6 +408,20 @@ _LABEL_RULES: tuple[tuple[str, re.Pattern[str]], ...] = (
     # (`test_a_school_level_the_profile_does_not_store_is_never_answered`,
     # `test_an_inflected_school_level_phrasing_is_still_caught`,
     # `test_no_lever_question_is_auto_filled_with_the_profile_school_by_accident`.)
+    # A GPA is not a date, not a school and not a degree, and the profile does
+    # not record one at all. FIRST of the education rules, deliberately: it is
+    # the only one of them that can be settled without knowing anything else
+    # about the label, and putting it first is what makes "Graduate school GPA"
+    # — measured returning the profile's graduation date, i.e. a date into a
+    # numeric field — impossible to reach by any other rule. "High School GPA"
+    # lands here too rather than in `school_level`, and that is the better of
+    # the two: telling her "your profile has no GPA" names the thing the field
+    # actually wants, where the school-level note would explain the wrong half
+    # of the question. NOTE `grade\s+point\s+average` cannot collide with
+    # `school_level`'s `grade\s+school\w*` — different second word.
+    # (`test_no_gpa_field_is_ever_answered_from_a_date`.)
+    ("gpa", _rx(r"gpa", r"g\.p\.a\.?", r"grade\s+point\s+average")),
+
     ("school_level", re.compile(
         r"\b(?:"
         r"high[\s-]*school\w*"
@@ -411,12 +435,68 @@ _LABEL_RULES: tuple[tuple[str, re.Pattern[str]], ...] = (
         r"|senior\s+high\b(?:\s+school\w*)?"
         r"|prep(?:aratory)?\s+school\w*"
         r"|sixth\s+form\b(?:\s+college)?"
+        # ABOVE tertiary as well as below it, and for the same reason. See the
+        # `graduate`/`graduation` note on `grad_date` below: "graduate" here is
+        # the ADJECTIVE naming a level of study, and the profile's single
+        # `school` cannot vouch for a second, postgraduate institution. This is
+        # the asymmetry with `undergraduate`, which is deliberately NOT in this
+        # rule — for the intern and new-grad applications this agent is pointed
+        # at, "Undergraduate School" is the one school the profile is
+        # describing, while "Graduate School" is an ADDITIONAL one it says
+        # nothing about. A form asking both (common) would otherwise get the
+        # same answer twice, which is wrong on at least one of them.
+        # The residual risk is stated in the report: a user whose profile school
+        # IS a graduate school still gets it offered for "Undergraduate School".
+        r"|(?:post[\s-]*)?graduate\s+(?:school\w*|programs?|programmes?|studies"
+        r"|study|coursework|degrees?|education\w*|institutions?|level|students?"
+        r"|admissions?|transcripts?)"
+        r"|grad\s+school\w*"
+        r"|post[\s-]*grad(?:uate)?\b"
         r")",
         re.IGNORECASE)),
 
     # Before `school`/`degree`: "Expected graduation date from your university"
     # names a university but asks for a date.
-    ("grad_date", _rx(r"graduat\w*", r"grad\s+date", r"expected\s+completion")),
+    #
+    # THE SAME STEM IS TWO DIFFERENT WORDS, and only one of them is a date:
+    #
+    #   * "graduatION" is the EVENT noun. An event happens at a time, so every
+    #     use of it is a date question: "Expected graduation date", "Year of
+    #     Graduation", "Anticipated graduation", "Graduation year".
+    #   * "graduatE" is a LEVEL OF STUDY when it modifies a noun ("Graduate
+    #     School", "Graduate program", "Graduate degree", "graduate student"),
+    #     and a VERB only in a clause ("When do you expect to graduate?").
+    #
+    # `graduat\w*` could not tell them apart, and MEASURED with a real profile
+    # it answered ELEVEN adjectival phrasings with the graduation date —
+    # "Graduate School" and "Graduate school GPA" among them, i.e. a date typed
+    # into a school-name field and into a numeric field. This is the same family
+    # as `school_level` above and as `name_meta`/`name_alt` before it, and the
+    # fourth time on this branch that a token which looked like one concept was
+    # two.
+    #
+    # The verbal uses of "graduate" are an ALLOWLIST of the clause openers that
+    # can precede the verb, not a denylist of the nouns that can follow it. A
+    # denylist of following nouns cannot be finished — every noun in the
+    # academic vocabulary is a candidate — whereas the set of words that can
+    # stand immediately before an English verb here is small and closed. Same
+    # reasoning as `_VALUE_INVITATION_RE` above.
+    #
+    # Anything with "graduate" that matches NO verbal opener and modifies NO
+    # noun ("Are you a recent graduate?") falls through to `other` and goes
+    # blank with a reason, which is the correct outcome: the profile records
+    # when she graduates, not whether she counts as a graduate.
+    # (`test_the_five_date_phrasings_that_must_not_regress`,
+    # `test_graduate_the_adjective_is_never_a_date`,
+    # `test_no_profile_value_lands_in_a_field_of_a_different_kind`.)
+    ("grad_date", _rx(
+        r"graduation\w*",
+        r"graduating", r"graduated",
+        r"(?:to|will|would|shall|should|can|may|might|you|expect|expects"
+        r"|expected|anticipate|anticipates|anticipated|do|does|did)\s+graduate",
+        r"grad\s+date", r"grad\s+year",
+        r"expected\s+completion",
+    )),
     ("school", _rx(
         r"school", r"university", r"college", r"institution", r"alma\s+mater",
         r"education",
@@ -851,6 +931,13 @@ def _resolve_one(question: Question, profile: dict) -> Answer:
             question, kind,
             "a relocation preference is not stored in your profile — answer it "
             "yourself.",
+        )
+
+    if kind == "gpa":
+        return _blank(
+            question, kind,
+            "your profile does not record a GPA — nothing it holds is a grade, "
+            "so type this one in yourself.",
         )
 
     if kind == "school_level":

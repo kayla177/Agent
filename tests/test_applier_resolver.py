@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import json
 import pathlib
+import re
 
 import pytest
 
@@ -1080,7 +1081,6 @@ SCHOOL_LEVEL_CORPUS = [
     "Highschool attended",
     "What high school did you attend?",
     "Name of your high school",
-    "High School GPA",
     "Secondary School",
     "Secondary education",
     "Middle School",
@@ -1095,6 +1095,27 @@ SCHOOL_LEVEL_CORPUS = [
     "Preparatory School",
     "Sixth Form",
     "Sixth form college",
+    # ABOVE tertiary as well as below it: "graduate" as an ADJECTIVE names a
+    # level of study, and the profile's single school cannot vouch for a second,
+    # postgraduate institution. Every one of these was MEASURED returning the
+    # profile's graduation DATE before the fix.
+    "Graduate School",
+    "Graduate program",
+    "Graduate programme",
+    "Graduate degree",
+    "Graduate studies",
+    "Graduate coursework",
+    "Graduate institution",
+    "Graduate education",
+    "Graduate level",
+    "Graduate transcripts",
+    "Graduate admissions",
+    "Are you a graduate student?",
+    "Post-graduate studies",
+    "Postgraduate school",
+    "Postgrad",
+    "Post-grad degree",
+    "Grad school",
     # Inflections. These were REJECTED by a hard trailing word boundary until
     # mutation testing exposed it — see `test_an_inflected_school_level_phrasing_is_still_caught`.
     "Where did you do your high schooling?",
@@ -1282,3 +1303,255 @@ def test_no_lever_question_is_auto_filled_with_the_profile_school_by_accident():
             assert ans.kind == "school", (ans.question.label, ans.kind)
         if ans.kind == "school_level":
             assert ans.value == "", ans.question.label
+
+
+# =========================================================================
+# The same stem is two different words, and only one of them is a date
+# =========================================================================
+# "graduatION" is the EVENT noun — an event happens at a time, so it is always a
+# date question. "graduatE" is a LEVEL OF STUDY when it modifies a noun, and a
+# verb only in a clause. `graduat\w*` could not tell them apart and MEASURED
+# with a real profile it answered ELEVEN adjectival phrasings with the
+# graduation date, "Graduate School" and "Graduate school GPA" among them: a
+# date typed into a school-name field and into a numeric one.
+#
+# This is the fourth instance on this branch of one token being two concepts
+# (name_meta, name_alt, school_level, and now this), which is why the tests
+# below are written as the INVARIANT as well as the cases.
+
+# Every phrasing that must KEEP resolving to a date. The first five are the ones
+# the fix was explicitly forbidden to regress; the rest are the neighbours a
+# careless narrowing would take with them.
+GRAD_DATE_CORPUS = [
+    "Expected graduation date",
+    "Year of Graduation",
+    "Anticipated graduation",
+    "Graduation year",
+    "When do you expect to graduate",
+    "Expected graduation date from your university",
+    "Expected graduation date (degree program)",
+    "Graduation month",
+    "Graduation Date",
+    "Date of graduation",
+    "What year will you graduate?",
+    "When will you graduate?",
+    "What year do you graduate?",
+    "Grad date",
+    "Expected completion",
+]
+
+# Classified `grad_date`, but deliberately NOT answered: `_is_value_prompt`
+# blanks it because it reads as a yes/no question, not a request for a value.
+# This is one of the eight leaks the module docstring records ("Will you be
+# graduating before June 2027?" answered with a date), so it is pinned
+# separately rather than dropped from the corpus — the narrowing must not turn
+# it back into a date, and must not turn it into a filled one either.
+GRAD_DATE_YES_NO_CORPUS = [
+    "Are you graduating before June 2027?",
+    "Will you be graduating before June 2027?",
+    "Have you graduated yet?",
+]
+
+GPA_CORPUS = [
+    "GPA",
+    "Cumulative GPA",
+    "What is your GPA?",
+    "G.P.A.",
+    "Grade point average",
+    "High School GPA",
+    "Undergraduate GPA",
+    "Graduate school GPA",
+]
+
+
+@pytest.mark.parametrize("label", GRAD_DATE_CORPUS)
+def test_the_date_phrasings_that_must_not_regress(label):
+    """The narrowing is easy to over-correct into breaking the common case.
+    These are the common case."""
+    assert classify(q(label)) == "grad_date", label
+    assert resolve([q(label)], RICH)[0].value == RICH["grad_date"], label
+
+
+@pytest.mark.parametrize("label", GRAD_DATE_YES_NO_CORPUS)
+def test_a_yes_no_question_about_graduating_is_still_recognised_but_still_blank(label):
+    """Both halves. It must stay `grad_date` — a narrowing that pushed it into
+    `other` would lose the explanation the handoff shows — and it must stay
+    unanswered, because `_is_value_prompt` is what stopped "Will you be
+    graduating before June 2027?" being answered with a date in the first
+    place."""
+    ans = resolve([q(label)], RICH)[0]
+    assert ans.kind == "grad_date", label
+    assert ans.source == "blank" and ans.value == "", label
+    assert "yes/no question" in ans.note
+
+
+@pytest.mark.parametrize("label", [
+    "Graduate School", "Graduate program", "Graduate degree", "Graduate studies",
+    "Graduate coursework", "Graduate institution", "Graduate education",
+    "Graduate level", "Are you a graduate student?", "Post-graduate studies",
+    "Postgraduate school", "Grad school", "Recent graduate?", "Graduate school GPA",
+])
+def test_graduate_the_adjective_is_never_a_date(label):
+    """The whole point: none of these is asking when she finishes, so none of
+    them may receive the date. Asserted on the VALUE, not only the kind — a
+    future rule that reclassified these but still copied `grad_date` would pass
+    a kind-only test."""
+    ans = resolve([q(label)], RICH)[0]
+    assert ans.kind != "grad_date", label
+    assert ans.value == "", label
+    assert RICH["grad_date"] not in (ans.value or "\x00"), label
+
+
+@pytest.mark.parametrize("label", GPA_CORPUS)
+def test_no_gpa_field_is_ever_answered_from_a_date(label):
+    """A GPA is not a date, not a school and not a degree, and the profile does
+    not record one. "Graduate school GPA" was measured returning the graduation
+    date into a numeric field."""
+    ans = resolve([q(label)], RICH)[0]
+    assert ans.kind == "gpa", label
+    assert ans.value == "", label
+    assert "GPA" in ans.note or "grade" in ans.note
+
+
+def test_the_gpa_rule_is_ordered_ahead_of_the_school_level_rule():
+    """"High School GPA" is both. GPA wins on purpose: telling her "your profile
+    has no GPA" names the thing the field actually wants, where the school-level
+    note would explain the wrong half of the question."""
+    assert classify(q("High School GPA")) == "gpa"
+    assert classify(q("Graduate school GPA")) == "gpa"
+    assert classify(q("High School Name")) == "school_level"
+
+
+def test_the_leading_boundary_is_what_keeps_undergraduate_working():
+    r"""MEASURED, and it reverses a finding from the previous round.
+
+    When `school_level` held only pre-tertiary vocabulary, the leading `\b` was
+    measured EQUIVALENT — zero of /usr/share/dict/words' 235,976 entries embed
+    any of those phrases — and the mutant removing it was reported as genuinely
+    unkillable rather than papered over with a contrived negative.
+
+    Adding "graduate school" changed that in one line: **"undergraduate school"
+    contains "graduate school"**. Without the boundary, "Undergraduate School"
+    matches `school_level` and goes blank, breaking a case that must keep
+    resolving from the profile.
+
+    Whether a boundary is load-bearing is a property of the VOCABULARY, not of
+    the regex. An equivalent mutant is only equivalent for the alternation it
+    was measured against.
+    """
+    for label in ("Undergraduate School", "Undergraduate program",
+                  "Undergraduate Institution", "Undergraduate degree"):
+        assert classify(q(label)) != "school_level", label
+    # ...while the deliberately-spelled-out `post` form still lands.
+    assert classify(q("Postgraduate school")) == "school_level"
+
+
+# ---------------------------------------------------------------- the invariant
+
+# What each profile field IS, so that "a value of the wrong kind" is checkable
+# without an oracle for every label. Two independent vocabularies: one for
+# labels that ask WHEN, one for labels that name a THING. A label that does both
+# ("Year of High School Graduation") is excluded from both directions and is
+# covered by `school_level`'s own tests instead.
+_ASKS_WHEN = re.compile(
+    r"\b(?:date|dates|year|years|month|months|day|when|term|semester|quarter)\b",
+    re.IGNORECASE)
+_NAMES_A_THING = re.compile(
+    r"\b(?:school|schools|university|universities|college|institution|program"
+    r"|programme|degree|major|gpa|discipline|concentration)\b",
+    re.IGNORECASE)
+
+
+def _every_known_label():
+    """Every label this suite can lay hands on: all three captured boards, the
+    Greenhouse JSON payload, and every corpus in this file. Deliberately wide —
+    the point of an invariant is to be checked against labels nobody wrote it
+    for."""
+    from agents.job_applier.locate_dom import (
+        discover_questions,
+        excluded_eeo_questions,
+        unreadable_questions,
+    )
+
+    ats = pathlib.Path(__file__).parent / "fixtures" / "ats"
+    out = []
+    for board in ("lever", "greenhouse", "ashby"):
+        html = (ats / f"{board}-form.html").read_text()
+        out += discover_questions(html) + unreadable_questions(html) + excluded_eeo_questions(html)
+    out += _fixture_questions()
+    out += [q(lbl) for lbl in SCHOOL_LEVEL_CORPUS + GRAD_DATE_CORPUS + GPA_CORPUS]
+    out += [q(lbl) for lbl, _ in SCHOOL_KEPT_CORPUS]
+    out += [q(lbl) for lbl in ("Graduate School", "Graduate school GPA",
+                               "Graduate program", "Graduate degree",
+                               "Recent graduate?", "Undergraduate School")]
+    return out
+
+
+def test_no_profile_value_lands_in_a_field_of_a_different_kind():
+    """THE INVARIANT, stated once instead of case by case.
+
+    A label that names a THING and does not ask WHEN must never receive the
+    profile's graduation date; a label that asks WHEN and names no thing must
+    never receive the school, the degree or the name. This is what catches the
+    FIFTH instance of this family without anyone finding it by hand — it is not
+    a list of the four we know about.
+
+    Before the fix it failed on "Graduate School", "Graduate program",
+    "Graduate degree" and "Graduate school GPA", each having received
+    `grad_date`.
+    """
+    profile = {**RICH, "grad_date": "2027"}
+    date_value = profile["grad_date"]
+    thing_values = {profile[f] for f in ("school", "degree", "full_name") if profile.get(f)}
+
+    checked_things = checked_dates = 0
+    for question in _every_known_label():
+        label = question.label or ""
+        ans = resolve([question], profile)[0]
+        if not ans.value:
+            continue
+        asks_when = bool(_ASKS_WHEN.search(label))
+        names_thing = bool(_NAMES_A_THING.search(label))
+        if names_thing and not asks_when:
+            checked_things += 1
+            assert ans.value != date_value, (
+                f"a DATE was put in {label!r}, which names a thing", ans.kind)
+        if asks_when and not names_thing:
+            checked_dates += 1
+            assert ans.value not in thing_values, (
+                f"a non-date profile field was put in {label!r}, which asks when", ans.kind)
+
+    # Non-vacuous in BOTH directions, or the assertions above prove nothing.
+    assert checked_things >= 5, checked_things
+    assert checked_dates >= 1, checked_dates
+
+
+def test_a_profile_field_is_only_ever_copied_into_its_own_kind():
+    """The mechanism half of the same invariant: whenever an answer's value IS a
+    profile field verbatim, the kind the resolver assigned must be the kind that
+    field belongs to. Guards `_resolve_one` growing a branch that reads the
+    wrong profile key — the failure the label-level test above cannot see,
+    because a wrong key with a right-looking label passes it.
+    """
+    from agents.job_applier.resolver import _PROFILE_FIELD_BY_KIND
+
+    profile = {**RICH, "grad_date": "2027"}
+    # `first_name`/`last_name` are derived from `full_name`, so they are named
+    # explicitly rather than being absent from the map.
+    allowed = {**{k: v for k, v in _PROFILE_FIELD_BY_KIND.items()},
+               "first_name": "full_name", "last_name": "full_name"}
+    by_value = {}
+    for field, value in profile.items():
+        if isinstance(value, str) and len(value) > 3:
+            by_value.setdefault(value, set()).add(field)
+
+    seen = 0
+    for question in _every_known_label():
+        ans = resolve([question], profile)[0]
+        fields = by_value.get(ans.value or "\x00")
+        if not fields:
+            continue
+        seen += 1
+        assert allowed.get(ans.kind) in fields, (
+            ans.question.label, ans.kind, allowed.get(ans.kind), fields)
+    assert seen >= 5, seen
