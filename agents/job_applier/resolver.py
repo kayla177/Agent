@@ -616,10 +616,18 @@ _CA_RE = re.compile(r"\b(?:canada|canadian)\b", re.IGNORECASE)
 _MULTI_COUNTRY_RE = re.compile(r"\bnorth\s+america\w*\b", re.IGNORECASE)
 
 
-def _country(label: str) -> str | None:
-    """"us", "ca", or None when the label names neither or BOTH."""
+def _country_signals(label: str) -> tuple[str | None, bool]:
+    """`(country, names_more_than_one)`.
+
+    `country` is "us", "ca", or None. The second element distinguishes the two
+    reasons `country` can be None, which the posting-country default below
+    depends on: a label naming NO country can be answered for the country the
+    job is in, while one naming BOTH ("North America", or the US and Canada
+    together) can never be — one profile field does not answer it, and the
+    posting's country would silently pick a side.
+    """
     if _MULTI_COUNTRY_RE.search(label):
-        return None
+        return None, True
     is_us = bool(
         _US_UNAMBIGUOUS_RE.search(label)
         or _US_PRONOUN_SAFE_RE.search(label)
@@ -627,10 +635,32 @@ def _country(label: str) -> str | None:
     )
     is_ca = bool(_CA_RE.search(label))
     if is_us and not is_ca:
-        return "us"
+        return "us", False
     if is_ca and not is_us:
-        return "ca"
-    return None
+        return "ca", False
+    return None, (is_us and is_ca)
+
+
+def _country(label: str) -> str | None:
+    """"us", "ca", or None when the label names neither or BOTH."""
+    return _country_signals(label)[0]
+
+
+#: Posting countries this module can turn into a profile field. `jobs.country`
+#: also holds "UNKNOWN" and "OTHER", and neither of those names a field.
+DEFAULT_COUNTRIES: frozenset[str] = frozenset({"us", "ca"})
+
+
+def _default_country(value: str) -> str:
+    """Normalise a caller-supplied posting country, or "" if it names no field.
+
+    Deliberately strict: anything that is not recognisably the US or Canada
+    (including `jobs.country`'s own "UNKNOWN" and "OTHER") yields "", which
+    leaves every unnamed-country eligibility question exactly where it was —
+    blank, with the note saying the question does not name a country.
+    """
+    normalized = str(value or "").strip().casefold()
+    return normalized if normalized in DEFAULT_COUNTRIES else ""
 
 
 # ---------------------------------------------------------------------------
@@ -730,22 +760,47 @@ def _emit(question: Question, kind: str, value: str, note: str = "") -> Answer:
     return Answer(question=question, value=value, source="profile", note=note, kind=kind)
 
 
-def _resolve_eligibility(question: Question, profile: dict, kind: str) -> Answer:
+#: Prefix added to every note on an eligibility answer whose country came from
+#: the POSTING rather than from the question's own wording. The user is told
+#: which way the agent guessed, because the guess picks the profile field.
+_FROM_POSTING_NOTE = (
+    "this question does not name a country, so the posting's own country "
+    "({country}) decided which profile field applies. "
+)
+
+
+def _resolve_eligibility(
+    question: Question, profile: dict, kind: str, default_country: str = ""
+) -> Answer:
     """Resolve a work-authorization or sponsorship question.
 
     Never reached by the drafting node and never allowed to guess: every path
     that isn't a direct read of a typed status ends in a blank with a note the
     handoff lists as blocking.
+
+    `default_country` is the posting's country ("us"/"ca"), used ONLY when the
+    label names no country at all — "Are you legally authorized to work in the
+    country for which you are applying?" is a real Lever question, and blanking
+    it for not naming a country was the resolver refusing to read a fact the
+    posting row already knows. It changes nothing else: `work_auth` and
+    `sponsorship` stay in `BLOCKING_KINDS`, so every answer here is still
+    surfaced for the human to confirm, and a label naming BOTH countries still
+    goes blank (`_country_signals`).
     """
     label = question.label or ""
-    country = _country(label)
-    if country is None:
+    named, names_several = _country_signals(label)
+    country = named or ("" if names_several else _default_country(default_country))
+    if not country:
         return _blank(
             question, kind,
             "work authorization — this question does not name a single country "
             "(US or Canada), so I cannot tell which profile field applies; "
             "answer it yourself.",
         )
+    # Said on every outcome below, not only the ones that fill something: a
+    # blank that names `ca_work_auth` on a question that never said "Canada"
+    # is just as much an inference as a filled one.
+    from_posting = _FROM_POSTING_NOTE.format(country=country.upper()) if named is None else ""
 
     # A status maps to "Yes"/"No" only for a label that actually asks a yes/no
     # question. On a select/checkbox the option gate plays that role instead,
@@ -768,25 +823,26 @@ def _resolve_eligibility(question: Question, profile: dict, kind: str) -> Answer
     if _is_true(profile.get("needs_sponsorship")) and status in ("citizen", "permanent_resident"):
         return _blank(
             question, kind,
-            f"work authorization — your profile conflicts: it says you need "
-            f"sponsorship but {auth_field} is “{status}”. Fix the profile or "
-            f"answer this question yourself.",
+            f"work authorization — {from_posting}your profile conflicts: it says "
+            f"you need sponsorship but {auth_field} is “{status}”. Fix the profile "
+            f"or answer this question yourself.",
         )
 
     if not status:
         return _blank(
             question, kind,
-            f"work authorization is not set in your profile ({auth_field}) — this "
-            f"answer must be yours; it is never guessed.",
+            f"{from_posting}work authorization is not set in your profile "
+            f"({auth_field}) — this answer must be yours; it is never guessed.",
         )
 
     if status in _CONDITIONAL_STATUS_TEXT:
         return _emit(
             question, kind, _CONDITIONAL_STATUS_TEXT[status],
             note=(
-                f"conditional status ({status}): a plain yes/no depends on visa "
-                f"specifics this system does not model, so your profile's status is "
-                f"stated instead — review and edit before submitting."
+                f"{from_posting}conditional status ({status}): a plain yes/no "
+                f"depends on visa specifics this system does not model, so your "
+                f"profile's status is stated instead — review and edit before "
+                f"submitting."
             ),
         )
 
@@ -797,10 +853,13 @@ def _resolve_eligibility(question: Question, profile: dict, kind: str) -> Answer
         # Blank rather than a stab at what it might mean.
         return _blank(
             question, kind,
-            f"work authorization — your profile's {auth_field} value "
+            f"work authorization — {from_posting}your profile's {auth_field} value "
             f"“{status}” has no defined form answer; answer this yourself.",
         )
-    return _emit(question, kind, answer)
+    return _emit(
+        question, kind, answer,
+        note=f"{from_posting}read from your profile's {auth_field}." if from_posting else "",
+    )
 
 
 def _missing_note(field_name: str) -> str:
@@ -842,12 +901,12 @@ def _name_parts(full_name: str) -> tuple[str, str]:
     return " ".join(parts[:-tail]), " ".join(parts[-tail:])
 
 
-def _resolve_one(question: Question, profile: dict) -> Answer:
+def _resolve_one(question: Question, profile: dict, default_country: str = "") -> Answer:
     kind = classify(question)
     label = question.label or ""
 
     if kind in _MAPPABLE_ELIGIBILITY:
-        return _resolve_eligibility(question, profile, kind)
+        return _resolve_eligibility(question, profile, kind, default_country)
 
     if kind == "citizenship":
         # Always blank, even when a status IS typed. The profile records work
@@ -988,15 +1047,26 @@ def _resolve_one(question: Question, profile: dict) -> Answer:
     )
 
 
-def resolve(questions: list[Question], profile: dict) -> list[Answer]:
+def resolve(
+    questions: list[Question], profile: dict, *, default_country: str = ""
+) -> list[Answer]:
     """One `Answer` per question, in the questions' own order.
 
     Reads `profile` only via `.get`, so a partial or empty dict is normal
     input, not an error — the real profile currently has most fields unset, and
     "everything blank, each with a reason" is the expected output for it.
+
+    `default_country` ("us" / "ca", case-insensitive; anything else ignored) is
+    the country the POSTING is in, which the caller reads off the job row. It is
+    consulted for one thing only: an eligibility question whose label names no
+    country ("...authorized to work in the country for which you are applying?")
+    picks the matching `{country}_work_auth` field instead of going blank for
+    not knowing which one applies, and says so in its note. It never widens what
+    may be answered — the eligibility kinds are all in `BLOCKING_KINDS`, so the
+    handoff still makes the human confirm every one of them.
     """
     profile = profile or {}
-    return [_resolve_one(q, profile) for q in questions]
+    return [_resolve_one(q, profile, default_country) for q in questions]
 
 
 def blocking(answers: list[Answer]) -> list[Answer]:

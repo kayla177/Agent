@@ -75,6 +75,12 @@ def _resume_builder():
     return build_resume_generator_graph
 
 
+def _applier_builder():
+    from agents.job_applier.graph import build_job_applier_graph
+
+    return build_job_applier_graph
+
+
 def _gmail_sync_builder():
     from agents.gmail_sync.graph import build_gmail_sync_graph
 
@@ -127,6 +133,21 @@ REGISTRY: dict[str, AgentSpec] = {
         _builder=_resume_builder,
         node_order=("gather", "research", "keywords", "draft", "latexify", "save"),
         planet="jupiter", label="resume",
+    ),
+    "job_applier": AgentSpec(
+        key="job_applier",
+        display_name="Assisted Apply",
+        description=(
+            "Opens a job's application form in a visible browser and fills what "
+            "it can from your profile. It never submits — you review and send."
+        ),
+        emoji="🖊️",
+        _builder=_applier_builder,
+        # Must equal `agents.job_applier.graph.NODE_ORDER`, and equal the order
+        # the compiled graph actually runs. Both are asserted by
+        # `tests/test_applier_graph.py`.
+        node_order=("load_profile", "fetch_form", "resolve", "draft", "fill", "handoff"),
+        planet="mars", label="apply",
     ),
     "gmail_sync": AgentSpec(
         key="gmail_sync",

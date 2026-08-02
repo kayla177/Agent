@@ -339,11 +339,20 @@ def _refusal_outcome(answer: Answer) -> FillOutcome:
     """The outcome for an answer this module will not type, and why."""
     if answer.kind in BLOCKING_KINDS:
         if (answer.value or "").strip():
+            # The resolver's own note is APPENDED, not discarded. It carries
+            # things this sentence cannot know — most importantly that the
+            # profile field was chosen from the POSTING's country because the
+            # question named none, which is an inference the user has to be able
+            # to check. Dropping it left a bare "your profile implies Yes" on
+            # exactly the two questions where the agent had guessed which
+            # country's field to read.
             note = (
                 f"left for you deliberately. Your profile implies “{answer.value}”, "
                 f"but this question decides whether the application is considered "
                 f"at all, so the agent does not answer it — choose it yourself."
             )
+            if (answer.note or "").strip():
+                note = f"{note} {answer.note.strip()}"
         else:
             note = answer.note or "left for you — the agent does not answer this kind."
         return FillOutcome(
@@ -1168,3 +1177,34 @@ def fill_form(
     report.resume = attach_resume(page, controls, resume_path, timeout_ms=timeout_ms)
     report.outcomes.append(report.resume)
     return report
+
+
+# ---------------------------------------------------------------------------
+# The graph node
+# ---------------------------------------------------------------------------
+
+
+def fill_node(state: dict) -> dict:
+    """Task 8's adapter: read the graph state, call `fill_form`, write the report.
+
+    `state` is an `agents.job_applier.state.ApplierState`, annotated as a plain
+    dict on purpose — importing the TypedDict would add an in-package import to
+    a module whose import list is itself asserted, to close the "a helper in
+    another module clicks" hole. A TypedDict is a dict at runtime, so nothing is
+    lost but the annotation.
+
+    An empty `resume_path` becomes `None`, which is `fill_form`'s "no résumé was
+    given" input — not a path to a file called "".
+
+    This deliberately does NOT catch: `fill_form` swallows every per-field
+    failure itself, so anything that escapes it is a page that cannot be read at
+    all, and the graph's own guard turns that into a handoff explaining the stop
+    (and closes the browser) rather than a half-report that looks complete.
+    """
+    return {
+        "fill_report": fill_form(
+            state.get("locator"),
+            state.get("answers") or [],
+            resume_path=(state.get("resume_path") or "").strip() or None,
+        )
+    }

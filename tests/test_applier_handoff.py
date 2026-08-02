@@ -40,6 +40,7 @@ from agents.job_applier import drafting, resolver
 from agents.job_applier.drafting import DRAFT_MARKER, is_marked
 from agents.job_applier.locate_dom import PageLocator, discover_questions
 from agents.job_applier.nodes import handoff as handoff_mod
+from agents.job_applier.nodes.draft import merge_answers
 from agents.job_applier.nodes.fill import (
     ATTACHED,
     BLANK,
@@ -207,23 +208,15 @@ def _html(board: str) -> str:
     return (FIXTURES / f"{board}-form.html").read_text()
 
 
-def _merge(resolved: list[Answer], drafted: list[Answer]) -> list[Answer]:
-    """The answer list the Task 8 graph will hand the fill executor.
-
-    The policy matters to the REPORT, which is why it is pinned here: the
-    resolver blanks every `free_text` question with the note "left for the AI
-    drafting step, which marks its output as AI-drafted for you to review". If
-    the merge keeps that note when drafting then DECLINED the question, the
-    report promises the user a draft that is never coming — on Lever that is
-    four questions, including both video prompts, where drafting's own note
-    ("this box reads as a request for a video recording") is the true and useful
-    one. So drafting's answer wins for every question drafting owns, whether it
-    wrote one or refused. (`test_the_report_never_promises_a_draft_that_was_already_declined`.)
-    """
-    return [
-        d if (r.source == "blank" and d.kind == "free_text") else r
-        for r, d in zip(resolved, drafted)
-    ]
+# The merge policy that decides what the executor types. It used to be defined
+# here, because Task 7 needed it before Task 8 existed; it now LIVES in the
+# graph's draft node and is imported so there is exactly one of it. The property
+# it protects is still pinned here, in
+# `test_the_report_never_promises_a_draft_that_was_already_declined`: the
+# resolver blanks every `free_text` question with "left for the AI drafting
+# step", drafting then DECLINES four of Lever's, and keeping the resolver's note
+# for those would promise the user a draft that is never coming.
+_merge = merge_answers
 
 
 def _build(board: str, *, profile=None, resume_path="", elements=None,

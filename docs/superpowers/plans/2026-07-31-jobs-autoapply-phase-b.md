@@ -674,9 +674,11 @@ comment at the top of the test.
 
 **Files:** Create `state.py`, `graph.py`, `nodes/*`; Modify: `agents/registry.py`; Test: `tests/test_applier_graph.py`
 
-- [ ] Chain: `load_profile → fetch_form → resolve → draft → fill → handoff`, each node short-circuiting on `state["error"]` the way `resume_generator` does.
-- [ ] Registry entry `job_applier` with `node_order` matching the graph exactly (Phase A found two registries drifted from their graphs — add a test asserting they match).
-- [ ] Tests run the whole graph against fixtures with the browser and model monkeypatched; no network, no Chromium.
+- [x] Chain: `load_profile → fetch_form → resolve → draft → fill → handoff`, each node short-circuiting on `state["error"]` the way `resume_generator` does. **One deliberate exception:** `handoff` runs even on `error`, because a run that could not open a browser still owes the user a report saying so (a silent empty report is the failure mode this task set out to prevent).
+- [x] Registry entry `job_applier` with `node_order` matching the graph exactly. The test is written over the WHOLE registry, and checks three things per agent: `node_order` equals the `send=True` graph's nodes, no edge runs backwards through that order, and the `send=False` graph is a subset. All seven agents pass — the three that looked drifted (`morning_briefing`, `stock_digest`, `application_tracker`) differ only by `deliver`, which is conditional on `send`.
+- [x] Tests run the whole graph against fixtures with the browser and model monkeypatched; no network, no Chromium (proved by re-running the file with `playwright` blocked at the import hook).
+- [x] **Carried debt from Task 4 discharged:** `resolve(..., default_country=...)` fed from `jobs.country`. On the captured Lever form this answers exactly the two questions that name no country ("...authorized to work in the country for which you are applying?" and the sponsorship one) and changes nothing else — the eligibility kinds stay in `BLOCKING_KINDS`, "North America" still goes blank, and `UNKNOWN`/`OTHER` still name no field.
+- [x] **Browser lifetime:** closed on every failing path (a node raising, a node setting `error`, a page that will not load), deliberately LEFT OPEN on success — closing the window on a successful fill would throw away every field just typed, one keystroke before the only action that matters. `graph.release_browser(state)` is exported for whoever ends that session.
 
 ---
 

@@ -737,3 +737,36 @@ def _render_band(band: str, items: tuple[ReportItem, ...]) -> list[str]:
 def render_text(report: HandoffReport, *, show_filled: bool = True) -> str:
     """Module-level alias for `HandoffReport.render_text`."""
     return report.render_text(show_filled=show_filled)
+
+
+# ---------------------------------------------------------------------------
+# The graph node
+# ---------------------------------------------------------------------------
+
+
+def handoff_node(state: dict) -> dict:
+    """Task 8's adapter: build the report from the graph state and render it.
+
+    **This is the one node that runs even when `error` is set**, and that is the
+    whole reason it exists as a separate step rather than as the tail of `fill`.
+    A run that died before the browser opened has no fill report, no locator and
+    no questions — and it still owes the user a sentence saying what happened
+    and that nothing was submitted. `build_report` already accepts every one of
+    those as `None`, so the failure path needs no special case here: the failing
+    node's `message` becomes the report's "stopped early" line, and the rendered
+    report replaces it as the run's output.
+
+    `state` is an `agents.job_applier.state.ApplierState`; it is annotated as a
+    plain dict for the same reason `fill_node` is — this module's imports are
+    asserted, and a TypedDict is a dict at runtime anyway.
+    """
+    job = state.get("job") or {}
+    report = build_report(
+        state.get("fill_report"),
+        page_locator=state.get("locator"),
+        job_title=str(job.get("title") or ""),
+        company=str(job.get("company") or ""),
+        form_url=str(state.get("form_url") or job.get("url") or ""),
+        error=str(state.get("message") or "") if state.get("error") else "",
+    )
+    return {"report": report, "message": report.render_text()}
