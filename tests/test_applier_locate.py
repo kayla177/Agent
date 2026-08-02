@@ -2391,6 +2391,7 @@ from agents.job_applier import drafting, resolver  # noqa: E402
 from agents.job_applier.nodes import fill as fill_mod  # noqa: E402
 from agents.job_applier.nodes.fill import (  # noqa: E402
     ATTACHED,
+    FillOutcome,
     BLANK,
     CHANGED,
     FILLED,
@@ -2432,8 +2433,25 @@ class _Element:
         raises: Exception | None = None,
         fakepath: bool = False,
         no_file_api: bool = False,
+        option_values: dict[str, str] | None = None,
+        reverts: bool = False,
     ) -> None:
         self.value = value
+        # `reverts` models a React-controlled input that re-renders from its own
+        # state after ANY write, including the clearing one — so the field snaps
+        # back to what it already held rather than going empty. `swallow` is the
+        # weaker version (the value-write is dropped, a clear still lands), and
+        # the two produce genuinely different outcomes, which is the point.
+        self.reverts = reverts
+        self._initial = value
+        # A `<select>`'s option `value` ATTRIBUTE, which on real boards differs
+        # from the option's visible label ("4021" vs "Bachelor's Degree"). Kept
+        # separate from `self.value` so `input_value()` and the
+        # `selectedOptions[0].label` read return DIFFERENT things — without that,
+        # the two code paths are indistinguishable and the test that exists to
+        # prove the label path is used cannot fail.
+        self.option_values = dict(option_values or {})
+        self.value_attribute: str | None = None
         self.count = count
         self.visible = visible
         self.swallow = swallow
@@ -2462,24 +2480,32 @@ class _FormLocator:
     def count(self) -> int:
         return self._el.count
 
-    def is_visible(self) -> bool:
+    def is_visible(self, timeout: int | None = None) -> bool:
         self._page.visibility_checks.append(self._selector)
+        self._page.read_timeouts.append(("is_visible", timeout))
         return self._el.visible
 
-    def input_value(self) -> str:
+    def input_value(self, timeout: int | None = None) -> str:
+        self._page.read_timeouts.append(("input_value", timeout))
         el = self._el
         if el.files:
             # Measured on real headed Chromium: a file input's `value` is the
             # spec's deliberate fake path, Windows separator and all, on macOS.
             return f"C:\\fakepath\\{el.files[0]}" if el.fakepath else el.files[0]
+        if el.value_attribute is not None:
+            return el.value_attribute
         return el.value
 
-    def is_checked(self) -> bool:
+    def is_checked(self, timeout: int | None = None) -> bool:
+        self._page.read_timeouts.append(("is_checked", timeout))
         return self._el.checked
 
-    def evaluate(self, script: str):
+    def evaluate(self, script: str, arg=None, timeout: int | None = None):
+        self._page.read_timeouts.append(("evaluate", timeout))
         el = self._el
         if "selectedOptions" in script:
+            # The option's LABEL — deliberately not the same string
+            # `input_value()` returns when `option_values` is configured.
             return el.value
         if "files" in script:
             if el.no_file_api:
@@ -2493,6 +2519,9 @@ class _FormLocator:
         el = self._el
         if el.raises:
             raise el.raises
+        if el.reverts:
+            el.value = el._initial
+            return
         if el.swallow and value:
             return
         el.value = el.transform(value) if (el.transform and value) else value
@@ -2502,6 +2531,9 @@ class _FormLocator:
         el = self._el
         if el.raises:
             raise el.raises
+        if el.reverts:
+            el.value = el._initial
+            return
         if el.swallow_typing:
             return
         el.value = el.transform(value) if el.transform else value
@@ -2514,6 +2546,7 @@ class _FormLocator:
         if el.swallow:
             return
         el.value = label or ""
+        el.value_attribute = el.option_values.get(el.value)
 
     def check(self, timeout: int | None = None) -> None:
         self._record("check", True)
@@ -2542,6 +2575,7 @@ class _FormPage:
         self._elements: dict[str, _Element] = dict(elements)
         self.writes: list[tuple[str, str, object]] = []
         self.visibility_checks: list[str] = []
+        self.read_timeouts: list[tuple[str, int | None]] = []
         self.content_calls = 0
 
     def element(self, selector: str) -> _Element:
@@ -2589,9 +2623,20 @@ _SUBMIT_RE = re.compile(r"submit|apply\s*now|send\s+application", re.IGNORECASE)
 # input triggers HTML's implicit form submission, while `press_sequentially` is
 # the executor's legitimate character-by-character typing retry. AST attribute
 # equality keeps the two apart; a substring grep would not.
+#
+# `dispatch_event` is here because it fabricates an event on an element with NO
+# actionability checks at all — `dispatch_event("click")` on a submit button is
+# a click by any honest reading, and it was the widest hole in the first version
+# of this guard.
 _CLICK_METHODS = frozenset({
     "click", "dblclick", "tap", "submit", "press", "hover", "focus_and_click",
+    "dispatch_event", "set_checked", "request_submit",
 })
+
+# Attributes that hand control of the input devices to the caller wholesale.
+# `page.keyboard.down("Enter")` presses Enter with no method name this guard
+# would otherwise recognise.
+_INPUT_DEVICE_ATTRS = frozenset({"keyboard", "mouse", "touchscreen"})
 
 # Calls whose string argument is a SELECTOR. A submit-shaped literal reaching
 # one of these is a submit control being addressed, even if nothing clicks it
@@ -2601,31 +2646,92 @@ _SELECTOR_CALLS = frozenset({
     "get_by_role", "get_by_text", "get_by_label", "get_by_title", "eval_on_selector",
 })
 
+# Calls that execute ARBITRARY JavaScript in the page. `fill.py` legitimately
+# uses `locator.evaluate` twice (reading a select's option label and a file
+# input's filename), so these cannot simply be banned — which makes them the
+# single most likely future regression, since `document.forms[0].submit()`
+# inside one is a submit with no Python-level click anywhere.
+_EVALUATE_CALLS = frozenset({
+    "evaluate", "evaluate_handle", "evaluate_all", "eval_on_selector",
+    "eval_on_selector_all", "add_init_script", "add_script_tag",
+})
+
+# JavaScript that submits or clicks. Deliberately broader than `_SUBMIT_RE`:
+# inside a `<script>` payload, ANY `.click()` or `.submit()` is out of bounds,
+# not only one aimed at something spelled "submit".
+_JS_MUTATION_RE = re.compile(
+    r"\.\s*click\s*\(|\.\s*submit\s*\(|requestSubmit|\bform\s*\.\s*submit"
+    r"|dispatchEvent|KeyboardEvent",
+    re.IGNORECASE,
+)
+
+# What this scan CANNOT see. Written down rather than glossed over, because the
+# first version's docstring claimed "no submit-shaped string may appear in the
+# code" — which was false, and the module's own `_SUBMITISH_RE` proves it.
+_UNSCANNABLE = """
+  * A selector held in a plain VARIABLE. `page.locator(control.selector)` is
+    exactly what `fill.py` does, so a bare Name/Attribute argument cannot be
+    banned. (A selector CONSTRUCTED in place — f-string, concatenation, a call —
+    IS banned, so `page.locator(f"button[type={x}]")` is caught.) Backstop:
+    `_single_locator` is the only place that calls `page.locator`, and it
+    refuses any control `_is_submitish` matches — so the runtime value is
+    checked even though the source cannot be.
+  * Dynamic attribute access: `getattr(loc, "cl" + "ick")()`. No AST scan sees
+    that. Backstop: nothing in this package builds attribute names.
+  * A helper in ANOTHER module that clicks. Backstop:
+    `test_every_applier_node_module_is_scanned` covers every node module, and
+    `test_the_fill_executor_only_imports_scanned_or_pure_modules` pins that
+    fill.py's package imports are all modules that are themselves guarded.
+  * What Playwright does INTERNALLY. `check()` clicks; that is expected and is
+    why `_fill_choice_group` refuses any target that is not a real
+    radio/checkbox input.
+"""
+
 
 def _submit_click_violations(source: str) -> list[str]:
     """Every way `source` could click a submit control. Empty list == clean.
 
-    Two rules, because either alone is defeatable:
-      * ANY click-family call at all — the executor clicks nothing, so there is
-        no legitimate one to allow, and a rule that only rejected clicks whose
-        literal argument looked submit-ish would miss
-        `page.locator(sel).click()`;
-      * any submit-shaped string literal handed to a selector lookup — which is
-        how a submit control gets addressed in the first place.
+    Four rules. Each one alone is defeatable, which is why there are four —
+    and even together they are not complete; see `_UNSCANNABLE`.
+
+      1. ANY click-family call at all. The executor clicks nothing, so there is
+         no legitimate one to allow, and a rule that only rejected clicks whose
+         literal argument looked submit-ish would miss
+         `page.locator(sel).click()`.
+      2. Any use of `page.keyboard` / `mouse` / `touchscreen`.
+      3. Any `evaluate`-family call whose JavaScript submits or clicks — or
+         whose JavaScript is not a plain string literal at all, since a
+         constructed script cannot be read here.
+      4. Any submit-shaped string literal handed to a selector lookup.
     """
     tree = _strip_docstrings(ast.parse(source))
     bad: list[str] = []
     for node in ast.walk(tree):
+        if isinstance(node, ast.Attribute) and node.attr in _INPUT_DEVICE_ATTRS:
+            bad.append(f"touches .{node.attr}")
         if not isinstance(node, ast.Call) or not isinstance(node.func, ast.Attribute):
             continue
         attr = node.func.attr
         if attr in _CLICK_METHODS:
             bad.append(f"calls .{attr}()")
+        if attr in _EVALUATE_CALLS:
+            script = node.args[0] if node.args else None
+            if not (isinstance(script, ast.Constant) and isinstance(script.value, str)):
+                bad.append(f".{attr}(<non-literal script>)")
+            elif _JS_MUTATION_RE.search(script.value) or _SUBMIT_RE.search(script.value):
+                bad.append(f".{attr}({script.value[:40]!r})")
         if attr in _SELECTOR_CALLS:
             for arg in list(node.args) + [k.value for k in node.keywords]:
                 if isinstance(arg, ast.Constant) and isinstance(arg.value, str):
                     if _SUBMIT_RE.search(arg.value):
                         bad.append(f".{attr}({arg.value!r})")
+                elif isinstance(arg, (ast.JoinedStr, ast.BinOp, ast.Call)):
+                    # A selector BUILT here, whose value this scan cannot read:
+                    # `page.locator(f"button[type={x}]")`. Banned outright.
+                    # A bare Name/Attribute (`control.selector`) is allowed —
+                    # fill.py needs it, and `_single_locator` checks it at
+                    # runtime instead.
+                    bad.append(f".{attr}(<constructed selector>)")
     return bad
 
 
@@ -3195,7 +3301,30 @@ def test_a_missing_resume_file_attaches_nothing(tmp_path):
     page = _FormPage(html)
     out = attach_resume(page, parse_controls(html), str(tmp_path / "nope.pdf"))
     assert out.status == BLANK and page.writes == []
-    assert "does not exist" in out.note
+    assert "was not found" in out.note
+
+
+def test_the_resume_outcome_never_leaks_an_absolute_path(cv, tmp_path):
+    """Task 7 renders these notes to the user; a handoff has no business
+    printing `/Users/<name>/…` back at them. Both the success and the
+    file-missing path carry the basename only."""
+    html = '<label for="r">Resume/CV</label><input id="r" type="file">'
+    ok = attach_resume(_FormPage(html), parse_controls(html), str(cv))
+    assert ok.status == ATTACHED
+    missing = attach_resume(_FormPage(html), parse_controls(html), str(tmp_path / "nope.pdf"))
+    assert missing.status == BLANK
+    for out in (ok, missing):
+        assert str(tmp_path) not in out.note
+        assert str(tmp_path) not in out.intended
+        assert "/" not in out.intended and "\\" not in out.intended
+
+
+def test_attach_resume_does_not_raise_on_a_nonsense_path():
+    """"Never raises" has to include the argument handling: `os.fspath` throws
+    TypeError on a non-path."""
+    html = '<label for="r">Resume/CV</label><input id="r" type="file">'
+    out = attach_resume(_FormPage(html), parse_controls(html), 12345)  # type: ignore[arg-type]
+    assert out.status == BLANK and "could not be read" in out.note
 
 
 def test_attaching_a_file_is_not_submitting(cv):
@@ -3316,3 +3445,435 @@ def test_a_raising_multiline_write_reports_the_error_not_the_retry_refusal():
     assert "TimeoutError" in out.note
     assert "Enter keystroke" not in out.note
     assert out.attempts == 1
+
+
+# ===========================================================================
+# Task 6, fix round 1 — items an independent review found
+# ===========================================================================
+
+
+# --------------------------------------------------------------------------
+# CRITICAL: \r is an Enter alias too
+# --------------------------------------------------------------------------
+
+
+def test_every_enter_producing_character_is_refused_not_just_newline():
+    """The first version of this rule checked `"\\n"` only.
+
+    Playwright's driver holds ONE character->key alias map — `aliases` in
+    `playwright/driver/package/lib/coreBundle.js`, whose only character entry is
+    `["Enter", ["\\n", "\\r"]]`. So `\\r` presses Enter exactly as `\\n` does, and a
+    value carrying a classic-Mac or stray CR would have been typed
+    character-by-character into a single-line input, triggering HTML's implicit
+    submission with the source scan green.
+
+    That pair is EXHAUSTIVE, not a guess, which is what makes this test an
+    invariant rather than two examples: it is asserted against the module's own
+    `_ENTER_CHARS`, so a character added there without a matching refusal fails
+    here."""
+    assert fill_mod._ENTER_CHARS == frozenset({"\n", "\r"})
+    text = Control(tag="input", input_type="text", label="x", label_source="label",
+                   kind="text", required=False, required_source="")
+    area = Control(tag="textarea", input_type="", label="x", label_source="label",
+                   kind="textarea", required=False, required_source="")
+    for ch in sorted(fill_mod._ENTER_CHARS):
+        assert not fill_mod._may_type_character_by_character(text, f"a{ch}b"), repr(ch)
+        assert fill_mod._may_type_character_by_character(area, f"a{ch}b"), repr(ch)
+    # Characters that are NOT Enter aliases go through insertText and press no
+    # key, so they must not be refused — over-refusing would silently disable
+    # the retry for ordinary unicode text.
+    for ch in (" ", " ", "\t", " ", "é", "。"):
+        assert fill_mod._may_type_character_by_character(text, f"a{ch}b"), repr(ch)
+
+
+@pytest.mark.parametrize("value", ["bad\r", "\rbad", "a\rb", "a\r\nb", "a\nb"])
+def test_a_carriage_return_is_never_typed_into_a_single_line_input(value):
+    """End to end, through the executor, for every CR/LF arrangement."""
+    page = _FormPage(_TEXT_HTML, **{'[id="e"]': _Element(swallow=True)})
+    out = fill_one(page, parse_controls(_TEXT_HTML), _answer("Email", value))
+    assert out.status == BLANK
+    assert page.methods == ["fill"], f"a keystroke reached a single-line input for {value!r}"
+    assert "Enter keystroke" in out.note
+
+
+# --------------------------------------------------------------------------
+# IMPORTANT 1: the résumé field is reported exactly once
+# --------------------------------------------------------------------------
+
+
+def test_the_resume_field_is_reported_exactly_once(cv):
+    """The résumé input is itself a question, so the resolver emits a
+    `file_upload` answer for it whose note says "attach it yourself". Reported
+    alongside the attach outcome, Task 7 would tell the user
+    "Resume/CV — blank, attach it yourself" about a slot the agent had just
+    successfully attached to. Two contradictory statements about one field."""
+    html = _FULL_FORM_HTML
+    page = _FormPage(html)
+    locator = PageLocator(page)
+    answers = resolver.resolve(locator.questions(), {"full_name": "Testy McTestface"})
+    # The resolver really does emit one, so this test is not vacuous.
+    assert [a.kind for a in answers].count("file_upload") == 1
+
+    report = fill_form(locator, answers, resume_path=str(cv))
+    resume_entries = [o for o in report.outcomes if normalize_label(o.label) == "resume cv"]
+    assert len(resume_entries) == 1, resume_entries
+    assert resume_entries[0].status == ATTACHED
+    assert report.superseded == ["r"], "the suppressed question's key, recorded not lost"
+    # ...and nothing claims the user must attach it.
+    assert not any("attach it yourself" in o.note for o in report.outcomes)
+
+
+def test_the_resolver_answer_survives_when_the_agent_will_not_attach():
+    """The suppression mirrors `attach_resume`'s own preconditions. With no
+    résumé path there IS no attach, so "attach it yourself" is once again the
+    true thing to say and the resolver's answer must not be dropped."""
+    page = _FormPage(_FULL_FORM_HTML)
+    locator = PageLocator(page)
+    answers = resolver.resolve(locator.questions(), {})
+    report = fill_form(locator, answers, resume_path=None)
+    assert report.superseded == []
+    # The resolver's answer for the field (labelled from the DOM) AND the attach
+    # path's own refusal (which never got as far as identifying a field, so it is
+    # labelled generically). Both blank, and neither contradicts the other.
+    assert [o.label for o in report.outcomes if o.kind == "file_upload"] == [
+        "Resume/CV", "Résumé",
+    ]
+    assert {o.status for o in report.outcomes if o.kind == "file_upload"} == {BLANK}
+
+
+def test_other_file_fields_keep_their_resolver_answer(cv):
+    """Suppression is keyed on the control the attach CLAIMED, not on the kind,
+    so a cover-letter slot is still reported as the human's to do."""
+    html = ('<label for="r">Resume/CV</label><input id="r" type="file">'
+            '<label for="c">Cover Letter</label><input id="c" type="file">')
+    page = _FormPage(html)
+    locator = PageLocator(page)
+    answers = resolver.resolve(locator.questions(), {})
+    report = fill_form(locator, answers, resume_path=str(cv))
+    labels = {o.label: o.status for o in report.outcomes}
+    assert labels["Cover Letter"] == BLANK
+    assert labels["Resume/CV"] == ATTACHED
+    assert report.superseded == ["r"]
+
+
+# --------------------------------------------------------------------------
+# IMPORTANT 2: a reverted write is a swallowed write, not a reformat
+# --------------------------------------------------------------------------
+
+
+def test_a_reverted_write_on_a_prepopulated_field_is_retried_not_called_changed():
+    """Browser autofill, ATS session-restore and apply-with-LinkedIn prefill all
+    leave a field pre-populated. A React-controlled input that then re-renders
+    from its own state produces "non-empty and different from what we wrote" —
+    the same shape as a phone mask reformatting the value, and the opposite
+    situation.
+
+    Before the pre-write value was captured, this was reported `changed` with
+    the note "the field accepted the value … it reformatted or truncated it" and
+    the retry was SKIPPED, leaving a stale wrong value in a real application and
+    describing it to the user as a reformat."""
+    stale = _Element(value="stale@old.invalid", reverts=True)
+    page = _FormPage(_TEXT_HTML, **{'[id="e"]': stale})
+    out = fill_one(page, parse_controls(_TEXT_HTML),
+                   _answer("Email", "testy@example.invalid", akind="email"))
+    # The retry DID happen — that is the whole point.
+    assert page.methods == ["fill", "fill", "press_sequentially"]
+    assert out.status == BLANK, "a swallowed write is not a reformat"
+    assert out.value == "stale@old.invalid"
+    assert "snapped back" in out.note and "NOT your value" in out.note
+    assert "testy@example.invalid" in out.note
+
+
+def test_a_reverted_write_that_the_retry_rescues_is_reported_filled():
+    """The other direction: the typing retry is exactly what a swallowed write on
+    a pre-populated field needs, so when it works the outcome is `filled`."""
+    page = _FormPage(_TEXT_HTML,
+                     **{'[id="e"]': _Element(value="stale@old.invalid", swallow=True)})
+    out = fill_one(page, parse_controls(_TEXT_HTML),
+                   _answer("Email", "testy@example.invalid", akind="email"))
+    assert out.status == FILLED and out.strategy == "type"
+
+
+def test_a_prepopulated_field_that_reformats_is_still_changed():
+    """And a genuine reformat on a pre-populated field is still `changed`, not
+    mistaken for a revert — the discriminator is "reads back as what was there
+    BEFORE", not "was pre-populated"."""
+    page = _FormPage('<label for="p">Phone</label><input id="p" type="text">',
+                     **{'[id="p"]': _Element(value="555-9999",
+                                             transform=lambda v: f"({v[:3]}) {v[3:]}")})
+    out = fill_one(page, parse_controls('<label for="p">Phone</label><input id="p" type="text">'),
+                   _answer("Phone", "5550100", akind="phone"))
+    assert out.status == CHANGED and out.value == "(555) 0100"
+    assert page.methods == ["fill"]
+
+
+# --------------------------------------------------------------------------
+# IMPORTANT 3: reads are bounded too, not just writes
+# --------------------------------------------------------------------------
+
+
+def test_every_read_back_passes_an_explicit_timeout():
+    """`DEFAULT_TIMEOUT_MS` bounded only the writes; `input_value()`,
+    `evaluate()` and `is_checked()` all ran at Playwright's 30 s default, and a
+    read waits for an attached element exactly as a write does. One detached node
+    cost 30 s for one field — the hung-agent scenario the constant exists to
+    prevent, caused by whichever call waits longest."""
+    forms = [
+        (_TEXT_HTML, _answer("Email", "x@y.invalid")),
+        ('<label for="s">Degree</label><select id="s"><option>PhD</option></select>',
+         _answer("Degree", "PhD", kind="select", options=["PhD"])),
+        (_RADIO_HTML, _answer("Do you have a driver's licence?", "Yes",
+                              kind="select", options=["Yes", "No"])),
+    ]
+    for html, answer in forms:
+        page = _FormPage(html)
+        fill_one(page, parse_controls(html), answer, timeout_ms=1234)
+        assert page.read_timeouts, f"no reads recorded for {answer.question.label}"
+        for name, timeout in page.read_timeouts:
+            assert timeout == 1234, f"{name} ran unbounded on {answer.question.label}"
+
+
+def test_the_resume_read_back_passes_an_explicit_timeout(cv):
+    html = '<label for="r">Resume/CV</label><input id="r" type="file">'
+    page = _FormPage(html)
+    attach_resume(page, parse_controls(html), str(cv), timeout_ms=4321)
+    assert page.read_timeouts
+    assert {t for _, t in page.read_timeouts} == {4321}
+
+
+def test_no_read_helper_calls_playwright_without_a_timeout():
+    """Structural backstop for the above: every read-back call in the source
+    passes `timeout=`. A new read helper added without one is caught here even if
+    no behavioural test happens to exercise it."""
+    tree = _strip_docstrings(ast.parse(FILL_MODULE.read_text()))
+    reads = {"input_value", "is_checked", "is_visible", "evaluate", "count"}
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call) or not isinstance(node.func, ast.Attribute):
+            continue
+        if node.func.attr not in reads:
+            continue
+        if node.func.attr == "count":
+            continue  # `count()` does not wait; it has no timeout parameter
+        assert any(k.arg == "timeout" for k in node.keywords), (
+            f".{node.func.attr}() is called without an explicit timeout"
+        )
+
+
+# --------------------------------------------------------------------------
+# IMPORTANT 5 + the surviving mutations
+# --------------------------------------------------------------------------
+
+
+def test_a_select_read_back_uses_the_option_label_not_the_value_attribute():
+    """M-E. The previous version of this test could not fail: the stub returned
+    `el.value` from BOTH `evaluate()` and `input_value()`, so deleting
+    `_read_selected_label`'s evaluate branch changed nothing and the
+    `4021`-vs-`Bachelor's Degree` distinction it is named for was never
+    exercised. `option_values` now makes the two paths return different strings."""
+    label = "Bachelor’s Degree"
+    html = ('<label for="s">Highest degree</label>'
+            f'<select id="s"><option value="">Select…</option>'
+            f'<option value="4021">{label}</option></select>')
+    element = _Element(option_values={label: "4021"})
+    page = _FormPage(html, **{'[id="s"]': element})
+    out = fill_one(page, parse_controls(html),
+                   _answer("Highest degree", label, kind="select", options=[label]))
+    # The stub is genuinely discriminating: the two reads disagree.
+    loc = page.locator('[id="s"]')
+    assert loc.input_value() == "4021"
+    assert loc.evaluate("el => el.selectedOptions[0].label") == label
+    assert out.status == FILLED and out.value == label
+
+
+def test_needs_review_includes_every_changed_field():
+    """M-D. A `changed` phone-mask field silently vanishing from Task 7's review
+    list is one token away, and nothing caught it. The field reformatted the
+    value, so the human is the only one who can decide whether the result is
+    acceptable — dropping it from review defeats the point of the status."""
+    report = fill_mod.FillReport(outcomes=[
+        FillOutcome(key="a", label="A", status=FILLED),
+        FillOutcome(key="b", label="B", status=CHANGED, value="(555) 0100"),
+        FillOutcome(key="c", label="C", status=BLANK),
+        FillOutcome(key="d", label="D", status=FILLED, drafted=True),
+        FillOutcome(key="e", label="E", status=ATTACHED),
+    ])
+    assert {o.key for o in report.needs_review} == {"b", "c", "d"}
+    assert fill_mod.CHANGED in {o.status for o in report.needs_review}
+
+
+def test_two_group_options_with_the_same_label_tick_nothing():
+    """M-L. Ambiguity within a group is a refusal, exactly as ambiguity across
+    them is — `find_control` and `find_group_options` both refuse rather than
+    take the first, and this path must not be the exception."""
+    html = """
+    <li class="application-question">
+      <div class="application-label"><div class="text">Pick one</div></div>
+      <ul>
+        <li><label><input type="radio" name="q" value="a"><span>Yes</span></label></li>
+        <li><label><input type="radio" name="q" value="b"><span>Yes.</span></label></li>
+      </ul>
+    </li>
+    """
+    controls = parse_controls(html)
+    # Both options normalize to "yes", so the answer matches two of them.
+    assert [normalize_label(c.label) for c in controls] == ["yes", "yes"]
+    page = _FormPage(html)
+    out = fill_one(page, controls,
+                   _answer("Pick one", "Yes", kind="select", options=["Yes", "Yes."]))
+    assert out.status == BLANK and page.writes == []
+    assert "2 options" in out.note
+
+
+def test_the_typing_timeout_scales_with_the_value_length():
+    """M-J. A 1,500-character drafted answer typed at 5 ms/char cannot finish
+    inside the flat 5 s default, so an unscaled timeout would turn a WORKING
+    retry into a spurious failure — the opposite of the read-back's purpose."""
+    flat = fill_mod.DEFAULT_TIMEOUT_MS
+    assert fill_mod._typing_timeout("short", flat) == flat, "short values keep the floor"
+    long_value = "x" * 1500
+    scaled = fill_mod._typing_timeout(long_value, flat)
+    assert scaled > flat
+    # It must comfortably exceed the wall-clock cost of typing it.
+    assert scaled >= len(long_value) * 5
+
+
+def test_a_choice_target_that_is_not_a_radio_or_checkbox_is_refused():
+    """`check()` is the one write here that dispatches a click, so it is aimed
+    only at an element that definitionally is not a button."""
+    control = Control(tag="input", input_type="text", label="Yes", label_source="label",
+                      kind="text", required=False, required_source="",
+                      name="q", selector='input[name="q"]', group_label="Pick one")
+    page = _FormPage("")
+    out = fill_mod._fill_choice_group(
+        [control], _answer("Pick one", "Yes", kind="select", options=["Yes"]),
+        page, fill_mod.DEFAULT_TIMEOUT_MS)
+    assert out.status == BLANK and page.writes == []
+    assert "not a radio or checkbox" in out.note
+
+
+# --------------------------------------------------------------------------
+# Guard coverage: every node module, every named pin
+# --------------------------------------------------------------------------
+
+NODES_DIR = pathlib.Path(fill_mod.__file__).parent
+_NODE_MODULES = sorted(p for p in NODES_DIR.glob("*.py") if p.name != "__init__.py")
+
+
+@pytest.mark.parametrize("path", _NODE_MODULES, ids=lambda p: p.name)
+def test_every_applier_node_module_obeys_the_one_rule(path):
+    """Parametrised over a GLOB, not over a hardcoded path. The guard was
+    anchored to `fill.py` alone, so the next `agents/job_applier/nodes/*.py` —
+    Task 7's handoff, Task 8's graph — would have got no ONE-RULE scan at all."""
+    assert _submit_click_violations(path.read_text()) == [], path.name
+
+
+def test_every_applier_node_module_is_scanned():
+    """The equivalent of `test_the_capture_probe_is_covered_by_the_one_rule_guard`
+    for the write side: if the glob ever comes back empty, or fill.py is renamed
+    out of it, this fails loudly rather than silently covering nothing."""
+    names = {p.name for p in _NODE_MODULES}
+    assert "fill.py" in names
+    assert names == {p.name for p in NODES_DIR.glob("*.py")} - {"__init__.py"}
+    for path in _NODE_MODULES:
+        assert path.is_file(), path
+
+
+def test_the_fill_executor_only_imports_scanned_or_pure_modules():
+    """One of the holes `_UNSCANNABLE` names is "a helper in another module that
+    clicks". This closes it for the imports fill.py actually has: every
+    in-package import is a module that is itself guarded — `locate_dom` by
+    `test_module_has_no_mutating_call`, and the other three by having no browser
+    code at all (asserted here, not assumed)."""
+    tree = ast.parse(FILL_MODULE.read_text())
+    imported = {
+        node.module for node in ast.walk(tree)
+        if isinstance(node, ast.ImportFrom) and (node.module or "").startswith("agents.")
+    }
+    assert imported == {
+        "agents.job_applier.drafting",
+        "agents.job_applier.locate_dom",
+        "agents.job_applier.resolver",
+        "agents.job_applier.schema_greenhouse",
+    }
+    guarded = {str(p) for p in _READ_ONLY_FILES}
+    for module in sorted(imported):
+        path = pathlib.Path(__import__(module, fromlist=["_"]).__file__)
+        if str(path) in guarded:
+            continue
+        code = _executable_source(path)
+        for call in _MUTATING:
+            assert call not in code, f"{path.name} (imported by fill.py) calls {call}"
+
+
+def test_every_test_named_in_the_fill_module_docstrings_exists():
+    """Decision 8 says each numbered decision names the test that fails when it
+    stops being true. One of those names was already DEAD
+    (`test_the_fill_executor_never_clicks_anything`, which never existed), so the
+    convention was documenting a promise nothing kept. This makes the pins
+    load-bearing: rename a test and the module's own prose fails the suite."""
+    source = FILL_MODULE.read_text()
+    named = set(re.findall(r"\btest_[a-z0-9_]+", source))
+    assert named, "the docstrings should name their pins"
+    here = set(re.findall(r"^def (test_[a-z0-9_]+)", pathlib.Path(__file__).read_text(),
+                          re.MULTILINE))
+    missing = sorted(named - here)
+    assert not missing, f"fill.py names tests that do not exist: {missing}"
+
+
+def test_the_one_rule_guard_documents_what_it_cannot_catch():
+    """The old docstring claimed "no submit-shaped string may appear in the
+    code", which was false — only literals reaching a selector lookup are
+    rejected, which is why fill.py's own `_SUBMITISH_RE` contains the word and
+    passes. Overclaiming is worse than a narrow guarantee, because the next
+    reader stops looking for the gap."""
+    assert "_SUBMITISH_RE" in FILL_MODULE.read_text()
+    assert _submit_click_violations(FILL_MODULE.read_text()) == []
+    for hole in ("VARIABLE", "Dynamic attribute", "ANOTHER module", "INTERNALLY"):
+        assert hole in _UNSCANNABLE, hole
+
+
+def _replace_control(control, **changes):
+    import dataclasses
+    return dataclasses.replace(control, **changes)
+
+
+def test_single_locator_refuses_a_submit_control_on_its_own():
+    """M-G6. The runtime half of THE ONE RULE lives in `_single_locator`, so that
+    obtaining a locator for a submit control is impossible rather than merely
+    impolite — but every caller ALSO checks `_refuse_submitish` first, so
+    deleting the check inside `_single_locator` left the suite green. Belt and
+    braces is only worth having if each strap is tested on its own."""
+    page = _FormPage("")
+    submitish = Control(tag="input", input_type="text", label="Submit application",
+                        label_source="label", kind="text", required=False,
+                        required_source="", element_id="s", selector='[id="s"]')
+    assert fill_mod._single_locator(page, submitish) is None
+    assert page.writes == []
+    # The same control with an innocent label DOES resolve, so the refusal is
+    # attributable to the label and not to some other property of the fixture.
+    innocent = _replace_control(submitish, label="Full name")
+    assert fill_mod._single_locator(page, innocent) is not None
+
+
+@pytest.mark.parametrize("field_name", ["label", "group_label", "name", "element_id"])
+def test_single_locator_refuses_on_every_field_it_claims_to_check(field_name):
+    """`_is_submitish` is documented as checking label, group label, name, id and
+    selector. Asserting only the label would let three of those quietly stop
+    being checked."""
+    base = Control(tag="input", input_type="text", label="Full name",
+                   label_source="label", kind="text", required=False,
+                   required_source="", element_id="ok", selector='[id="ok"]')
+    assert fill_mod._single_locator(_FormPage(""), base) is not None
+    tainted = _replace_control(base, **{field_name: "Submit application"})
+    assert fill_mod._single_locator(_FormPage(""), tainted) is None, field_name
+
+
+def test_the_documented_retry_count_matches_the_constant():
+    """`MAX_ATTEMPTS` is quoted in fill.py's own prose as well as defined in its
+    code, and a mutation harness aimed at the literal hit the DOCSTRING first —
+    which is exactly how a docstring drifts away from the thing it describes."""
+    source = FILL_MODULE.read_text()
+    quoted = set(re.findall(r"`MAX_ATTEMPTS = (\d+)`", source))
+    assert quoted == {str(MAX_ATTEMPTS)}, (
+        f"the docstring says {quoted} but the constant is {MAX_ATTEMPTS}"
+    )

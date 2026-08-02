@@ -550,6 +550,41 @@ comment at the top of the test.
 > - `resolver.py`'s file-upload note was corrected and is pinned by a test; the module stays pure.
 > - Open for Task 7: `PageLocator` has no public `page` accessor, so `fill_form` reaches for
 >   `_page` to address radio-group members. A public property would remove the one private access.
+>
+> **Task 6 fix round 1** (independent review: 17 mutations, 5 survived; all addressed).
+> - **`\r` is an Enter alias too, and the first version missed it.** Playwright's driver has ONE
+>   character→key map (`coreBundle.js`, `aliases`) whose only character entry is
+>   `["Enter", ["\n", "\r"]]` — so that pair is exhaustive by construction, not a guess, and a
+>   lone CR would have typed Enter into a single-line input with the source scan green. Also
+>   closed the wider family: `keyboard`/`mouse`/`touchscreen`, `dispatch_event`, and
+>   `evaluate`-based submits are all now banned.
+> - **A source guard must state what it CANNOT see.** The old prose claimed no submit-shaped
+>   string could appear in the code, which was false. `_UNSCANNABLE` now lists the four holes with
+>   their backstops. `evaluate` could not be banned (fill.py needs it), so the rule is
+>   literal-script-only plus a JS mutation screen; selector args allow a bare variable but reject
+>   anything CONSTRUCTED, which closes the f-string bypass without breaking
+>   `page.locator(control.selector)`.
+> - **Guards must be parametrised over a GLOB, not a hardcoded path.** The scan covered `fill.py`
+>   only, so Task 7's handoff and Task 8's graph would have got none. Now every `nodes/*.py`.
+> - **The résumé field must be reported ONCE.** The resolver emits a `file_upload` answer for the
+>   same DOM field the attach path fills, so the handoff said "blank, attach it yourself" about a
+>   slot the agent had attached to. `fill_form` suppresses the answer for the control the attach
+>   CLAIMED (keyed on the control, not the kind, so cover-letter slots survive) and records it in
+>   `FillReport.superseded`.
+> - **"Non-empty and different" is two opposite situations.** A field that REVERTED to what it
+>   already held is a swallowed write and must retry; a field that REFORMATTED accepted the write
+>   and must not. Capturing the pre-write value is what tells them apart — without it a stale
+>   autofilled value was left in place and described to the user as a reformat.
+> - **Bounding writes is not bounding the agent.** Reads (`input_value`, `evaluate`, `is_checked`,
+>   `is_visible`) all default to Playwright's 30 s and wait for an attached element exactly as
+>   writes do. All now take an explicit timeout, with a source-scanning test so a new read helper
+>   cannot be added without one.
+> - Measured, for Task 7: **Lever** radios are sized 17-20px and pass `is_visible()`; **Greenhouse**
+>   has no hiding rule; **Ashby**'s live in an external CDN stylesheet the fixture lacks, so it is
+>   UNKNOWN. Not worked around — `check()` cannot tick a hidden element either, so `_gate` only
+>   turns a timeout into an explained blank. Confirm on the first live run.
+> - Two harness bugs in two rounds (stdout grepping; a first-occurrence replace that edited a
+>   docstring instead of the constant). **Treat mutation-harness output as a claim to verify.**
 
 ---
 

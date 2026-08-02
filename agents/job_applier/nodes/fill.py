@@ -7,26 +7,42 @@ is pure, `drafting` calls a model. So the safety properties that were previously
 explicitly from here on.
 
 THE ONE RULE for all of Phase B — no code path may ever click a submit button —
-is enforced three ways in this module, not one:
+is enforced four ways in this module, not one:
 
-  1. **Nothing here clicks at all.** There is no `.click()`, `.dblclick()`,
-     `.tap()` or `.submit()` in this file. Filling, selecting, checking and
-     attaching are the only four things it does.
-     (`test_the_fill_executor_never_clicks_anything`.)
-  2. **No submit-shaped string may appear in the code.** A source scan rejects
-     any string literal matching `submit|apply now|send application`, so a
-     selector for one cannot even be constructed. The guard is proved in BOTH
-     directions — it accepts a filling module and rejects a clicking one — by
+  1. **Nothing here clicks, and nothing here scripts the page.** There is no
+     `.click()`, `.dblclick()`, `.tap()`, `.submit()`, `.press()`,
+     `.dispatch_event()` and no `page.keyboard` in this file. Filling,
+     selecting, checking and attaching are the only four things it does.
+     (`test_the_fill_executor_never_clicks_a_submit_control`.)
+  2. **A source scan, whose exact guarantee is narrower than it looks.** It
+     rejects: any click-family call at all; any `evaluate`-family call whose
+     JavaScript mentions submitting or clicking, or whose JavaScript is not a
+     plain literal; and any submit-shaped string literal *passed to a selector
+     lookup*. It does NOT reject the word "submit" appearing anywhere else —
+     which is why `_SUBMITISH_RE` below can contain it. What the scan cannot
+     see at all is written down in `_UNSCANNABLE` in the test module rather
+     than glossed over. Proved in BOTH directions — it accepts a filling module
+     and rejects nine separate clicking ones — by
      `test_the_submit_guard_accepts_filling_and_rejects_clicking`, because a
      guard that never fails on anything is worse than no guard.
   3. **At runtime**, `_is_submitish` refuses to act on any control whose label,
      name, id or selector reads like a submit control, even though
-     `locate_dom` already declines to discover `type=submit`.
+     `locate_dom` already declines to discover `type=submit`. The check lives
+     inside `_single_locator`, so it is impossible to obtain a locator for such
+     a control at all rather than merely impolite to.
      (`test_a_control_that_looks_like_submit_is_refused_at_runtime`.)
   4. **No Enter keystroke can reach a single-line field.** HTML's *implicit
      submission* means Enter in a text input inside a `<form>` submits it — THE
-     ONE RULE broken with no click anywhere. The character-by-character retry is
-     therefore refused for a multi-line value in anything but a `<textarea>`.
+     ONE RULE broken with no click anywhere, and with the source scan green.
+     The character-by-character retry is therefore refused for a value
+     containing a newline in anything but a `<textarea>`.
+
+     "Newline" here means `\\n` **or `\\r`**, and that pair is exhaustive rather
+     than a guess: Playwright's driver holds ONE character→key alias map
+     (`lib/coreBundle.js`, `aliases`), whose only character entry is
+     ``["Enter", ["\\n", "\\r"]]``. Every other character goes through
+     `insertText` and presses no key. A first version checked `\\n` alone, so a
+     classic-Mac or stray `\\r` would have typed Enter into a single-line input.
      See `_may_type_character_by_character`; this is the one hazard a
      click-scanning source guard would not have caught.
 
@@ -226,6 +242,10 @@ class FillReport:
 
     outcomes: list[FillOutcome] = field(default_factory=list)
     resume: FillOutcome | None = None
+    #: Question keys whose answer was dropped because the résumé attach path
+    #: speaks for that field instead. Recorded rather than silently discarded so
+    #: a caller can tell "we chose not to report this" from "we lost it".
+    superseded: list[str] = field(default_factory=list)
 
     def by_status(self, status: str) -> list[FillOutcome]:
         return [o for o in self.outcomes if o.status == status]
@@ -249,8 +269,30 @@ class FillReport:
 # is "Submit application", or a future refactor loosens discovery, the executor
 # still refuses to touch it. Cheap, and the failure it prevents is the only
 # unrecoverable one in Phase B.
+# MEASURED against the three captured fixtures before choosing the boundaries:
+# ZERO discovered controls on Lever, Ashby or Greenhouse match this vocabulary
+# in their label, group label, name or id. Every real occurrence
+# (`id="btn-submit"`, `id="hcaptchaSubmitBtn"`, `class="…template-btn-submit"`,
+# `class="application--submit"`) is on a `<button>` or a `<div>`, neither of
+# which `locate_dom` ever discovers as fillable. So this pattern currently costs
+# nothing in false positives on real forms, and the boundary question is about
+# what it would do to a form we have not seen.
+#
+# `(?![a-z])` on the right, and nothing on the left. Checked term by term:
+#   * "submitter_name" / "submittal"  -> NOT matched (a lowercase letter
+#     follows), which is the false positive the Task 4 review would have
+#     flagged: a field asking for the submitter's name is not a submit button.
+#   * "submit-application", "submit_form", "Submit Application" -> matched.
+#   * "resubmit" -> matched, deliberately: no left boundary, because a
+#     "resubmit" control still sends the application.
+# The trade-off taken knowingly: "submitApplication" in camelCase is NOT matched
+# under `re.IGNORECASE` (which makes `[a-z]` match `A` too). Accepting that miss
+# is safe because this regex is the THIRD lock, behind `locate_dom` never
+# discovering a button and the source scan never letting one be addressed.
+# Widening it to catch camelCase would re-admit "submitter", which is a live
+# field name and a real form.
 _SUBMITISH_RE = re.compile(
-    r"submit|apply\s*now|send\s+application|send\s+my\s+application",
+    r"submit(?![a-z])|apply\s*now|send\s+(?:my\s+)?application",
     re.IGNORECASE,
 )
 
@@ -325,14 +367,31 @@ def _control_for(controls: list[Control], question: Question) -> Control | None:
     return find_by_key(controls, question.key)
 
 
-def _single_locator(page: Any, control: Control) -> Any | None:
-    """A Playwright locator for `control`, re-verified to match exactly one live
-    element. A selector that resolves to two nodes is a miss, not "take the
-    first" — same rule `PageLocator._single` applies."""
+def _single_locator(page: Any, control: Control, timeout_ms: int = DEFAULT_TIMEOUT_MS) -> Any | None:
+    """A Playwright locator for `control`, or `None`.
+
+    Three refusals, in order:
+
+      * no unique selector — `locate_dom` already decided the control cannot be
+        safely addressed;
+      * **submit-shaped** — the runtime half of THE ONE RULE lives HERE rather
+        than at each call site, so it is impossible to obtain a locator for such
+        a control at all. Every write in this module goes through this function,
+        so there is no path that forgets to ask;
+      * the selector resolves to anything other than exactly one live element —
+        two hits is a miss, never "take the first" (the rule
+        `PageLocator._single` applies).
+
+    Never raises: `page.locator()` itself is inside the `try`, because a caller
+    can hand us any object at all and `fill_one`/`attach_resume` promise not to
+    raise.
+    """
     if not control.selector:
         return None
-    locator = page.locator(control.selector)
+    if _refuse_submitish(control):
+        return None
     try:
+        locator = page.locator(control.selector)
         if locator.count() != 1:
             return None
     except Exception:
@@ -357,15 +416,15 @@ def _needs_visibility_check(control: Control) -> bool:
     return control.kind != "file"
 
 
-def _is_visible(locator: Any) -> bool:
+def _is_visible(locator: Any, timeout_ms: int = DEFAULT_TIMEOUT_MS) -> bool:
     try:
-        return bool(locator.is_visible())
+        return bool(locator.is_visible(timeout=timeout_ms))
     except Exception:
         # A page that cannot answer the question is not evidence of visibility.
         return False
 
 
-def _gate(control: Control, locator: Any) -> str:
+def _gate(control: Control, locator: Any, timeout_ms: int = DEFAULT_TIMEOUT_MS) -> str:
     """`""` if `control` may be written to, else the reason it may not.
 
     BOTH write paths — the per-answer one and the résumé attach — go through
@@ -373,8 +432,21 @@ def _gate(control: Control, locator: Any) -> str:
     happened not to write the check in the other branch". A future edit that
     adds a visibility check to the attach path has to come through here and will
     hit `_needs_visibility_check` returning False.
+
+    NOTE on radios, measured against the three captured fixtures: Lever styles
+    its radio/checkbox inputs `appearance:none; width:17-20px; height:17-20px`,
+    so they have a real box and pass `is_visible()`; Greenhouse's single
+    checkbox has no hiding rule in its 16 KB of inline CSS; **Ashby's carry a
+    build-hashed class whose rules live in an external CDN stylesheet the
+    fixture does not contain, so it cannot be determined from what we have.**
+    If Ashby does hide them, this gate reports blank with a reason — but so
+    would Playwright: `check()` performs its own actionability wait and cannot
+    tick a hidden element either. The gate turns a 5-second timeout into an
+    instant, explained refusal; it does not make anything unfillable that would
+    otherwise have been filled. Ticking a genuinely hidden radio would need
+    `dispatch_event`/`evaluate`, both of which THE ONE RULE guard forbids.
     """
-    if _needs_visibility_check(control) and not _is_visible(locator):
+    if _needs_visibility_check(control) and not _is_visible(locator, timeout_ms):
         return (
             "this field is not visible on the page, so nothing was written to it "
             "— fill it in yourself."
@@ -387,14 +459,29 @@ def _gate(control: Control, locator: Any) -> str:
 # ---------------------------------------------------------------------------
 
 
-def _read_text(locator: Any) -> str:
+# EVERY read-back passes an explicit timeout. Playwright's default is 30 s, and
+# a read is exactly as capable of hanging as a write: `input_value()`,
+# `evaluate()` and `is_checked()` all wait for the element to be attached, so a
+# detached or re-rendering node costs the full default for ONE field. Bounding
+# the writes alone and leaving the reads at 30 s would have defeated the whole
+# point of `DEFAULT_TIMEOUT_MS` — and the hung-agent scenario that constant
+# exists to prevent is caused by whichever call waits longest, not by whichever
+# one writes.
+#
+# `_read_selected_label` can spend up to 2x on a select (evaluate, then the
+# `input_value()` fallback). That is the accepted worst case: the fallback only
+# runs when the primary read already failed, and 2x a bounded number is still
+# bounded.
+
+
+def _read_text(locator: Any, timeout_ms: int = DEFAULT_TIMEOUT_MS) -> str:
     try:
-        return str(locator.input_value() or "")
+        return str(locator.input_value(timeout=timeout_ms) or "")
     except Exception:
         return ""
 
 
-def _read_selected_label(locator: Any) -> str:
+def _read_selected_label(locator: Any, timeout_ms: int = DEFAULT_TIMEOUT_MS) -> str:
     """The selected `<option>`'s visible text.
 
     `input_value()` on a `<select>` returns the option's `value` ATTRIBUTE,
@@ -406,13 +493,14 @@ def _read_selected_label(locator: Any) -> str:
     try:
         text = locator.evaluate(
             "el => el.selectedOptions && el.selectedOptions.length"
-            " ? el.selectedOptions[0].label : ''"
+            " ? el.selectedOptions[0].label : ''",
+            timeout=timeout_ms,
         )
         if text:
             return str(text)
     except Exception:
         pass
-    return _read_text(locator)
+    return _read_text(locator, timeout_ms)
 
 
 def _same(intended: str, actual: str) -> bool:
@@ -424,21 +512,47 @@ def _same(intended: str, actual: str) -> bool:
 # ---------------------------------------------------------------------------
 
 
+# Every character Playwright's driver resolves to a KEY PRESS rather than to
+# `insertText`. This is not a guess and not a denylist of characters that looked
+# dangerous: the driver holds exactly one character→key alias map
+# (`playwright/driver/package/lib/coreBundle.js`, `aliases`), and its only
+# character entry is
+#
+#     ["Enter", ["\n", "\r"]]
+#
+# so this set is complete by construction. Everything else — including U+2028
+# LINE SEPARATOR and U+2029 PARAGRAPH SEPARATOR, which are not on the US layout
+# — is inserted as text and presses no key.
+#
+# The first version of this rule checked "\n" alone. A value carrying a
+# classic-Mac or stray CR would then have been typed character by character into
+# a single-line input, pressing Enter and triggering implicit submission, with
+# the source scan green throughout. `\r\n` was always caught (it contains "\n");
+# a lone `\r` was not.
+_ENTER_CHARS = frozenset({"\n", "\r"})
+
+
+def _presses_enter(value: str) -> bool:
+    """True if typing `value` character by character would press Enter."""
+    return any(ch in _ENTER_CHARS for ch in (value or ""))
+
+
 def _may_type_character_by_character(control: Control, value: str) -> bool:
     """Whether the attempt-2 typing strategy is safe for this control.
 
-    A newline typed into a single-line `<input>` is an Enter keypress, and Enter
-    in a text input inside a `<form>` triggers HTML's **implicit submission** —
-    which would submit the application without anything in this module ever
-    calling a click. That is THE ONE RULE broken by a keystroke, so the typing
-    retry is refused outright for a multi-line value in anything but a
-    `<textarea>` (where Enter only inserts a newline).
+    An Enter keypress in a text input inside a `<form>` triggers HTML's
+    **implicit submission** — which would submit the application without
+    anything in this module ever calling a click. That is THE ONE RULE broken by
+    a keystroke, so the typing retry is refused outright for a value containing
+    any `_ENTER_CHARS` character in anything but a `<textarea>` (where Enter
+    only inserts a newline and submits nothing).
 
     `fill()` — attempt 1 — is unaffected: it sets the value directly and
     dispatches no key events at all, so multi-line values are filled normally.
-    (`test_a_multiline_value_is_never_typed_into_a_single_line_input`.)
+    (`test_a_multiline_value_is_never_typed_into_a_single_line_input`,
+    `test_every_enter_producing_character_is_refused_not_just_newline`.)
     """
-    return "\n" not in (value or "") or control.tag == "textarea"
+    return not _presses_enter(value) or control.tag == "textarea"
 
 
 def _typing_timeout(value: str, timeout_ms: int) -> int:
@@ -472,7 +586,29 @@ def _write_text(
 def _fill_text(
     control: Control, locator: Any, answer: Answer, timeout_ms: int
 ) -> FillOutcome:
+    """Get `answer.value` into a text control, or say honestly why not.
+
+    The PRE-WRITE value is captured first, and it is what makes the four-way
+    outcome split correct rather than merely plausible. "Reads back non-empty
+    and different from what we wrote" conflates two opposite situations:
+
+      * the field REFORMATTED our value (a phone mask rewriting `5550100` as
+        `(555) 0100`) — it accepted the write, and retrying would type into a
+        field that already holds something;
+      * the field REVERTED to what it held before — a React-controlled input
+        that re-rendered from its own state and threw our write away. That is a
+        swallowed write, and it is precisely what the retry exists for.
+
+    Without `before`, the second case was reported `changed` with the note "the
+    field accepted the value … it reformatted or truncated it" and **skipped the
+    retry entirely**. Browser autofill, ATS session-restore and
+    apply-with-LinkedIn prefill all make a pre-populated field common, so this
+    was not a corner case: it left a stale, wrong value in a real application
+    and described it to the user as a reformat.
+    (`test_a_reverted_write_on_a_prepopulated_field_is_retried_not_called_changed`.)
+    """
     value = answer.value
+    before = _read_text(locator, timeout_ms)
     last_error = ""
     strategy = ""
     actual = ""
@@ -498,11 +634,11 @@ def _fill_text(
         except Exception as exc:
             last_error = f"{type(exc).__name__}: {exc}"
             continue
-        actual = _read_text(locator)
+        actual = _read_text(locator, timeout_ms)
         if _same(value, actual):
             return _outcome(answer, FILLED, actual, strategy, attempt,
                             note=_filled_note(answer))
-        if actual.strip():
+        if actual.strip() and not _same(actual, before):
             # The field took it and changed it. Retrying would type twice.
             return _outcome(
                 answer, CHANGED, actual, strategy, attempt,
@@ -511,6 +647,15 @@ def _fill_text(
                     f"of “{value}” — it reformatted or truncated it. Check it."
                 ),
             )
+        # Empty, or reverted to whatever was already there: a swallowed write.
+        # Both fall through and retry.
+    if _same(actual, before) and (before or "").strip():
+        note = (
+            f"the field rejected the value and snapped back to what it already "
+            f"held, “{before}”, after {made} attempts — that is NOT your value. "
+            f"Replace it yourself with: “{value}”."
+        )
+        return _outcome(answer, BLANK, before, strategy, made, note=note)
     note = (
         f"the field would not accept its value: it was still empty after "
         f"{made} attempts (set, then typed character by character). "
@@ -538,7 +683,7 @@ def _fill_select(
                 f"choose it yourself."
             ),
         )
-    actual = _read_selected_label(locator)
+    actual = _read_selected_label(locator, timeout_ms)
     if _same(answer.value, actual):
         return _outcome(answer, FILLED, actual, "select_option", 1,
                         note=_filled_note(answer))
@@ -587,7 +732,20 @@ def _fill_choice_group(
     target = matches[0]
     if _refuse_submitish(target):
         return _outcome(answer, BLANK, "", "", 0, note=_SUBMIT_REFUSAL_NOTE)
-    locator = _single_locator(page, target)
+    # `check()` is the one write in this module that dispatches a click, so it
+    # is aimed ONLY at an element that is definitionally not a button. Without
+    # this, a future change to how a group's members are discovered could point
+    # it at a `<button role="radio">` — which a click-scanning source guard
+    # would not catch, because the click is inside Playwright.
+    if target.tag != "input" or target.input_type not in ("radio", "checkbox"):
+        return _outcome(
+            answer, BLANK, "", "", 0,
+            note=(
+                f"“{target.label}” is not a radio or checkbox input, so the agent "
+                f"did not tick it — choose it yourself."
+            ),
+        )
+    locator = _single_locator(page, target, timeout_ms)
     if locator is None:
         return _outcome(
             answer, BLANK, "", "", 0,
@@ -596,7 +754,7 @@ def _fill_choice_group(
                 f"tick it yourself."
             ),
         )
-    refusal = _gate(target, locator)
+    refusal = _gate(target, locator, timeout_ms)
     if refusal:
         return _outcome(answer, BLANK, "", "", 0, note=refusal)
     try:
@@ -607,7 +765,7 @@ def _fill_choice_group(
             note=f"“{target.label}” could not be ticked ({type(exc).__name__}).",
         )
     try:
-        checked = bool(locator.is_checked())
+        checked = bool(locator.is_checked(timeout=timeout_ms))
     except Exception:
         checked = False
     if checked:
@@ -706,7 +864,7 @@ def fill_one(
             note="this is a file field; the agent only ever attaches your résumé.",
         )
 
-    locator = _single_locator(page, control)
+    locator = _single_locator(page, control, timeout_ms)
     if locator is None:
         return _outcome(
             answer, BLANK, "", "", 0,
@@ -716,7 +874,7 @@ def fill_one(
             ),
         )
 
-    refusal = _gate(control, locator)
+    refusal = _gate(control, locator, timeout_ms)
     if refusal:
         return _outcome(answer, BLANK, "", "", 0, note=refusal)
 
@@ -788,7 +946,7 @@ def find_resume_input(controls: list[Control]) -> tuple[Control | None, str]:
     return candidates[0], ""
 
 
-def _read_filename(locator: Any) -> str:
+def _read_filename(locator: Any, timeout_ms: int = DEFAULT_TIMEOUT_MS) -> str:
     """The filename the file input now holds.
 
     `input_value()` alone is NOT enough: measured on headed Chromium against a
@@ -799,13 +957,14 @@ def _read_filename(locator: Any) -> str:
     """
     try:
         name = locator.evaluate(
-            "el => el.files && el.files.length ? el.files[0].name : ''"
+            "el => el.files && el.files.length ? el.files[0].name : ''",
+            timeout=timeout_ms,
         )
         if name:
             return str(name)
     except Exception:
         pass
-    raw = _read_text(locator)
+    raw = _read_text(locator, timeout_ms)
     return raw.replace("\\", "/").rsplit("/", 1)[-1] if raw else ""
 
 
@@ -825,31 +984,45 @@ def attach_resume(
     if not resume_path:
         return FillOutcome(key="__resume__", label=label, status=BLANK,
                            kind="file_upload", source="file", note=RESUME_MISSING_NOTE)
-    path = os.fspath(resume_path)
-    filename = os.path.basename(path)
-    if not os.path.isfile(path):
+    # `os.fspath` raises TypeError on a non-path, and this function promises not
+    # to raise, so even the argument handling is guarded.
+    try:
+        path = os.fspath(resume_path)
+        filename = os.path.basename(path)
+        exists = os.path.isfile(path)
+    except Exception as exc:
         return FillOutcome(
             key="__resume__", label=label, status=BLANK, kind="file_upload",
-            source="file", intended=path,
-            note=f"the résumé file “{path}” does not exist, so nothing was attached.",
+            source="file",
+            note=f"the résumé path could not be read ({type(exc).__name__}) — "
+                 f"attach it yourself.",
+        )
+    # `intended` and every note carry the BASENAME, not the absolute path. Task 7
+    # renders these to the user, and a handoff has no business printing
+    # `/Users/<name>/…` back at them.
+    if not exists:
+        return FillOutcome(
+            key="__resume__", label=label, status=BLANK, kind="file_upload",
+            source="file", intended=filename,
+            note=f"the résumé file “{filename}” was not found, so nothing was attached.",
         )
 
     control, reason = find_resume_input(controls)
     if control is None:
         return FillOutcome(key="__resume__", label=label, status=BLANK,
-                           kind="file_upload", source="file", intended=path, note=reason)
+                           kind="file_upload", source="file", intended=filename, note=reason)
 
     label = control.group_label or control.label or label
     if _refuse_submitish(control):
         return FillOutcome(key="__resume__", label=label, status=BLANK,
-                           kind="file_upload", source="file", intended=path,
+                           kind="file_upload", source="file", intended=filename,
                            note=_SUBMIT_REFUSAL_NOTE)
 
-    locator = _single_locator(page, control)
+    locator = _single_locator(page, control, timeout_ms)
     if locator is None:
         return FillOutcome(
             key="__resume__", label=label, status=BLANK, kind="file_upload",
-            source="file", intended=path,
+            source="file", intended=filename,
             note=("the résumé field has nothing unique to address it by on the "
                   "page — attach it yourself."),
         )
@@ -859,10 +1032,10 @@ def attach_resume(
     # `kind == "file"`. Ashby and Greenhouse hide the real input behind a styled
     # button, so this exemption is what makes résumé upload possible at all on
     # two of the three boards. Decision 7.
-    refusal = _gate(control, locator)
+    refusal = _gate(control, locator, timeout_ms)
     if refusal:
         return FillOutcome(key="__resume__", label=label, status=BLANK,
-                           kind="file_upload", source="file", intended=path,
+                           kind="file_upload", source="file", intended=filename,
                            note=refusal)
 
     try:
@@ -870,22 +1043,22 @@ def attach_resume(
     except Exception as exc:
         return FillOutcome(
             key="__resume__", label=label, status=BLANK, kind="file_upload",
-            source="file", intended=path,
+            source="file", intended=filename,
             note=(f"the résumé could not be attached ({type(exc).__name__}: {exc}) — "
                   f"attach it yourself."),
         )
 
-    landed = _read_filename(locator)
+    landed = _read_filename(locator, timeout_ms)
     if landed == filename:
         return FillOutcome(
             key="__resume__", label=label, status=ATTACHED, value=landed,
-            intended=path, kind="file_upload", source="file", strategy="attach",
+            intended=filename, kind="file_upload", source="file", strategy="attach",
             attempts=1,
             note=(f"“{filename}” attached to “{label}” and confirmed, after every "
                   f"other field was filled."),
         )
     return FillOutcome(
-        key="__resume__", label=label, status=BLANK, value=landed, intended=path,
+        key="__resume__", label=label, status=BLANK, value=landed, intended=filename,
         kind="file_upload", source="file", strategy="attach", attempts=1,
         note=(
             f"the résumé did not land: the field reads “{landed or 'nothing'}” "
@@ -897,6 +1070,30 @@ def attach_resume(
 # ---------------------------------------------------------------------------
 # The whole form
 # ---------------------------------------------------------------------------
+
+
+def _claimed_resume_control(
+    controls: list[Control], resume_path: str | os.PathLike[str] | None
+) -> Control | None:
+    """The control `attach_resume` is going to claim, or `None`.
+
+    Deliberately mirrors `attach_resume`'s OWN preconditions — a path, an
+    existing file, and an unambiguous résumé slot — so the two cannot disagree
+    about which field is the résumé. If any precondition fails, this returns
+    `None` and the resolver's answer for that field survives, which is right:
+    the agent is not going to attach anything, so "attach it yourself" is once
+    again the true thing to say.
+    """
+    if not resume_path:
+        return None
+    try:
+        if not os.path.isfile(os.fspath(resume_path)):
+            return None
+    except Exception:
+        return None
+    control, _reason = find_resume_input(controls)
+    return control
+
 
 
 def fill_form(
@@ -918,6 +1115,24 @@ def fill_form(
     upload that overwrites already-filled fields. That ordering is pinned by
     `test_the_resume_is_attached_last`, which asserts the attach is the final
     page mutation — not merely the final entry in the report.
+
+    **The résumé field is reported exactly once.** The résumé input is itself a
+    question, so the resolver emits a `file_upload` answer for it — and that
+    answer's note says "attach it yourself". Left alone, the report contained
+    BOTH that and the attach outcome, i.e. Task 7 would have told the user
+    "Resume/CV — blank, attach it yourself" about a slot the agent had just
+    successfully attached to. So the answer for whichever control the attach
+    path CLAIMS is suppressed, and only the attach outcome speaks for it.
+    Suppression is keyed on the control the attach claimed, not on the answer's
+    kind, so a form's *other* file fields (cover letter, transcript) keep their
+    resolver answers and are still reported as the human's to do.
+    (`test_the_resume_field_is_reported_exactly_once`,
+    `test_other_file_fields_keep_their_resolver_answer`.)
+
+    `fill_one` and `attach_resume` never raise. `fill_form` itself can only fail
+    where it reads the DOM snapshot (`page_locator.controls`, i.e. the caller's
+    own `page.content()`); that is deliberately not swallowed, because a page
+    that cannot be read is not a form that can be partially filled.
     """
     # `PageLocator` exposes locators for a *label* or a *key*, but a radio group's
     # members are addressed by their own per-option selectors, which it has no
@@ -928,8 +1143,16 @@ def fill_form(
     page = getattr(page_locator, "_page", page_locator)
     controls = page_locator.controls
 
+    # Decide WHICH control the attach will claim before the loop, so the loop can
+    # suppress that control's resolver answer — but do not attach yet. The attach
+    # itself still has to be the last mutation.
+    claimed = _claimed_resume_control(controls, resume_path)
+
     report = FillReport()
     for answer in answers or []:
+        if claimed is not None and _control_for(controls, answer.question) is claimed:
+            report.superseded.append(answer.question.key)
+            continue
         report.outcomes.append(fill_one(page, controls, answer, timeout_ms=timeout_ms))
 
     # LAST. Always — even when nothing above filled, so the handoff can always
