@@ -623,9 +623,50 @@ comment at the top of the test.
 
 **Files:** Create `agents/job_applier/nodes/handoff.py`; Test: `tests/test_applier_graph.py`
 
-- [ ] Output groups answers into **filled from profile / AI-drafted, review these / left blank**, with required-and-blank listed first as blocking.
-- [ ] Says plainly that nothing was submitted and the browser is left open.
-- [ ] Tests: a blocking required field appears first; drafted answers are marked; the message never claims to have submitted.
+- [x] Output groups answers into **filled from profile / AI-drafted, review these / left blank**, with required-and-blank listed first as blocking.
+- [x] Says plainly that nothing was submitted and the browser is left open.
+- [x] Tests: a blocking required field appears first; drafted answers are marked; the message never claims to have submitted.
+
+> **Task 7 outcome — and four wrong-value defects the report EXPOSED.**
+> The handoff leads with `NOTHING WAS SUBMITTED`, then a count ("20 of 29 fields need you. 14 of
+> those are required and still empty"), then blockers grouped by section, then — collapsed last —
+> what was filled. Structured dataclass + `render_text()`; Task 10 renders its own.
+>
+> Making the agent's output legible is what found these. None was found by reading code:
+> 1. `name_meta` — *a label asking ABOUT an attribute is not asking FOR it.* "How do you pronounce
+>    your name?" was auto-filled with the applicant's name.
+> 2. `school_level` — *a label naming a specific instance of an attribute is not asking for the
+>    instance the profile stores.* "High School Name" was filled with the university, and — worse,
+>    because a dropdown makes it look deliberate — "Year of High School Graduation" selected the
+>    university's grad year. That one only LOOKED safe in the first probe because the profile held
+>    `"May 2027"`, which matches no option verbatim; with a bare `"2027"` it was selected. Saved by
+>    date formatting, not by rule ordering. Hence ordered ahead of `grad_date`, not merely ahead of
+>    `school`.
+> 3. `graduation` vs `graduate` — *the same stem can be a noun naming an event and an adjective
+>    naming a level.* ELEVEN adjectival phrasings returned the graduation date (`Graduate
+>    School/program/degree/studies/coursework/institution/education/level`, `Post-graduate studies`,
+>    `Grad school`, `Recent graduate?`). A new `gpa` kind is ordered first so no GPA field is
+>    reachable by a date rule. Verbal uses of "graduate" are an **allowlist of clause openers** — a
+>    denylist of following nouns cannot be finished.
+> 4. `not_prose` — *a question can want a different MEDIUM than prose* (Task 5's video prompts).
+>
+> **Word boundaries have been wrong three times on this branch.** `` after `pronounc` excluded
+> `mispronounce`; `` after `school` excluded `high schooling`/`schooler`; and a leading ``
+> reported as a MEASURED-EQUIVALENT mutant later became load-bearing when `graduate school` joined
+> the alternation, because `undergraduate school` contains it. **Whether a boundary is load-bearing
+> is a property of the vocabulary, not the regex — and an equivalence measurement is only valid for
+> the alternation it was measured against.**
+>
+> **Carried into Task 8 as a REQUIREMENT:** the resolver blanks free-text with "left for the AI
+> drafting step", and drafting then DECLINES some of those (both Lever video prompts). If the merge
+> keeps the resolver's answer whenever drafting blanks, the report promises a draft that is never
+> coming. Policy: **drafting wins for every question it owns, refusals included.** Implemented as
+> `_merge` in the handoff tests and pinned by
+> `test_the_report_never_promises_a_draft_that_was_already_declined`. Lift it into the graph.
+>
+> **Residual, needs a SCHEMA change not a resolver change:** a user whose profile `school` IS a
+> graduate school still gets it offered for "Undergraduate School". Blanking both breaks the primary
+> case; fixing it needs a profile field that does not exist (a level, or a second institution).
 
 ---
 
