@@ -2371,3 +2371,948 @@ def test_ashby_has_no_what_we_expect_heading_in_its_parsed_markup():
         "Location", "Employment Type", "Department", "Autofill from resume",
     ]
     assert "WHAT WE EXPECT" in _html("ashby"), "it IS in the file — inside <script>"
+
+
+# ===========================================================================
+# Task 6: the fill executor
+# ===========================================================================
+# The first code in this project that TYPES into anything. Everything above
+# only reads, so the guards below are the ones that actually have teeth.
+#
+# HERMETIC: no browser and no network. Every test drives `PageLocator` (or the
+# executor directly) with the `_FormPage` stub, exactly the way the
+# `PageLocator` tests above drive `_StubPage`. The one real headed-Chromium run
+# that this task required was a manual, one-off prerequisite probe against a
+# `file://` copy of the Lever fixture; its findings are encoded here as
+# assertions (see `test_the_fakepath_form_of_a_filename_read_back_is_accepted`)
+# rather than repeated at test time.
+
+from agents.job_applier import drafting, resolver  # noqa: E402
+from agents.job_applier.nodes import fill as fill_mod  # noqa: E402
+from agents.job_applier.nodes.fill import (  # noqa: E402
+    ATTACHED,
+    BLANK,
+    CHANGED,
+    FILLED,
+    MAX_ATTEMPTS,
+    attach_resume,
+    fill_form,
+    fill_one,
+    find_resume_input,
+    is_typeable,
+)
+from agents.job_applier.resolver import BLOCKING_KINDS, Answer  # noqa: E402
+
+FILL_MODULE = pathlib.Path(fill_mod.__file__)
+
+
+# --------------------------------------------------------------------------
+# A page stub that can be written to, and records every write
+# --------------------------------------------------------------------------
+
+
+class _Element:
+    """One fake form element.
+
+    `swallow` is the whole reason this stub exists: a React-controlled input
+    that accepts a programmatic write and then silently throws it away is the
+    failure mode the read-back was built for, and it cannot be reproduced with
+    a stub that just stores whatever it is given.
+    """
+
+    def __init__(
+        self,
+        *,
+        value: str = "",
+        count: int = 1,
+        visible: bool = True,
+        swallow: bool = False,
+        swallow_typing: bool = False,
+        transform=None,
+        raises: Exception | None = None,
+        fakepath: bool = False,
+        no_file_api: bool = False,
+    ) -> None:
+        self.value = value
+        self.count = count
+        self.visible = visible
+        self.swallow = swallow
+        self.swallow_typing = swallow_typing
+        self.transform = transform
+        self.raises = raises
+        self.checked = False
+        self.files: list[str] = []
+        self.fakepath = fakepath
+        self.no_file_api = no_file_api
+
+
+class _FormLocator:
+    def __init__(self, page: "_FormPage", selector: str) -> None:
+        self._page = page
+        self._selector = selector
+
+    @property
+    def _el(self) -> _Element:
+        return self._page.element(self._selector)
+
+    def _record(self, method: str, arg) -> None:
+        self._page.writes.append((method, self._selector, arg))
+
+    # -- reads ------------------------------------------------------------
+    def count(self) -> int:
+        return self._el.count
+
+    def is_visible(self) -> bool:
+        self._page.visibility_checks.append(self._selector)
+        return self._el.visible
+
+    def input_value(self) -> str:
+        el = self._el
+        if el.files:
+            # Measured on real headed Chromium: a file input's `value` is the
+            # spec's deliberate fake path, Windows separator and all, on macOS.
+            return f"C:\\fakepath\\{el.files[0]}" if el.fakepath else el.files[0]
+        return el.value
+
+    def is_checked(self) -> bool:
+        return self._el.checked
+
+    def evaluate(self, script: str):
+        el = self._el
+        if "selectedOptions" in script:
+            return el.value
+        if "files" in script:
+            if el.no_file_api:
+                raise RuntimeError("no File API in this stub")
+            return el.files[0] if el.files else ""
+        raise AssertionError(f"unexpected evaluate: {script}")
+
+    # -- writes -----------------------------------------------------------
+    def fill(self, value: str, timeout: int | None = None) -> None:
+        self._record("fill", value)
+        el = self._el
+        if el.raises:
+            raise el.raises
+        if el.swallow and value:
+            return
+        el.value = el.transform(value) if (el.transform and value) else value
+
+    def press_sequentially(self, value: str, delay: int = 0, timeout: int | None = None) -> None:
+        self._record("press_sequentially", value)
+        el = self._el
+        if el.raises:
+            raise el.raises
+        if el.swallow_typing:
+            return
+        el.value = el.transform(value) if el.transform else value
+
+    def select_option(self, label: str | None = None, timeout: int | None = None) -> None:
+        self._record("select_option", label)
+        el = self._el
+        if el.raises:
+            raise el.raises
+        if el.swallow:
+            return
+        el.value = label or ""
+
+    def check(self, timeout: int | None = None) -> None:
+        self._record("check", True)
+        el = self._el
+        if el.raises:
+            raise el.raises
+        if not el.swallow:
+            el.checked = True
+
+    def set_input_files(self, path: str, timeout: int | None = None) -> None:
+        self._record("set_input_files", path)
+        el = self._el
+        if el.raises:
+            raise el.raises
+        if el.swallow:
+            return
+        el.files = [pathlib.Path(path).name]
+
+
+class _FormPage:
+    """A writable page stub. Selectors are auto-registered on first use, so a
+    test only configures the elements it cares about."""
+
+    def __init__(self, html: str, **elements: _Element) -> None:
+        self._html = html
+        self._elements: dict[str, _Element] = dict(elements)
+        self.writes: list[tuple[str, str, object]] = []
+        self.visibility_checks: list[str] = []
+        self.content_calls = 0
+
+    def element(self, selector: str) -> _Element:
+        return self._elements.setdefault(selector, _Element())
+
+    def content(self) -> str:
+        self.content_calls += 1
+        return self._html
+
+    def locator(self, selector: str) -> _FormLocator:
+        return _FormLocator(self, selector)
+
+    @property
+    def methods(self) -> list[str]:
+        return [m for m, _, _ in self.writes]
+
+
+def _q(label: str, *, key: str = "", kind: str = "text", options=None, required=False):
+    return Question(
+        key=key or label.lower().replace(" ", "_"),
+        label=label, required=required, kind=kind, options=list(options or []),
+    )
+
+
+def _answer(label: str, value: str, *, kind: str = "text", source: str = "profile",
+            akind: str = "other", options=None) -> Answer:
+    return Answer(
+        question=_q(label, kind=kind, options=options),
+        value=value, source=source, note="", kind=akind,
+    )
+
+
+# --------------------------------------------------------------------------
+# THE ONE RULE — the source guard, proved in both directions
+# --------------------------------------------------------------------------
+# The read-only guard above (`test_module_has_no_mutating_call`) cannot cover
+# this module: it legitimately calls `.fill(` and `set_input_files(`. So the
+# guard for the executor is a DIFFERENT one — filling is permitted, clicking is
+# forbidden — and both halves of that distinction are asserted.
+
+_SUBMIT_RE = re.compile(r"submit|apply\s*now|send\s+application", re.IGNORECASE)
+
+# Every Playwright method that can dispatch a click or a bare keystroke.
+# `press` is here and `press_sequentially` is NOT: `press("Enter")` in a text
+# input triggers HTML's implicit form submission, while `press_sequentially` is
+# the executor's legitimate character-by-character typing retry. AST attribute
+# equality keeps the two apart; a substring grep would not.
+_CLICK_METHODS = frozenset({
+    "click", "dblclick", "tap", "submit", "press", "hover", "focus_and_click",
+})
+
+# Calls whose string argument is a SELECTOR. A submit-shaped literal reaching
+# one of these is a submit control being addressed, even if nothing clicks it
+# on the line you are reading.
+_SELECTOR_CALLS = frozenset({
+    "locator", "query_selector", "query_selector_all", "wait_for_selector",
+    "get_by_role", "get_by_text", "get_by_label", "get_by_title", "eval_on_selector",
+})
+
+
+def _submit_click_violations(source: str) -> list[str]:
+    """Every way `source` could click a submit control. Empty list == clean.
+
+    Two rules, because either alone is defeatable:
+      * ANY click-family call at all — the executor clicks nothing, so there is
+        no legitimate one to allow, and a rule that only rejected clicks whose
+        literal argument looked submit-ish would miss
+        `page.locator(sel).click()`;
+      * any submit-shaped string literal handed to a selector lookup — which is
+        how a submit control gets addressed in the first place.
+    """
+    tree = _strip_docstrings(ast.parse(source))
+    bad: list[str] = []
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call) or not isinstance(node.func, ast.Attribute):
+            continue
+        attr = node.func.attr
+        if attr in _CLICK_METHODS:
+            bad.append(f"calls .{attr}()")
+        if attr in _SELECTOR_CALLS:
+            for arg in list(node.args) + [k.value for k in node.keywords]:
+                if isinstance(arg, ast.Constant) and isinstance(arg.value, str):
+                    if _SUBMIT_RE.search(arg.value):
+                        bad.append(f".{attr}({arg.value!r})")
+    return bad
+
+
+def test_the_fill_executor_never_clicks_a_submit_control():
+    """THE ONE RULE, for the one module that can break it."""
+    assert _submit_click_violations(FILL_MODULE.read_text()) == []
+
+
+def test_the_fill_executor_is_allowed_to_fill_and_to_attach():
+    """The other half of the distinction. This module is SUPPOSED to write, and
+    a guard copied from the read-only files would have banned `.fill(` outright
+    — which is the kind of over-broad rule that gets deleted wholesale, taking
+    the click ban with it. Asserting the permitted calls are present also pins
+    that the guard above is running against a module that actually writes."""
+    code = _executable_source(FILL_MODULE)
+    assert ".fill(" in code
+    assert "set_input_files(" in code
+    assert ".press_sequentially(" in code
+
+
+def test_the_submit_guard_accepts_filling_and_rejects_clicking():
+    """The guard proved in BOTH directions on synthetic sources.
+
+    A source-scanning guard that has never rejected anything is indistinguishable
+    from one whose pattern no longer matches. These four cases are what make the
+    green result above mean something."""
+    fills_only = (
+        "def go(page, value):\n"
+        "    page.locator('#email').fill(value)\n"
+        "    page.locator('#resume').set_input_files('/tmp/cv.pdf')\n"
+        "    page.locator('#bio').press_sequentially(value)\n"
+    )
+    assert _submit_click_violations(fills_only) == []
+
+    clicks_submit = (
+        "def go(page):\n"
+        "    page.locator('button[type=submit]').click()\n"
+    )
+    assert _submit_click_violations(clicks_submit), "a submit click must be caught"
+
+    clicks_by_role = "def go(page):\n    page.get_by_role('button', name='Apply now')\n"
+    assert _submit_click_violations(clicks_by_role), "an 'Apply now' lookup must be caught"
+
+    presses_enter = "def go(page):\n    page.locator('#email').press('Enter')\n"
+    assert _submit_click_violations(presses_enter), "Enter submits a form implicitly"
+
+
+def test_the_fill_executor_imports_no_playwright():
+    """Same property the pure modules have: the executor is handed a page, it
+    never constructs one, so the whole suite runs without Chromium."""
+    source = FILL_MODULE.read_text()
+    assert "import playwright" not in source
+    assert "from playwright" not in source
+
+
+def test_a_control_that_looks_like_submit_is_refused_at_runtime():
+    """Belt and braces on the source scan. `locate_dom` never discovers a
+    `type=submit`, but a board could ship a text input labelled "Submit
+    application" and the executor still declines to touch it."""
+    html = '<label for="s">Submit application</label><input id="s" type="text">'
+    page = _FormPage(html)
+    controls = parse_controls(html)
+    out = fill_one(page, controls, _answer("Submit application", "yes"))
+    assert out.status == BLANK
+    assert "never acts on one" in out.note
+    assert page.writes == []
+
+
+# --------------------------------------------------------------------------
+# Nothing the resolver refused is ever written
+# --------------------------------------------------------------------------
+
+
+def test_is_typeable_refuses_every_blocking_kind():
+    """Pure, and exhaustive over `BLOCKING_KINDS` rather than over the two
+    examples someone thought of — a kind added to that frozenset is refused by
+    construction, not by remembering to update this test."""
+    for kind in sorted(BLOCKING_KINDS):
+        answer = _answer("Anything", "Yes", akind=kind)
+        assert not is_typeable(answer), kind
+
+
+def test_a_blocking_answer_never_reaches_a_write_call():
+    """Proved by ABSENCE OF A CALL, not by the outcome.
+
+    Task 5 shipped a refusal test that asserted the *outcome* was blank, and a
+    mutation routing a refused question straight through passed all 56 tests —
+    because a value that is written and then read back wrong also produces a
+    blank. The spy is the only assertion that distinguishes "refused" from
+    "wrote it and disliked the result".
+
+    The work-authorization case is the one that matters most: the resolver DOES
+    produce "Yes" from the profile for it, so there is a real value sitting
+    there ready to be typed, and the executor must still not type it."""
+    html = (
+        '<label for="a">Are you authorized to work in the US?</label>'
+        '<input id="a" type="text">'
+        '<label for="b">I agree to the privacy policy</label>'
+        '<input id="b" type="text">'
+        '<label for="c">Resume/CV</label><input id="c" type="file">'
+    )
+    controls = parse_controls(html)
+    answers = [
+        Answer(question=_q("Are you authorized to work in the US?"),
+               value="Yes", source="profile", kind="work_auth"),
+        Answer(question=_q("I agree to the privacy policy"),
+               value="Yes", source="profile", kind="consent"),
+        Answer(question=_q("Resume/CV", kind="file"),
+               value="", source="blank", kind="file_upload"),
+    ]
+    page = _FormPage(html)
+    outs = [fill_one(page, controls, a) for a in answers]
+    assert page.writes == [], "a refused answer reached a write call"
+    assert [o.status for o in outs] == [BLANK, BLANK, BLANK]
+    # ...and the refused-but-resolved value is still SHOWN, so the human can act.
+    assert "Yes" in outs[0].note
+
+
+def test_a_resolver_blank_is_never_typed():
+    """The second, independent gate: source must be profile/drafted."""
+    html = '<label for="a">Phone</label><input id="a" type="text">'
+    page = _FormPage(html)
+    out = fill_one(page, parse_controls(html),
+                   Answer(question=_q("Phone"), value="", source="blank",
+                          note="“phone” is empty in your profile", kind="phone"))
+    assert page.writes == []
+    assert out.status == BLANK and "empty in your profile" in out.note
+
+
+def test_an_unknown_answer_source_is_not_typed():
+    """Default-deny on the source too. A future `source="guessed"` must not be
+    typed just because nobody remembered to add it to a denylist."""
+    html = '<label for="a">Phone</label><input id="a" type="text">'
+    page = _FormPage(html)
+    out = fill_one(page, parse_controls(html),
+                   Answer(question=_q("Phone"), value="555-0100", source="guessed",
+                          kind="phone"))
+    assert page.writes == [] and out.status == BLANK
+
+
+# --------------------------------------------------------------------------
+# Read-back, and the retry policy
+# --------------------------------------------------------------------------
+
+_TEXT_HTML = '<label for="e">Email</label><input id="e" type="text">'
+
+
+def test_a_verified_fill_is_reported_filled():
+    page = _FormPage(_TEXT_HTML)
+    out = fill_one(page, parse_controls(_TEXT_HTML),
+                   _answer("Email", "testy@example.invalid", akind="email"))
+    assert out.status == FILLED
+    assert out.value == "testy@example.invalid"
+    assert out.strategy == "fill" and out.attempts == 1
+    assert page.methods == ["fill"]
+
+
+def test_a_swallowed_fill_is_retried_once_with_a_different_strategy():
+    """A React-controlled input that accepts `fill()` and silently throws the
+    value away. The retry must be a DIFFERENT mechanism — typing, which emits
+    real key events — because repeating `fill()` would repeat the failure."""
+    page = _FormPage(_TEXT_HTML, **{'[id="e"]': _Element(swallow=True)})
+    out = fill_one(page, parse_controls(_TEXT_HTML),
+                   _answer("Email", "testy@example.invalid", akind="email"))
+    assert out.status == FILLED
+    assert out.strategy == "type" and out.attempts == 2
+    assert page.methods == ["fill", "fill", "press_sequentially"]
+    # The clearing fill is empty; the value is never set twice.
+    assert [a for m, _, a in page.writes if m == "fill"] == ["testy@example.invalid", ""]
+
+
+def test_a_field_that_never_accepts_its_value_is_not_retried_forever():
+    """Bounded at `MAX_ATTEMPTS`, reported blank WITH the value so the human can
+    paste it, and the page is left alone after that."""
+    page = _FormPage(_TEXT_HTML,
+                     **{'[id="e"]': _Element(swallow=True, swallow_typing=True)})
+    out = fill_one(page, parse_controls(_TEXT_HTML),
+                   _answer("Email", "testy@example.invalid", akind="email"))
+    assert out.status == BLANK
+    assert out.attempts == MAX_ATTEMPTS == 2
+    assert page.methods.count("fill") == 2 and page.methods.count("press_sequentially") == 1
+    assert "testy@example.invalid" in out.note
+    assert "would not accept" in out.note
+
+
+def test_a_reformatting_field_is_reported_changed_not_blank():
+    """A phone mask DID accept the value; calling that "blank" is untrue, and an
+    untrue note costs the user trust in every other note the handoff shows. It
+    is also not retried — typing again would append to what is already there."""
+    html = '<label for="p">Phone</label><input id="p" type="text">'
+    page = _FormPage(html, **{'[id="p"]': _Element(transform=lambda v: f"({v[:3]}) {v[3:]}")})
+    out = fill_one(page, parse_controls(html), _answer("Phone", "5550100", akind="phone"))
+    assert out.status == CHANGED
+    assert out.value == "(555) 0100" and out.intended == "5550100"
+    assert page.methods == ["fill"], "a reformatting field must not be retried"
+
+
+def test_a_write_that_raises_is_reported_blank_with_the_reason():
+    page = _FormPage(_TEXT_HTML,
+                     **{'[id="e"]': _Element(raises=TimeoutError("timeout 5000ms"))})
+    out = fill_one(page, parse_controls(_TEXT_HTML), _answer("Email", "x@y.invalid"))
+    assert out.status == BLANK
+    assert "TimeoutError" in out.note and "x@y.invalid" in out.note
+
+
+def test_a_multiline_value_is_never_typed_into_a_single_line_input():
+    """The hazard a click-scanning guard would not catch: `press_sequentially`
+    on a value containing a newline sends Enter, and Enter in a text input
+    inside a `<form>` triggers HTML's implicit submission. So the typing retry
+    is refused outright for a multi-line value in anything but a textarea."""
+    page = _FormPage(_TEXT_HTML, **{'[id="e"]': _Element(swallow=True)})
+    out = fill_one(page, parse_controls(_TEXT_HTML), _answer("Email", "line one\nline two"))
+    assert out.status == BLANK
+    assert page.methods == ["fill"], "no keystroke may reach a single-line input"
+    assert "Enter keystroke" in out.note
+
+
+def test_a_multiline_value_is_typed_into_a_textarea_on_retry():
+    """The other direction: Enter in a textarea inserts a newline and submits
+    nothing, so the retry is allowed there — the refusal above is about the
+    control, not about the value."""
+    html = '<label for="t">Cover letter</label><textarea id="t"></textarea>'
+    page = _FormPage(html, **{'[id="t"]': _Element(swallow=True)})
+    out = fill_one(page, parse_controls(html), _answer("Cover letter", "para one\npara two",
+                                                       kind="textarea"))
+    assert out.status == FILLED and out.strategy == "type"
+    assert "press_sequentially" in page.methods
+
+
+# --------------------------------------------------------------------------
+# The AI-draft marker survives
+# --------------------------------------------------------------------------
+
+
+def test_a_drafted_value_is_typed_marker_and_all():
+    """The marker is what a recruiter sees if the human skips the review step —
+    that is the fail-loud outcome we want, so it is typed in verbatim. This
+    module must never strip it, and the check uses the exported `is_marked()`
+    rather than re-hardcoding the literal."""
+    drafted = drafting.mark("I am drawn to this role because of the platform work.")
+    html = '<label for="t">Why do you want to work here?</label><textarea id="t"></textarea>'
+    page = _FormPage(html)
+    out = fill_one(page, parse_controls(html),
+                   _answer("Why do you want to work here?", drafted,
+                           kind="textarea", source="drafted", akind="free_text"))
+    typed = [a for m, _, a in page.writes if m == "fill"][0]
+    assert typed == drafted
+    assert drafting.is_marked(typed)
+    assert out.status == FILLED and out.drafted is True
+    assert drafting.DRAFT_MARKER in out.value
+
+
+def test_the_executor_does_not_hardcode_the_draft_marker():
+    """Re-spelling the marker literal here would let the two copies drift, and
+    the drifted one would silently stop matching."""
+    assert drafting.DRAFT_MARKER not in FILL_MODULE.read_text()
+
+
+# --------------------------------------------------------------------------
+# Locating: always through a Question, never a bare string
+# --------------------------------------------------------------------------
+
+
+def test_every_lookup_goes_through_a_question_object():
+    """Ruling 1, enforced structurally rather than by review.
+
+    `find_control` prefix-matches, so a short literal query can resolve to the
+    wrong field with no ambiguity to detect. A token cap was considered and
+    rejected — it breaks the legitimate "Resume" -> "Resume/CV and supporting
+    documents" match — so the rule is instead that the executor never passes a
+    string CONSTANT to a locator lookup at all."""
+    tree = _strip_docstrings(ast.parse(FILL_MODULE.read_text()))
+    finders = {"find_control", "find_by_key", "find_group_options", "find_selector"}
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        name = getattr(node.func, "id", None) or getattr(node.func, "attr", None)
+        if name not in finders:
+            continue
+        for arg in node.args[1:]:
+            assert not isinstance(arg, ast.Constant), (
+                f"{name} called with the literal {getattr(arg, 'value', arg)!r} — "
+                f"lookups must be driven by Question.label"
+            )
+
+
+def test_the_short_query_hazard_is_real_and_the_executor_avoids_it(controls):
+    """The concrete failure ruling 1 exists to prevent, on the real Lever form,
+    plus the executor doing the right thing on the same page.
+
+    `find_control(controls, "Name")` returns the PRONUNCIATION field, because
+    after the containment rule that is the one and only label whose first token
+    is "name". Driving from `Question.label` hits the exact tier instead."""
+    wrong = find_control(controls["lever"], "Name")
+    assert wrong is not None and "Pronunciation" in wrong.label
+
+    html = _html("lever")
+    page = _FormPage(html)
+    out = fill_one(page, parse_controls(html), _answer("Full name", "Testy McTestface"))
+    assert out.status == FILLED
+    assert page.writes == [("fill", 'input[name="name"]', "Testy McTestface")]
+
+
+def test_the_greenhouse_key_fallback_locates_by_identifier():
+    """Greenhouse's questions come from JSON, whose key IS the DOM id — an exact
+    identifier match, not prose matching, so it is not the hazard above."""
+    html = _html("greenhouse")
+    page = _FormPage(html)
+    answer = Answer(question=Question(key="first_name", label="Not The DOM Label",
+                                      required=True, kind="text"),
+                    value="Testy", source="profile", kind="first_name")
+    out = fill_one(page, parse_controls(html), answer)
+    assert out.status == FILLED
+    assert page.writes == [("fill", '[id="first_name"]', "Testy")]
+
+
+def test_an_unlocatable_field_is_reported_blank_with_its_value():
+    html = '<label for="e">Email</label><input id="e" type="text">'
+    page = _FormPage(html)
+    out = fill_one(page, parse_controls(html), _answer("Favourite Dinosaur", "Stegosaurus"))
+    assert out.status == BLANK and page.writes == []
+    assert "Stegosaurus" in out.note
+
+
+def test_a_selector_matching_two_live_elements_is_a_miss():
+    """Same rule `PageLocator._single` applies: two hits is a miss, never "take
+    the first"."""
+    page = _FormPage(_TEXT_HTML, **{'[id="e"]': _Element(count=2)})
+    out = fill_one(page, parse_controls(_TEXT_HTML), _answer("Email", "x@y.invalid"))
+    assert out.status == BLANK and page.writes == []
+
+
+# --------------------------------------------------------------------------
+# Groups and selects
+# --------------------------------------------------------------------------
+
+_RADIO_HTML = """
+<li class="application-question">
+  <div class="application-label"><div class="text">Do you have a driver's licence?</div></div>
+  <ul>
+    <li><label><input type="radio" name="q1" value="Yes"><span>Yes</span></label></li>
+    <li><label><input type="radio" name="q1" value="No"><span>No</span></label></li>
+  </ul>
+</li>
+"""
+
+
+def test_a_radio_group_is_answered_through_its_options():
+    """A group has no single element — `find_control` on the heading correctly
+    returns None — so the members are located individually and the one matching
+    the answer is ticked."""
+    controls = parse_controls(_RADIO_HTML)
+    assert find_control(controls, "Do you have a driver's licence?") is None
+    page = _FormPage(_RADIO_HTML)
+    out = fill_one(page, controls,
+                   _answer("Do you have a driver's licence?", "Yes",
+                           kind="select", options=["Yes", "No"]))
+    assert out.status == FILLED and out.value == "Yes"
+    assert page.writes == [("check", 'input[name="q1"][value="Yes"]', True)]
+
+
+def test_a_radio_answer_matching_no_option_ticks_nothing():
+    page = _FormPage(_RADIO_HTML)
+    out = fill_one(page, parse_controls(_RADIO_HTML),
+                   _answer("Do you have a driver's licence?", "Maybe",
+                           kind="select", options=["Yes", "No"]))
+    assert out.status == BLANK and page.writes == []
+    assert "no option" in out.note
+
+
+def test_a_tick_that_does_not_stick_is_reported_blank():
+    page = _FormPage(_RADIO_HTML,
+                     **{'input[name="q1"][value="Yes"]': _Element(swallow=True)})
+    out = fill_one(page, parse_controls(_RADIO_HTML),
+                   _answer("Do you have a driver's licence?", "Yes",
+                           kind="select", options=["Yes", "No"]))
+    assert out.status == BLANK and "did not stay ticked" in out.note
+
+
+def test_a_select_is_read_back_by_option_label_not_by_value_attribute():
+    """`input_value()` on a `<select>` returns the option's `value` ATTRIBUTE,
+    which on real boards is routinely a numeric id while the answer we hold is
+    the option's text. Comparing those would report every successful selection
+    as a failure."""
+    html = (
+        '<label for="s">Highest degree</label>'
+        '<select id="s"><option value="">Select…</option>'
+        '<option value="4021">Bachelor\u2019s Degree</option></select>'
+    )
+    page = _FormPage(html)
+    out = fill_one(page, parse_controls(html),
+                   _answer("Highest degree", "Bachelor\u2019s Degree", kind="select",
+                           options=["Bachelor\u2019s Degree"]))
+    assert out.status == FILLED
+    assert page.writes == [("select_option", '[id="s"]', "Bachelor\u2019s Degree")]
+
+
+def test_a_select_that_refuses_the_option_is_reported_blank_and_not_retried():
+    html = ('<label for="s">Highest degree</label>'
+            '<select id="s"><option>PhD</option></select>')
+    page = _FormPage(html, **{'[id="s"]': _Element(swallow=True)})
+    out = fill_one(page, parse_controls(html),
+                   _answer("Highest degree", "PhD", kind="select", options=["PhD"]))
+    assert out.status == BLANK
+    assert page.methods == ["select_option"], "selects get no retry — the only other"\
+        " strategy is clicking the option, and this module clicks nothing"
+
+
+# --------------------------------------------------------------------------
+# Visibility, and the file-input exemption
+# --------------------------------------------------------------------------
+
+
+def test_a_hidden_text_input_is_not_filled():
+    page = _FormPage(_TEXT_HTML, **{'[id="e"]': _Element(visible=False)})
+    out = fill_one(page, parse_controls(_TEXT_HTML), _answer("Email", "x@y.invalid"))
+    assert out.status == BLANK and page.writes == []
+    assert "not visible" in out.note
+
+
+def test_a_hidden_file_input_is_still_attached_to(tmp_path):
+    """Ruling 6, in the direction that matters: Ashby and Greenhouse both keep
+    the REAL `<input type=file>` visually hidden behind a styled button, so a
+    visibility gate on the attach would make résumé upload impossible on two of
+    the three boards. `set_input_files` does not need visibility."""
+    html = '<label for="r">Resume/CV</label><input id="r" type="file">'
+    cv = tmp_path / "testy-cv.pdf"
+    cv.write_bytes(b"%PDF-1.4\n")
+    page = _FormPage(html, **{'[id="r"]': _Element(visible=False)})
+    out = attach_resume(page, parse_controls(html), str(cv))
+    assert out.status == ATTACHED and out.value == "testy-cv.pdf"
+    assert page.methods == ["set_input_files"]
+
+
+def test_the_visibility_gate_exempts_file_inputs_and_nothing_else():
+    """The exemption stated as a property of the gate itself, so it cannot be
+    reintroduced by a well-meaning edit that "adds the missing check"."""
+    for kind in ("text", "textarea", "select", "checkbox"):
+        assert fill_mod._needs_visibility_check(
+            Control(tag="input", input_type="text", label="x", label_source="label",
+                    kind=kind, required=False, required_source="")
+        ), kind
+    assert not fill_mod._needs_visibility_check(
+        Control(tag="input", input_type="file", label="Resume", label_source="label",
+                kind="file", required=False, required_source="")
+    )
+
+
+# --------------------------------------------------------------------------
+# The résumé: attached by the agent, LAST, label-matched, verified
+# --------------------------------------------------------------------------
+
+_FULL_FORM_HTML = """
+<label for="n">Full name</label><input id="n" type="text">
+<label for="e">Email</label><input id="e" type="text">
+<label for="r">Resume/CV</label><input id="r" type="file">
+"""
+
+
+@pytest.fixture
+def cv(tmp_path):
+    path = tmp_path / "testy-mctestface-cv.pdf"
+    path.write_bytes(b"%PDF-1.4\n")
+    return path
+
+
+def test_the_resume_is_attached_last(cv):
+    """Kayla's ruling, 2026-08-01. Greenhouse and Lever run a parse-and-prefill
+    on upload that overwrites already-filled fields, so attaching last is what
+    makes the agent's typed values win.
+
+    Asserted on the PAGE MUTATION ORDER, not on the report's ordering: a report
+    that lists the résumé last while the attach happened first would satisfy the
+    weaker check and lose every filled value on a real Greenhouse form."""
+    page = _FormPage(_FULL_FORM_HTML)
+    report = fill_form(
+        PageLocator(page),
+        [_answer("Full name", "Testy McTestface"),
+         _answer("Email", "testy@example.invalid", akind="email")],
+        resume_path=str(cv),
+    )
+    assert page.methods == ["fill", "fill", "set_input_files"]
+    assert page.methods[-1] == "set_input_files"
+    assert report.outcomes[-1] is report.resume
+    assert report.resume.status == ATTACHED
+    assert [o.status for o in report.outcomes] == [FILLED, FILLED, ATTACHED]
+
+
+def test_the_resume_outcome_is_present_even_when_nothing_else_filled():
+    """So the handoff can always say what happened to the résumé."""
+    page = _FormPage(_FULL_FORM_HTML)
+    report = fill_form(PageLocator(page), [], resume_path=None)
+    assert len(report.outcomes) == 1
+    assert report.resume.status == BLANK
+    assert page.writes == []
+
+
+def test_an_ambiguous_file_input_gets_nothing_attached(cv):
+    """Two plausible résumé slots. A résumé in the wrong slot is worse than an
+    empty slot, so the agent refuses and says which two it could not choose
+    between."""
+    html = ('<label for="a">Resume</label><input id="a" type="file">'
+            '<label for="b">CV</label><input id="b" type="file">')
+    page = _FormPage(html)
+    out = attach_resume(page, parse_controls(html), str(cv))
+    assert out.status == BLANK and page.writes == []
+    assert "will not guess" in out.note
+    assert "“Resume”" in out.note and "“CV”" in out.note
+
+
+def test_a_form_with_no_resume_slot_gets_nothing_attached(cv):
+    html = ('<label for="a">Cover Letter</label><input id="a" type="file">'
+            '<label for="b">Transcript</label><input id="b" type="file">')
+    page = _FormPage(html)
+    out = attach_resume(page, parse_controls(html), str(cv))
+    assert out.status == BLANK and page.writes == []
+    assert "is labelled as a résumé" in out.note
+
+
+def test_a_label_naming_two_document_kinds_is_not_a_resume_slot(cv):
+    """"Cover letter or resume" contains the word "resume" and is still not an
+    unambiguous résumé slot. A positive keyword alone is not enough."""
+    html = '<label for="a">Cover letter or resume</label><input id="a" type="file">'
+    page = _FormPage(html)
+    out = attach_resume(page, parse_controls(html), str(cv))
+    assert out.status == BLANK and page.writes == []
+
+
+@pytest.mark.parametrize("board,expected", [
+    ("lever", "Resume/CV"),
+    ("ashby", "Resume"),
+    ("greenhouse", "Resume/CV"),
+])
+def test_the_resume_slot_is_found_on_all_three_real_boards(board, expected, controls):
+    """The refusal rules have to still say YES on the forms this is built for.
+    Ashby's second file input is "Additional Attachments" and Greenhouse's is
+    "Cover Letter"; neither becomes a candidate, so all three resolve to one."""
+    control, reason = find_resume_input(controls[board])
+    assert control is not None, reason
+    assert (control.group_label or control.label) == expected
+
+
+def test_the_fakepath_form_of_a_filename_read_back_is_accepted(cv):
+    """Measured on real headed Chromium, macOS, against a `file://` page:
+    after `set_input_files("/tmp/.../fake-resume.pdf")`, `input_value()`
+    returns `'C:\\fakepath\\fake-resume.pdf'` — the HTML spec's deliberate fake
+    path, Windows separator and all. A naive `input_value() == path` check would
+    have reported every successful attach as a failure, so the primary read-back
+    is `el.files[0].name` and this is the documented fallback."""
+    html = '<label for="r">Resume/CV</label><input id="r" type="file">'
+    page = _FormPage(html, **{'[id="r"]': _Element(fakepath=True, no_file_api=True)})
+    out = attach_resume(page, parse_controls(html), str(cv))
+    assert out.status == ATTACHED
+    assert out.value == "testy-mctestface-cv.pdf"
+
+
+def test_an_attach_that_does_not_land_is_reported_blank(cv):
+    html = '<label for="r">Resume/CV</label><input id="r" type="file">'
+    page = _FormPage(html, **{'[id="r"]': _Element(swallow=True)})
+    out = attach_resume(page, parse_controls(html), str(cv))
+    assert out.status == BLANK
+    assert "did not land" in out.note
+
+
+def test_a_missing_resume_file_attaches_nothing(tmp_path):
+    html = '<label for="r">Resume/CV</label><input id="r" type="file">'
+    page = _FormPage(html)
+    out = attach_resume(page, parse_controls(html), str(tmp_path / "nope.pdf"))
+    assert out.status == BLANK and page.writes == []
+    assert "does not exist" in out.note
+
+
+def test_attaching_a_file_is_not_submitting(cv):
+    """Stated in the plan and therefore worth a test: the attach path writes
+    exactly one thing to the page, and it is the file."""
+    html = '<label for="r">Resume/CV</label><input id="r" type="file">'
+    page = _FormPage(html)
+    attach_resume(page, parse_controls(html), str(cv))
+    assert page.methods == ["set_input_files"]
+
+
+# --------------------------------------------------------------------------
+# The whole pass
+# --------------------------------------------------------------------------
+
+
+def test_fill_form_reads_one_dom_snapshot_for_the_whole_pass():
+    """Re-reading mid-pass would mean acting on selectors from one DOM using
+    questions from another — the bug `PageLocator` already documents."""
+    page = _FormPage(_FULL_FORM_HTML)
+    fill_form(PageLocator(page),
+              [_answer("Full name", "Testy McTestface"),
+               _answer("Email", "testy@example.invalid")])
+    assert page.content_calls == 1
+
+
+def test_fill_form_reports_every_answer_in_order(cv):
+    page = _FormPage(_FULL_FORM_HTML, **{'[id="e"]': _Element(swallow=True,
+                                                              swallow_typing=True)})
+    report = fill_form(
+        PageLocator(page),
+        [_answer("Full name", "Testy McTestface"),
+         _answer("Email", "testy@example.invalid", akind="email"),
+         Answer(question=_q("I agree to the privacy policy"), value="Yes",
+                source="profile", kind="consent")],
+        resume_path=str(cv),
+    )
+    assert [o.label for o in report.outcomes] == [
+        "Full name", "Email", "I agree to the privacy policy", "Resume/CV",
+    ]
+    assert [o.status for o in report.outcomes] == [FILLED, BLANK, BLANK, ATTACHED]
+    assert {o.label for o in report.needs_review} == {"Email", "I agree to the privacy policy"}
+    assert [o.label for o in report.by_status(FILLED)] == ["Full name"]
+
+
+def test_fill_form_against_the_real_lever_form_writes_only_what_it_resolved(cv):
+    """End to end on a captured 1.9 MB Lever page, with the real resolver: every
+    write goes to a field the resolver produced a value for, no work-eligibility
+    or consent field is touched, and the résumé attach is the last mutation."""
+    html = _html("lever")
+    page = _FormPage(html)
+    locator = PageLocator(page)
+    profile = {
+        "full_name": "Testy McTestface",
+        "email": "testy@example.invalid",
+        "phone": "555-0100",
+        "linkedin_url": "https://linkedin.invalid/in/testy",
+    }
+    answers = resolver.resolve(locator.questions(), profile)
+    report = fill_form(locator, answers, resume_path=str(cv))
+
+    written = [(m, s) for m, s, _ in page.writes]
+    assert written[-1][0] == "set_input_files"
+    assert [m for m, _ in written].count("set_input_files") == 1
+
+    # The résumé input is itself a `file_upload` (blocking) question, and the
+    # attach is the ONE deliberate exception to "never touch a blocking field".
+    # So it is excluded from the set below and checked separately: the only
+    # thing ever written to it is the file, never a typed value.
+    resume_control, _reason = find_resume_input(locator.controls)
+    assert resume_control is not None
+    assert [m for m, s in written if s == resume_control.selector] == ["set_input_files"]
+
+    blocking_selectors = {
+        c.selector
+        for a in answers if a.kind in BLOCKING_KINDS
+        for c in locator.controls
+        if c.label == a.question.label or c.group_label == a.question.label
+    } - {resume_control.selector}
+    assert not ({s for _, s in written} & blocking_selectors)
+    # Lever's work-authorization and sponsorship radios are in that set, so this
+    # is not a vacuous assertion.
+    assert len(blocking_selectors) >= 4
+    assert report.resume.status == ATTACHED
+    assert [o.status for o in report.outcomes if o.status == FILLED]
+
+
+def test_the_resolvers_file_upload_note_does_not_contradict_the_attach():
+    """`resolver.py`'s note used to say "nothing is uploaded automatically",
+    which stopped being true on 2026-08-01. The resolver still refuses the
+    question — pure, blocking, blank — but its explanation must match what the
+    executor actually does, or the handoff tells the user the opposite of what
+    happened."""
+    answers = resolver.resolve([_q("Resume/CV", kind="file")], {})
+    note = answers[0].note
+    assert answers[0].source == "blank" and answers[0].kind == "file_upload"
+    assert answers[0].kind in BLOCKING_KINDS
+    assert "nothing is uploaded automatically" not in note
+    assert "attaches your résumé itself" in note
+
+
+def test_the_resolver_is_still_pure_after_the_note_change():
+    """The note is prose; the module must not have grown a dependency on the
+    executor to say it."""
+    source = pathlib.Path(resolver.__file__).read_text()
+    for banned in ("import os", "import pathlib", "from agents.job_applier.nodes",
+                   "import requests", "import httpx", "import sqlite3"):
+        assert banned not in source, banned
+
+
+def test_a_raising_multiline_write_reports_the_error_not_the_retry_refusal():
+    """When a write actually errored, saying "we declined to retry by typing"
+    explains the wrong thing. The real error is the more useful note, so it
+    wins."""
+    page = _FormPage(_TEXT_HTML, **{'[id="e"]': _Element(raises=TimeoutError("timeout"))})
+    out = fill_one(page, parse_controls(_TEXT_HTML), _answer("Email", "one\ntwo"))
+    assert out.status == BLANK
+    assert "TimeoutError" in out.note
+    assert "Enter keystroke" not in out.note
+    assert out.attempts == 1

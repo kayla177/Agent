@@ -493,9 +493,9 @@ comment at the top of the test.
 
 **Files:** Create `agents/job_applier/nodes/fill.py`; Test: extend `tests/test_applier_locate.py`
 
-- [ ] After typing, **read the value back** and confirm it landed. React-controlled inputs frequently swallow programmatic input; a fill that silently did nothing is worse than one that failed loudly.
-- [ ] A field that will not accept its value is reported as `blank` with the reason, not retried indefinitely.
-- [ ] **Assert no submit control is ever clicked** — a test that scans the executor's source for a click on anything matching `submit|apply now|send application` and fails if present.
+- [x] After typing, **read the value back** and confirm it landed. React-controlled inputs frequently swallow programmatic input; a fill that silently did nothing is worse than one that failed loudly.
+- [x] A field that will not accept its value is reported as `blank` with the reason, not retried indefinitely.
+- [x] **Assert no submit control is ever clicked** — a test that scans the executor's source for a click on anything matching `submit|apply now|send application` and fails if present.
 
 > **RULING 2026-08-01 (Kayla) — the agent DOES attach the résumé, and it goes LAST.**
 > The spec's own note (`resolver.py`: *"attach the file yourself in the open browser window;
@@ -513,6 +513,43 @@ comment at the top of the test.
 >   résumé/CV; leave the others for the human. If the match is ambiguous, attach nothing and say so
 >   in the handoff — a résumé in the transcript slot is a worse outcome than an empty slot.
 > - THE ONE RULE is unchanged: attaching a file is not submitting. No code path may click submit.
+
+> **Task 6 decisions carried into Tasks 7-8.** (Full write-up:
+> `.superpowers/sdd/2026-07-31-jobs-autoapply-phase-b/task-6-report.md`.)
+> - **The headed-browser prerequisite is done.** `browser.launch_context()` was launched once
+>   against a `file://` copy of the Lever fixture, with all non-`file://` requests aborted at the
+>   route level (the saved page would otherwise have made five: hCaptcha, Lever's CDN ×3, GTM).
+>   The persistent context opened, `fill()` / `press_sequentially()` / `set_input_files()` all
+>   worked, read-back worked, and teardown left zero processes. Measured there and encoded as a
+>   test: a file input's `input_value()` returns **`C:\fakepath\<name>`** — the spec's fake path,
+>   Windows separator, on macOS — so filename verification reads `el.files[0].name` and only falls
+>   back to parsing that. The obvious `input_value() == path` check would have failed every
+>   successful attach.
+> - **There is a FOURTH status: `changed`.** Filled / blank / changed / attached. A phone mask that
+>   rewrites `5550100` as `(555) 0100` did accept the value, so reporting it `blank` is untrue, and
+>   an untrue note costs trust in every other note. `FillReport.needs_review` groups
+>   blank + changed + drafted for the handoff.
+> - **Retry policy: `MAX_ATTEMPTS = 2`, and attempt 2 must be a different mechanism** (typing, not
+>   a second `fill()`). Selects and checkboxes get no retry — the only other strategy is clicking
+>   the option, and this module clicks nothing.
+> - **HTML implicit submission is a ONE-RULE hazard that a click-scanning guard does not see.**
+>   Enter in a text input inside a `<form>` submits it, and `press_sequentially` on a value
+>   containing `\n` sends Enter. The typing retry is therefore refused for a multi-line value in
+>   anything but a `<textarea>`.
+> - **Blocking answers are refused even when they RESOLVED.** The resolver emits `"Yes"` from the
+>   profile for work authorization; the executor does not type it, and carries it into the note as
+>   a suggestion instead. Proved by a spy asserting the write list is empty — not by the outcome,
+>   which is the assertion Task 5 found to be worthless.
+> - **The executor's source guard is the INVERSE of the read-only one**: `.fill(` and
+>   `set_input_files(` are asserted PRESENT, clicks and submit-shaped selector literals are
+>   rejected. AST attribute equality, not grep, because `press` must be banned while
+>   `press_sequentially` must not. Proved in both directions on synthetic sources.
+> - **All ten guards were mutation-tested** and each turns a named test red. The harness itself
+>   reported ten false GREENs on its first run (it grepped stdout for `failed`; this pytest config
+>   prints no final summary line) — check a mutation harness before trusting it.
+> - `resolver.py`'s file-upload note was corrected and is pinned by a test; the module stays pure.
+> - Open for Task 7: `PageLocator` has no public `page` accessor, so `fill_form` reaches for
+>   `_page` to address radio-group members. A public property would remove the one private access.
 
 ---
 

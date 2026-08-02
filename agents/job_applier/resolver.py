@@ -708,10 +708,21 @@ def _resolve_one(question: Question, profile: dict) -> Answer:
         )
 
     if kind == "file_upload":
+        # This note used to read "attach the file yourself …; nothing is uploaded
+        # automatically", which stopped being true on 2026-08-01: the fill
+        # executor DOES attach the résumé, as its last action, to the one file
+        # input whose label identifies it as a résumé/CV (see
+        # `agents/job_applier/nodes/fill.py`, decision 8). What has NOT changed is
+        # this module: `file_upload` is still blocking, still blank, still pure. A
+        # resolver cannot answer a file question with text, and the attach is an
+        # explicit executor path driven by the résumé the user picked — never an
+        # answer emitted here. Pinned by
+        # `test_the_resolvers_file_upload_note_does_not_contradict_the_attach`.
         return _blank(
             question, kind,
-            "file upload — attach the file yourself in the open browser window; "
-            "nothing is uploaded automatically.",
+            "file upload — the agent attaches your résumé itself, last, once every "
+            "other field is filled. Any other document (cover letter, transcript, "
+            "portfolio) is yours to attach in the open browser window.",
         )
 
     if kind == "consent":
