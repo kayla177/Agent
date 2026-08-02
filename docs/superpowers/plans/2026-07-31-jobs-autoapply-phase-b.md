@@ -449,8 +449,38 @@ comment at the top of the test.
 
 **Files:** Create `agents/job_applier/drafting.py`; Test: `tests/test_applier_drafting.py`
 
-- [ ] Model-written answers are **always** returned with `source="drafted"` and a visible marker so the handoff can flag them. Ground them in the JD plus `company_research` when available rather than letting the model invent facts about the company.
-- [ ] Tests: a drafted answer is marked `drafted`; a model failure yields `blank` with a reason, never a fabricated answer; work-authorization and identity questions are **never** routed to drafting (assert the router refuses them); the prompt includes the JD but not the user's phone/email.
+- [x] Model-written answers are **always** returned with `source="drafted"` and a visible marker so the handoff can flag them. Ground them in the JD plus `company_research` when available rather than letting the model invent facts about the company.
+- [x] Tests: a drafted answer is marked `drafted`; a model failure yields `blank` with a reason, never a fabricated answer; work-authorization and identity questions are **never** routed to drafting (assert the router refuses them); the prompt includes the JD but not the user's phone/email.
+
+> **Task 5 decisions carried into Tasks 6-8.**
+> - The marker lives **in the returned text**, not only in metadata: values start with
+>   `DRAFT_MARKER`. Use the exported `is_marked()` rather than re-hardcoding the literal, and do NOT
+>   strip it automatically — it is what a recruiter sees if the human misses the review step, which
+>   is the fail-loud outcome we want.
+> - Drafting is **default-deny**. Only `motivation` and `experience` topics draft; `unknown` does
+>   not. On the real Lever form that is 2 of 7 free-text questions. Widen it by adding positive
+>   topic rules, never by making `unknown` draftable.
+> - Refusal is verified by **absence of a model call**, not by a blank answer. Refusal tests install
+>   a deliberately fabricating model and assert it was never called — the first version raised
+>   `AssertionError`, which `draft_one`'s `except Exception` swallowed into an innocent-looking
+>   blank, and a mutation routing a refused question to the model passed all 56 tests.
+> - **The hermeticity guard is suite-wide** (`tests/conftest.py`), not file-local. Tasks 6-8 get a
+>   loud `ModelCalledInTest` if they forget to stub. Do not shadow it with a same-named fixture.
+> - `Question.section` (new, additive) carries the enclosing section's heading, read by
+>   **containment** — nearest `<section>`/`.section` ancestor, then that container's own first
+>   heading. Measured: Lever 29 questions / 14 sections, Greenhouse and Ashby blank (neither has
+>   heading elements to read; none was invented). A positional "nearest preceding heading" rule
+>   differs on 0/65 Lever controls but 20/20 Ashby (stamping the widget title `Autofill from
+>   resume`) and 15/15 Greenhouse (`Apply for this job`), pinned by
+>   `test_what_the_positional_section_rule_would_have_produced`.
+> - Section-scoped non-prose rules are a strict **subset** of label-scoped ones, derived from one
+>   list so they cannot drift: video/recording, URL/link and file refuse a whole section; duration
+>   and number/date are label-only, because a heading may mention a duration in passing.
+> - The PII scrub runs over the **whole assembled prompt**, not a profile-field allowlist — the
+>   experience corpus IS the master résumé and its header carries the phone and email. Its limits
+>   are documented as Guaranteed / Best-effort / Not-attempted; a *third-party* number written
+>   without separators survives, and closing that means redacting arbitrary digit runs, which is
+>   what ate `$5,550,100` in the first attempt.
 
 ---
 
@@ -466,6 +496,23 @@ comment at the top of the test.
 - [ ] After typing, **read the value back** and confirm it landed. React-controlled inputs frequently swallow programmatic input; a fill that silently did nothing is worse than one that failed loudly.
 - [ ] A field that will not accept its value is reported as `blank` with the reason, not retried indefinitely.
 - [ ] **Assert no submit control is ever clicked** — a test that scans the executor's source for a click on anything matching `submit|apply now|send application` and fails if present.
+
+> **RULING 2026-08-01 (Kayla) — the agent DOES attach the résumé, and it goes LAST.**
+> The spec's own note (`resolver.py`: *"attach the file yourself in the open browser window;
+> nothing is uploaded automatically"*) contradicted the original intent — *"use that resume to
+> submit to the posting"* — so this settles it.
+>
+> - `resolver.py` keeps classifying `file_upload` as blocking and **stays pure**. It cannot answer
+>   a file question with text, and that is the right refusal. The attach is a **separate explicit
+>   path in the executor**, driven by the résumé the user picked, not a resolver decision.
+> - **Ordered last.** Greenhouse and Lever frequently run a parse-and-prefill on upload that
+>   overwrites fields already filled. Attaching last means the agent's values win.
+> - **Verify by filename read-back**, the same discipline as every other field.
+> - **Label-matched, and refuse rather than guess.** A form may carry several file inputs (résumé,
+>   cover letter, transcript, portfolio). Attach only to the one whose label identifies it as a
+>   résumé/CV; leave the others for the human. If the match is ambiguous, attach nothing and say so
+>   in the handoff — a résumé in the transcript slot is a worse outcome than an empty slot.
+> - THE ONE RULE is unchanged: attaching a file is not submitting. No code path may click submit.
 
 ---
 
