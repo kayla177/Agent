@@ -514,6 +514,37 @@ comment at the top of the test.
 >   in the handoff — a résumé in the transcript slot is a worse outcome than an empty slot.
 > - THE ONE RULE is unchanged: attaching a file is not submitting. No code path may click submit.
 
+> **Task 6 outcome — decisions carried into Tasks 7-10.**
+> - **THE ONE RULE had a live hole, and it was not a click.** HTML implicit submission: Enter in a
+>   text input inside a `<form>` submits it, and Playwright's `press_sequentially` sends Enter for
+>   BOTH `\n` and `\r` (driver alias map: `["Enter", ["\n", "\r"]]`). The typing retry could have
+>   submitted a real application with no click anywhere and a green source scan. `_ENTER_CHARS` now
+>   bans both in anything but a `<textarea>`, and the pair is provably exhaustive because that alias
+>   map is the only place a character becomes a key.
+> - **The source guard is honest, not complete.** `evaluate`, `dispatch_event`, `keyboard`/`mouse`/
+>   `touchscreen` and constructed selectors are now scanned; a selector held in a plain variable and
+>   dynamic `getattr` access cannot be. Both are backstopped at RUNTIME by `_single_locator` — the
+>   only caller of `page.locator` — which refuses any control `_is_submitish` matches. The residue is
+>   written down in `_UNSCANNABLE`; do not let a later change imply the scan is a proof.
+> - **`FillReport` has FOUR statuses** — `filled`, `blank`, `changed`, `attached` — plus
+>   `superseded`. `changed` exists because a phone mask rewriting `5550100` as `(555) 0100` really
+>   did accept the value, and calling that `blank` is untrue. `needs_review` groups blank + changed
+>   + drafted. **Task 7 must render all four and honour `superseded`.**
+> - **A revert is not a reformat.** The pre-write value is captured, so a field reading back as what
+>   was already there is a swallowed write (retry; report the stale string as NOT your value), not a
+>   reformat. Pre-populated forms are common — browser autofill, ATS session restore, apply-with-
+>   LinkedIn.
+> - **The résumé slot is reported once.** The resolver emits a `file_upload` answer for the same DOM
+>   field the attach path fills; that outcome is suppressed for the control the attach CLAIMED, so a
+>   cover-letter slot keeps its own answer. Tracked in `FillReport.superseded`.
+> - A file input's `input_value()` returns `C:\fakepath\<name>` — Windows separator, on macOS, from
+>   a `file://` page. Verification reads `el.files[0].name`, parsing the fake path only as fallback.
+> - **UNRESOLVED, needs the first live run:** whether Ashby's radios pass `is_visible()`. Its hiding
+>   rule lives in an external CDN stylesheet the fixture does not contain. Lever's radios are 17-20px
+>   (visible); Greenhouse has no hiding rule. No speculative exemption was added — Playwright's
+>   `check()` cannot tick a hidden element either, so `_gate` only turns a timeout into an explained
+>   blank.
+
 > **Task 6 decisions carried into Tasks 7-8.** (Full write-up:
 > `.superpowers/sdd/2026-07-31-jobs-autoapply-phase-b/task-6-report.md`.)
 > - **The headed-browser prerequisite is done.** `browser.launch_context()` was launched once
