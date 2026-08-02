@@ -193,6 +193,14 @@ ATTACHED = "attached"
 
 STATUSES: tuple[str, str, str, str] = (FILLED, BLANK, CHANGED, ATTACHED)
 
+#: The key on the résumé attach outcome. It is deliberately NOT a form
+#: question's key: the attach is an explicit executor path, not an answer, so
+#: there is no `Question` for it. Exported because the handoff has to recognise
+#: that outcome to map it back to the question whose answer it superseded — and
+#: a second hardcoded copy of the literal in another module is exactly the kind
+#: of duplication that drifts.
+RESUME_KEY = "__resume__"
+
 #: Two attempts, never more. See decision 3.
 MAX_ATTEMPTS = 2
 
@@ -982,7 +990,7 @@ def attach_resume(
     """
     label = "Résumé"
     if not resume_path:
-        return FillOutcome(key="__resume__", label=label, status=BLANK,
+        return FillOutcome(key=RESUME_KEY, label=label, status=BLANK,
                            kind="file_upload", source="file", note=RESUME_MISSING_NOTE)
     # `os.fspath` raises TypeError on a non-path, and this function promises not
     # to raise, so even the argument handling is guarded.
@@ -992,7 +1000,7 @@ def attach_resume(
         exists = os.path.isfile(path)
     except Exception as exc:
         return FillOutcome(
-            key="__resume__", label=label, status=BLANK, kind="file_upload",
+            key=RESUME_KEY, label=label, status=BLANK, kind="file_upload",
             source="file",
             note=f"the résumé path could not be read ({type(exc).__name__}) — "
                  f"attach it yourself.",
@@ -1002,26 +1010,26 @@ def attach_resume(
     # `/Users/<name>/…` back at them.
     if not exists:
         return FillOutcome(
-            key="__resume__", label=label, status=BLANK, kind="file_upload",
+            key=RESUME_KEY, label=label, status=BLANK, kind="file_upload",
             source="file", intended=filename,
             note=f"the résumé file “{filename}” was not found, so nothing was attached.",
         )
 
     control, reason = find_resume_input(controls)
     if control is None:
-        return FillOutcome(key="__resume__", label=label, status=BLANK,
+        return FillOutcome(key=RESUME_KEY, label=label, status=BLANK,
                            kind="file_upload", source="file", intended=filename, note=reason)
 
     label = control.group_label or control.label or label
     if _refuse_submitish(control):
-        return FillOutcome(key="__resume__", label=label, status=BLANK,
+        return FillOutcome(key=RESUME_KEY, label=label, status=BLANK,
                            kind="file_upload", source="file", intended=filename,
                            note=_SUBMIT_REFUSAL_NOTE)
 
     locator = _single_locator(page, control, timeout_ms)
     if locator is None:
         return FillOutcome(
-            key="__resume__", label=label, status=BLANK, kind="file_upload",
+            key=RESUME_KEY, label=label, status=BLANK, kind="file_upload",
             source="file", intended=filename,
             note=("the résumé field has nothing unique to address it by on the "
                   "page — attach it yourself."),
@@ -1034,7 +1042,7 @@ def attach_resume(
     # two of the three boards. Decision 7.
     refusal = _gate(control, locator, timeout_ms)
     if refusal:
-        return FillOutcome(key="__resume__", label=label, status=BLANK,
+        return FillOutcome(key=RESUME_KEY, label=label, status=BLANK,
                            kind="file_upload", source="file", intended=filename,
                            note=refusal)
 
@@ -1042,7 +1050,7 @@ def attach_resume(
         locator.set_input_files(path, timeout=timeout_ms)
     except Exception as exc:
         return FillOutcome(
-            key="__resume__", label=label, status=BLANK, kind="file_upload",
+            key=RESUME_KEY, label=label, status=BLANK, kind="file_upload",
             source="file", intended=filename,
             note=(f"the résumé could not be attached ({type(exc).__name__}: {exc}) — "
                   f"attach it yourself."),
@@ -1051,14 +1059,14 @@ def attach_resume(
     landed = _read_filename(locator, timeout_ms)
     if landed == filename:
         return FillOutcome(
-            key="__resume__", label=label, status=ATTACHED, value=landed,
+            key=RESUME_KEY, label=label, status=ATTACHED, value=landed,
             intended=filename, kind="file_upload", source="file", strategy="attach",
             attempts=1,
             note=(f"“{filename}” attached to “{label}” and confirmed, after every "
                   f"other field was filled."),
         )
     return FillOutcome(
-        key="__resume__", label=label, status=BLANK, value=landed, intended=filename,
+        key=RESUME_KEY, label=label, status=BLANK, value=landed, intended=filename,
         kind="file_upload", source="file", strategy="attach", attempts=1,
         note=(
             f"the résumé did not land: the field reads “{landed or 'nothing'}” "
