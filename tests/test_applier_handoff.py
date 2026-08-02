@@ -950,7 +950,7 @@ def test_the_filled_band_is_collapsible_without_losing_its_count(resume):
     assert heading in folded and heading in full
     assert "Testy McTestface" in full and "Testy McTestface" not in folded
     # The band is still last, and the structure still carries every item.
-    assert len(report.group(DONE)) == 9
+    assert len(report.group(DONE)) == 8
 
 
 def test_every_test_the_module_docstring_cites_actually_exists():
@@ -1186,6 +1186,34 @@ def test_the_report_never_promises_a_draft_that_was_already_declined(resume):
         assert "left for the AI drafting step" not in item.note
         assert "video or audio recording" in item.note
     assert "left for the AI drafting step" not in report.render_text()
+
+
+def test_no_wrong_school_reaches_the_collapsed_filled_band(resume):
+    """The report is how this bug was found, so the invariant is pinned at the
+    report level too, not only in `test_applier_resolver.py`.
+
+    "High School Name" resolved to the profile's UNIVERSITY with
+    `source="profile"` — which put it in `DONE`, the band rendered last, folded
+    and one line per field. A false statement about her education, in the place
+    she is least likely to look. It is now empty — and because Lever marks it
+    required, it has moved all the way to the FRONT of the report, into the band
+    that leads: the honest position for a required field nobody has answered.
+    """
+    report, _, _, _ = _build("lever", resume_path=resume)
+    high_school = next(i for i in report.items if i.label == "High School Name")
+    assert high_school.required and high_school.group == BLOCKING
+    assert high_school.value == ""
+    assert PROFILE["school"] not in high_school.value
+    assert "level of schooling your profile does not store" in high_school.note
+
+    # The invariant, over the whole board: the profile's school appears only
+    # where a school was actually asked for.
+    for item in report.group(DONE):
+        assert PROFILE["school"] not in item.value, item.label
+    # Not vacuous — the real school question is still answered, it is just not
+    # on this fixture's happy path (its options list no plain "University of
+    # Wisconsin"), so assert the rule fired rather than that nothing exists.
+    assert sum(1 for i in report.items if "High School" in i.label) == 2
 
 
 def test_the_greenhouse_report_keeps_the_cover_letter_slot_as_hers(resume):

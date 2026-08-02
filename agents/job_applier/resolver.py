@@ -328,6 +328,92 @@ _LABEL_RULES: tuple[tuple[str, re.Pattern[str]], ...] = (
         r"website", r"blog",
     )),
 
+    # A label naming a SPECIFIC INSTANCE of an attribute is not asking for the
+    # instance the profile happens to store. This is a different principle from
+    # `name_meta` above (which is "a label asking ABOUT an attribute is not
+    # asking FOR it"), and it needs its own rule: the profile records ONE
+    # `school`, with one `degree` and one `grad_date` all belonging to that same
+    # school, and "High School Name" asks for a different school entirely.
+    #
+    # MEASURED before the fix, on the captured Lever form with a real profile:
+    #   "High School Name"               -> school    -> "University of Waterloo"
+    #   "Year of High School Graduation" -> grad_date -> "2027"   (the options on
+    #        that question are the years 2020-2031, so the profile's UNIVERSITY
+    #        graduation year really was selectable and really would have been
+    #        selected — the earlier "this one is already fine" reading only held
+    #        because a `grad_date` of "May 2027" matched no option verbatim.)
+    # Both were `source="profile"`, which is the worst possible placement: the
+    # handoff files them under "filled and verified", the band the user is least
+    # likely to open, so a false statement about her education goes onto a real
+    # application with nothing drawing her eye to it.
+    #
+    # ORDERED AHEAD OF `grad_date`, not merely ahead of `school`. Ordering it
+    # between the two would fix the name and leave the year, and the year is the
+    # one that silently selects a plausible-looking wrong value out of a
+    # dropdown. The `grad_date`-before-`school` precedent directly below is the
+    # same manoeuvre one rule earlier.
+    #
+    # VOCABULARY: pre-tertiary levels ONLY, and that boundary is provable rather
+    # than cautious. A profile that stores `school` next to `degree` and
+    # `grad_date` is describing a tertiary institution by construction — nobody
+    # holds a degree from a middle school — so a label naming a school BELOW
+    # that level cannot be asking for it. Deliberately EXCLUDED for the opposite
+    # reason: "undergraduate"/"graduate" name levels the profile plausibly DOES
+    # hold ("Undergraduate School" is the right question to answer for an intern
+    # applicant), so they keep resolving to `school` and this rule does not
+    # touch them. Checked against every label in all three captured fixtures
+    # plus the Greenhouse JSON payload: it fires on exactly the two broken Lever
+    # labels and on none of the three correct ones — notably not on "Which
+    # university are you currently attending … Please select "Other (School Not
+    # Listed)"", which contains the word "School" and must keep working.
+    # `high[\s-]*school` with a zero-or-more quantifier so "highschool" and
+    # "high-school" land too; "Highest level of education" does NOT match,
+    # because the "high" there is not followed by "school".
+    #
+    # WORD BOUNDARIES, measured rather than assumed — the same exercise the
+    # `name_meta` rule above documents, and it came out differently at each end:
+    #
+    #   * LEADING `\b`: kept, and it is DEFENSIVE, not load-bearing. Checked
+    #     against /usr/share/dict/words (235,976 entries): ZERO single words
+    #     contain any of these phrases, which is unsurprising because every
+    #     alternative but one is two words. Dropping it changes the behaviour of
+    #     nothing measurable, so a mutant that removes it is equivalent and
+    #     cannot be killed by any honest test. It stays because it costs nothing
+    #     and because the next token added here might not be two words.
+    #
+    #   * TRAILING `\b`: REMOVED from every alternative ending in
+    #     "school"/"education", and replaced with `\w*`. A hard boundary there
+    #     was not protective, it was WRONG: it rejected "high schooling",
+    #     "high schooler", "middle schooling", "primary schooling", "elementary
+    #     schooling" and "secondary educational" — six real phrasings, every one
+    #     of which is asking about exactly the school level this rule exists to
+    #     refuse, and every one of which would therefore have been answered with
+    #     the profile's university. This is the `mispronounce` finding again:
+    #     a word boundary is not automatically the safe choice.
+    #
+    #   * The inline `\b` after "junior high" and "sixth form" IS load-bearing
+    #     and stays, because those two alternatives do NOT end in "school" —
+    #     `\w*` there would match "junior highlights" and "sixth formation".
+    #     (`test_the_school_level_tokens_are_anchored_on_word_boundaries`.)
+    # (`test_a_school_level_the_profile_does_not_store_is_never_answered`,
+    # `test_an_inflected_school_level_phrasing_is_still_caught`,
+    # `test_no_lever_question_is_auto_filled_with_the_profile_school_by_accident`.)
+    ("school_level", re.compile(
+        r"\b(?:"
+        r"high[\s-]*school\w*"
+        r"|secondary\s+(?:school|education)\w*"
+        r"|middle\s+school\w*"
+        r"|grade\s+school\w*"
+        r"|grammar\s+school\w*"
+        r"|elementary\s+school\w*"
+        r"|primary\s+school\w*"
+        r"|junior\s+high\b(?:\s+school\w*)?"
+        r"|senior\s+high\b(?:\s+school\w*)?"
+        r"|prep(?:aratory)?\s+school\w*"
+        r"|sixth\s+form\b(?:\s+college)?"
+        r")",
+        re.IGNORECASE)),
+
     # Before `school`/`degree`: "Expected graduation date from your university"
     # names a university but asks for a date.
     ("grad_date", _rx(r"graduat\w*", r"grad\s+date", r"expected\s+completion")),
@@ -765,6 +851,23 @@ def _resolve_one(question: Question, profile: dict) -> Answer:
             question, kind,
             "a relocation preference is not stored in your profile — answer it "
             "yourself.",
+        )
+
+    if kind == "school_level":
+        # Says WHAT the profile holds and WHY it was not used, rather than only
+        # that nothing was filled — the same shape as the option-gate note in
+        # `_emit`. A bare "not derivable" here would read as a gap in the
+        # resolver, when the truth is that the profile has a perfectly good
+        # value that is the answer to a different question.
+        stored = str(profile.get("school") or "").strip()
+        held = f" — it records “{stored}”" if stored else ""
+        return _blank(
+            question, kind,
+            f"this asks about a level of schooling your profile does not "
+            f"store{held}, and one school, degree and graduation date all "
+            f"describing that same school are everything it has. Answering "
+            f"from them would put the wrong school on this application, so "
+            f"fill this one in yourself.",
         )
 
     if kind in ("first_name", "last_name"):

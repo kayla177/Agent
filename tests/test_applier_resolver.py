@@ -372,7 +372,9 @@ NAME_REQUEST_CORPUS = [
     ("Surname", "last_name"),
     ("Preferred Name | What would you like us to call you?", "name_alt"),
     ("Other Legal Name", "name_alt"),
-    ("High School Name", "school"),
+    # Not `school`: the profile stores one (tertiary) school, and this names a
+    # different one. See the `school_level` block at the end of this file.
+    ("High School Name", "school_level"),
     ("Name of your university", "school"),
     ("Current Company Name", "other"),
 ]
@@ -1054,3 +1056,229 @@ def test_real_greenhouse_form_fills_only_the_identity_fields_it_has():
         "Would you like to include your LinkedIn profile, personal website or blog?":
             FAKE["linkedin_url"],
     }
+
+
+# =========================================================================
+# A label naming a school level the profile does not store
+# =========================================================================
+# The principle is NOT `name_meta`'s ("a label asking ABOUT an attribute is not
+# asking FOR it"). It is: **a label naming a specific INSTANCE of an attribute
+# is not asking for the instance the profile happens to store.** The profile
+# holds one school, with one degree and one graduation date all describing that
+# same school; "High School Name" asks for a different school entirely, and the
+# resolver cannot know the answer.
+#
+# Found through the Task 7 handoff report, which is what made it visible: both
+# broken labels resolved with `source="profile"`, so they were filed under
+# "filled and verified" — the collapsed band the user is least likely to open.
+# A wrong school on a real application with nothing drawing her eye to it.
+
+SCHOOL_LEVEL_CORPUS = [
+    "High School Name",
+    "Year of High School Graduation",
+    "high-school name",
+    "Highschool attended",
+    "What high school did you attend?",
+    "Name of your high school",
+    "High School GPA",
+    "Secondary School",
+    "Secondary education",
+    "Middle School",
+    "Grade school",
+    "Grammar School",
+    "Elementary School",
+    "Primary school",
+    "Junior High",
+    "Junior High School",
+    "Senior High School",
+    "Prep School",
+    "Preparatory School",
+    "Sixth Form",
+    "Sixth form college",
+    # Inflections. These were REJECTED by a hard trailing word boundary until
+    # mutation testing exposed it — see `test_an_inflected_school_level_phrasing_is_still_caught`.
+    "Where did you do your high schooling?",
+    "Are you a high schooler?",
+    "Middle schooling",
+    "Primary schooling",
+    "Elementary schooling",
+    "Secondary educational background",
+]
+
+# Every one of these must keep resolving to the profile's school/degree/date.
+# Tasks 4 and 5 both had to learn that a token is not safe because it looks
+# safe: "school" inside "Schoology", "uk" inside "Milwaukee". The equivalents
+# here are "School" inside "Other (School Not Listed)" — which sits inside the
+# one Lever question that is CORRECTLY answered from the profile — and "high"
+# inside "Highest level of education completed".
+SCHOOL_KEPT_CORPUS = [
+    ("School", "school"),
+    ("School Name", "school"),
+    ("University", "school"),
+    ("College or University", "school"),
+    ("Institution", "school"),
+    ("Alma mater", "school"),
+    ("Name of your university", "school"),
+    ("Education", "school"),
+    ("School of Engineering", "school"),
+    ("Highest level of education completed", "school"),
+    # Deliberately NOT school_level: these name a level the profile plausibly
+    # DOES hold, so blanking them would break the case the resolver exists for.
+    ("Undergraduate School", "school"),
+    ("Undergraduate Institution", "school"),
+    # The real Lever question, which must keep working — it contains the word
+    # "School" and is the reason a bare `\bschool\b` denylist was not the fix.
+    ('Which university are you currently attending or did you last attend? '
+     'Please select "Other (School Not Listed)" if your school is not listed.', "school"),
+    ("Expected graduation date from your university", "grad_date"),
+    ("Degree", "degree"),
+    ("Field of study", "degree"),
+]
+
+
+@pytest.mark.parametrize("label", SCHOOL_LEVEL_CORPUS)
+def test_a_school_level_the_profile_does_not_store_is_classified_school_level(label):
+    assert classify(q(label)) == "school_level"
+
+
+@pytest.mark.parametrize("label", SCHOOL_LEVEL_CORPUS)
+def test_a_school_level_the_profile_does_not_store_is_never_answered(label):
+    """Blank, with a reason, for every phrasing — and the profile's school must
+    not be the value under any of them."""
+    ans = resolve([q(label)], RICH)[0]
+    assert ans.kind == "school_level"
+    assert ans.source == "blank"
+    assert ans.value == ""
+    assert ans.note.strip()
+
+
+@pytest.mark.parametrize("label", SCHOOL_LEVEL_CORPUS)
+def test_a_school_level_question_explains_itself_rather_than_falling_back(label):
+    """Deleting the `school_level` branch in `_resolve_one` still yields blank —
+    the generic tail does that — so the safety outcome alone cannot tell a
+    working rule from a deleted one. The NOTE is what distinguishes them, and
+    the note is what the handoff shows: it has to say what the profile holds and
+    why it was not used, not merely that nothing was filled."""
+    ans = resolve([q(label)], RICH)[0]
+    assert "level of schooling your profile does not store" in ans.note
+    assert RICH["school"] in ans.note, "the note must say what it DOES hold"
+    assert "not derivable from a typed profile field" not in ans.note
+
+
+@pytest.mark.parametrize("label", SCHOOL_LEVEL_CORPUS)
+def test_a_school_level_question_never_receives_any_profile_value(label):
+    """Not just the school: the DEGREE and the GRADUATION DATE describe the same
+    tertiary institution, so neither is an answer to a question about a
+    different school either. "Year of High School Graduation" is the live case
+    — it is a select whose options are years, and the profile's university
+    graduation year is one of them."""
+    years = [str(y) for y in range(2020, 2032)]
+    question = Question(key="k", label=label, required=True, kind="select", options=years)
+    ans = resolve([question], {**RICH, "grad_date": "2027"})[0]
+    assert ans.value == ""
+    for field in ("school", "degree", "grad_date"):
+        assert not RICH.get(field) or RICH[field] not in (ans.value or "x" * 99)
+
+
+@pytest.mark.parametrize("label,expected", SCHOOL_KEPT_CORPUS)
+def test_the_school_questions_that_were_right_are_still_right(label, expected):
+    assert classify(q(label)) == expected
+
+
+@pytest.mark.parametrize("label,expected", SCHOOL_KEPT_CORPUS)
+def test_the_school_questions_that_were_right_still_resolve_from_the_profile(label, expected):
+    """The other half. A rule that blanks everything is safe and useless; this
+    fails if the new rule is widened until the resolver stops doing its job."""
+    ans = resolve([q(label)], RICH)[0]
+    assert ans.source == "profile", label
+    assert ans.value
+
+
+def test_the_school_level_rule_is_ordered_ahead_of_grad_date_not_merely_ahead_of_school():
+    """MEASURED, and it corrects an assumption: "Year of High School Graduation"
+    was NOT already resolving correctly.
+
+    It classified as `grad_date` — which is ordered ahead of `school` — and with
+    a profile `grad_date` of "2027" against the real Lever question's options
+    (the years 2020-2031) it selected the UNIVERSITY graduation year for the
+    HIGH SCHOOL one. It only ever looked fine with a `grad_date` like
+    "2027-04"/"May 2027", which matches no option verbatim and is blanked by the
+    option gate — i.e. by luck of formatting, not by the ordering.
+
+    So placing the rule between `grad_date` and `school` fixes the name and
+    leaves the year. This test fails under exactly that mis-ordering.
+    """
+    years = [str(y) for y in range(2020, 2032)]
+    question = Question(key="k", label="Year of High School Graduation",
+                        required=True, kind="select", options=years)
+    ans = resolve([question], {**RICH, "grad_date": "2027"})[0]
+    assert ans.kind == "school_level"
+    assert ans.value == "" and ans.source == "blank"
+
+
+def test_the_school_level_tokens_are_anchored_on_word_boundaries():
+    r"""`agents/job_scraper/locations.py` learned this the hard way when a
+    substring check for "uk" matched inside "Milwaukee".
+
+    The last two entries are the ones that are LOAD-BEARING rather than merely
+    tidy, and mutation testing is what separated them from the rest. Every
+    alternative in this rule ends in "school"/"education" and therefore takes a
+    `\w*` suffix — except "junior high" and "sixth form", which do not, and
+    which would swallow "junior highlights" and "sixth formation" if the inline
+    boundary after them were dropped. Removing either `\b` fails here.
+    """
+    for label in ("Highest level of education completed",
+                  "Do you have a Schoology account?",
+                  "Preschooling philosophy",
+                  "Highlight your best work",
+                  "Junior highlights of your career",
+                  "Sixth formation of the team"):
+        assert classify(q(label)) != "school_level", label
+
+
+@pytest.mark.parametrize("label,plain", [
+    ("Where did you do your high schooling?", "high school"),
+    ("Are you a high schooler?", "high school"),
+    ("Middle schooling", "middle school"),
+    ("Primary schooling", "primary school"),
+    ("Elementary schooling", "elementary school"),
+    ("Secondary educational background", "secondary education"),
+])
+def test_an_inflected_school_level_phrasing_is_still_caught(label, plain):
+    r"""A hard trailing `\b` on "school"/"education" was not protective, it was
+    WRONG — measured against /usr/share/dict/words, it protected against zero
+    real words while rejecting six real phrasings, every one of which asks about
+    exactly the school level this rule exists to refuse. Each would therefore
+    have been answered with the profile's university.
+
+    Pinned as pairs so the test also shows the plain form still works, i.e. that
+    the fix widened the rule rather than replacing one gap with another.
+    """
+    assert classify(q(label)) == "school_level", label
+    assert classify(q(plain)) == "school_level", plain
+    assert resolve([q(label)], RICH)[0].value == ""
+
+
+def test_no_lever_question_is_auto_filled_with_the_profile_school_by_accident():
+    """The invariant, end-to-end on the captured Lever form: the profile's school
+    may only be typed into a field the resolver classified as a school REQUEST —
+    never into one whose label names a level of schooling the profile does not
+    store. This is the shape that catches the NEXT sibling of this bug rather
+    than only this one. Pure: parses saved HTML, no browser, no network.
+    """
+    from agents.job_applier.locate_dom import discover_questions
+
+    lever = pathlib.Path(__file__).parent / "fixtures" / "ats" / "lever-form.html"
+    questions = discover_questions(lever.read_text())
+    answers = resolve(questions, {**RICH, "grad_date": "2027"})
+
+    # Not vacuous: the fixture really does carry both shapes.
+    kinds = [a.kind for a in answers]
+    assert kinds.count("school_level") == 2, "the fixture must exercise the new rule"
+    assert "school" in kinds, "and must still contain a real school question"
+
+    for ans in answers:
+        if ans.value and RICH["school"] in ans.value:
+            assert ans.kind == "school", (ans.question.label, ans.kind)
+        if ans.kind == "school_level":
+            assert ans.value == "", ans.question.label
