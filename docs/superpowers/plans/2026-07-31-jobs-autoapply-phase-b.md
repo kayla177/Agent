@@ -680,6 +680,34 @@ comment at the top of the test.
 - [x] **Carried debt from Task 4 discharged:** `resolve(..., default_country=...)` fed from `jobs.country`. On the captured Lever form this answers exactly the two questions that name no country ("...authorized to work in the country for which you are applying?" and the sponsorship one) and changes nothing else — the eligibility kinds stay in `BLOCKING_KINDS`, "North America" still goes blank, and `UNKNOWN`/`OTHER` still name no field.
 - [x] **Browser lifetime:** closed on every failing path (a node raising, a node setting `error`, a page that will not load), deliberately LEFT OPEN on success — closing the window on a successful fill would throw away every field just typed, one keystroke before the only action that matters. `graph.release_browser(state)` is exported for whoever ends that session.
 
+> **Task 8 review findings (all fixed in `cf36f1a`) — two are worth carrying forward.**
+> - **A test was found ENFORCING a false claim — a new variant of this branch's dominant defect.**
+>   `NOT_SUBMITTED_HEADLINE` said "The browser window is still open on this form, waiting for you",
+>   and Task 8 ran it on the routes where the window had been closed or never opened, with
+>   `test_every_failure_still_tells_the_user_nothing_was_submitted` asserting it across all EIGHT
+>   failure routes. Ten findings on this branch have been prose asserting a property the code lacks;
+>   this was the first where the guard *protected* the bug, so the usual remedy — pin the claim —
+>   was itself what locked it in. `build_report` now takes `browser_open`. "Nothing was submitted"
+>   stays unconditional, because that part is true everywhere.
+> - **A wrong-value path in the merge was unpinned by a fixture accident.** Mutating away the
+>   `r.source == "blank"` guard in `nodes/draft.py` left all 1732 tests green, because the three
+>   captured fixtures contain ZERO questions the resolver answers AND drafting claims. On a real form
+>   with a textarea the resolver matches to a profile field, the user's own value would be replaced
+>   with `""`. Now killed by name: `test_a_profile_answer_is_never_overwritten_by_a_draft`.
+> - The ONE-RULE scan now globs the whole package recursively, closing a hole Task 8 newly exposed:
+>   `browser.py` — the one module holding a live `BrowserContext` — was reachable from a node and
+>   unscanned. The weaker bespoke guard in the graph test file was deleted, not patched.
+> - **KNOWN LIMIT recorded in `graph.py`:** a node that REPLACES the context in state orphans the old
+>   one, since `release_browser` only reads `state["browser"]`. No node does today — **Task 9's
+>   re-navigate step is the obvious way to hit it.**
+> - **Not wired, deliberately:** `schema_greenhouse.parse_questions` / `form_url` /
+>   `demographic_questions_raw` are called only from tests. Scraped rows carry no `absolute_url` or
+>   questions payload, so the API route would need a live fetch at run time, and DOM discovery covers
+>   all three boards from one path. `Question`, `is_eeo_label` and `_EEO_TERMS` ARE load-bearing.
+> - **STILL UNMET, and it is Kayla's original ask:** `resume_path` has no producer. Nothing persists a
+>   résumé PDF *path* (`compile_tex` returns bytes from a temp dir). **Task 10 must produce the file**
+>   or the auto-attach she ruled on never happens.
+
 ---
 
 ## Task 9: Confirmation detection → upgrade the tracker row
