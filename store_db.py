@@ -65,6 +65,13 @@ def _migrate(conn: sqlite3.Connection) -> None:
     # legacy rows created before this link existed).
     if cols and "job_id" not in cols:
         conn.execute("ALTER TABLE applications ADD COLUMN job_id TEXT")
+    # When a real submission was VERIFIED on an ATS confirmation page (Phase B
+    # Task 9). Nullable with NO default and no backfill, deliberately: every
+    # existing row was recorded optimistically and none of them has been
+    # verified, so stamping any of them here would be inventing evidence. NULL
+    # reads as "unverified", which is exactly true of all of them.
+    if cols and "confirmed_at" not in cols:
+        conn.execute("ALTER TABLE applications ADD COLUMN confirmed_at TEXT")
 
     # LaTeX résumé export: their .tex template on the master, tailored .tex per job.
     master_cols = {r[1] for r in conn.execute("PRAGMA table_info(master_resume)")}

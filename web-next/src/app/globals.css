@@ -96,6 +96,10 @@ h2 {
 .pipeline-count { color: var(--text); font-variant-numeric: tabular-nums; }
 
 .status-pill { display: inline-flex; align-items: center; gap: 2px; padding: 2px 10px; border-radius: 999px; border: 1px solid; font-size: .8rem; }
+/* Verified-vs-optimistic marker. The word is always rendered, never colour
+   alone: "this application was really submitted" is not a claim to make with a
+   hue somebody may not be able to see. */
+.confirmed-mark { color: #7fc08a; font-size: .75rem; white-space: nowrap; }
 
 .log-form { margin: .5rem 0 1rem; }
 .form-grid { display: grid; grid-template-columns: repeat(5, 1fr); gap: .6rem; margin-bottom: .75rem; }

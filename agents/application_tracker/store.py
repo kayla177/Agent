@@ -5,6 +5,11 @@ The public API is unchanged from the previous JSON version so the graph nodes
 and web routes keep working; a new optional `auto_detected` flag on
 update_status records status changes inferred from Gmail. Reads degrade
 gracefully (a missing table -> "no applications yet") so a run never crashes.
+
+`mark_confirmed` is the one writer of `applications.confirmed_at`, the column
+that separates a row VERIFIED against an ATS confirmation page from the
+optimistic row Phase A writes the moment the user confirms the apply modal. It
+only ever stamps; nothing here clears it.
 """
 
 from __future__ import annotations
@@ -92,6 +97,46 @@ def update_status(app_id: int, status: str, auto_detected: bool = False) -> dict
             (status, _today(), 1 if auto_detected else 0, int(app_id)),
         )
         row = cur.fetchone()
+    return _row(row) if row else None
+
+
+def mark_confirmed(app_id: int, when: str | None = None) -> dict | None:
+    """Stamp `confirmed_at` — the ONE writer of that column, in one direction.
+
+    Called only after `agents.job_applier.confirm.detect_confirmation` has
+    positively identified an ATS confirmation page. Returns the row (stamped, or
+    already-stamped and untouched), or None if `app_id` does not exist.
+
+    Three properties, each a deliberate refusal:
+
+      * **It never re-stamps.** The `WHERE confirmed_at IS NULL OR = ''` clause
+        means a second detection of the same confirmation keeps the FIRST
+        timestamp. Re-stamping would silently move a recorded fact forward every
+        time a page happened to be re-read.
+      * **It never clears.** There is no code path here, or anywhere else in the
+        repo, that writes NULL into this column. A non-match does not call this
+        function at all: absence of evidence is not evidence, so an unmatched
+        page leaves the row exactly as Phase A wrote it.
+      * **It touches nothing else** — not `status`, not `updated_date`. Being
+        verified is a different fact from having moved in the pipeline, and
+        `updated_date` is the column the tracker shows as "last change you
+        made". Confirmation is not a change the user made.
+
+    Returning the row on the already-stamped path (rather than the None that a
+    bare `RETURNING` would give when the guarded UPDATE matches nothing) is what
+    lets a caller tell "already confirmed" apart from "no such application".
+    """
+    store_db.init_db()
+    stamp = (when or dt.datetime.now(dt.timezone.utc).isoformat(timespec="seconds"))
+    with store_db.connect() as conn:
+        conn.execute(
+            "UPDATE applications SET confirmed_at = ? "
+            "WHERE id = ? AND (confirmed_at IS NULL OR confirmed_at = '')",
+            (stamp, int(app_id)),
+        )
+        row = conn.execute(
+            "SELECT * FROM applications WHERE id = ?", (int(app_id),)
+        ).fetchone()
     return _row(row) if row else None
 
 

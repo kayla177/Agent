@@ -1,0 +1,47 @@
+<!DOCTYPE html>
+<!--
+  ============================ SYNTHETIC FIXTURE ============================
+  THIS FILE IS HAND-WRITTEN AND HAS NEVER BEEN COMPARED AGAINST A REAL ASHBY
+  CONFIRMATION PAGE. See greenhouse-confirmation.html for the full explanation:
+  capturing one requires actually submitting an application, which THE ONE RULE
+  of Phase B forbids.
+
+  As with lever-confirmation.html, the deliberately real part is the trap. The
+  <script> payload below is copied out of the captured
+  tests/fixtures/ats/ashby-form.html — the UNSUBMITTED apply form — which embeds
+  the org-config keys "applicationSubmittedSuccessMessage" and
+  "appConfirmationTrackingPixelHtml" in its bootstrap JSON. So
+  `"applicationSubmitted" in html` is True on the empty form, and any raw-HTML
+  detector built on that substring would stamp an application that was never
+  sent. The detector reads visible text only.
+
+  Ashby also lets a company REPLACE the default success copy via that
+  applicationSubmittedSuccessMessage setting. When a company does, no phrase in
+  the detector's list matches and nothing is stamped — a false negative, which
+  is the harmless direction.
+  ===========================================================================
+-->
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Snowflake — Application</title>
+  <script>
+    window.__appData = {"organization":{"name":"Snowflake",
+      "applicationSubmittedSuccessMessage":null,
+      "jobBoardTopDescriptionHtml":null},
+      "appConfirmationTrackingPixelHtml":null};
+  </script>
+</head>
+<body>
+  <div id="root">
+    <main>
+      <h1>Your application has been submitted</h1>
+      <p>
+        Thanks for your interest in Snowflake. Our recruiting team reviews every
+        application and will reach out if there is a match.
+      </p>
+      <a href="https://jobs.ashbyhq.com/snowflake">View all open roles</a>
+    </main>
+  </div>
+</body>
+</html>

@@ -24,7 +24,14 @@ CREATE TABLE IF NOT EXISTS applications (
     auto_detected INTEGER NOT NULL DEFAULT 0,
     resume_job_id TEXT,            -- which generated resume was used to apply (-> resumes.job_id); NULL if none
     resume_pdf_key TEXT,          -- pins the exact cached PDF sent (see server/resume_pdf.py); NULL if none
-    job_id        TEXT           -- which jobs.id this application is for; NULL on legacy pre-link rows
+    job_id        TEXT,           -- which jobs.id this application is for; NULL on legacy pre-link rows
+    -- ISO8601 UTC instant at which a real submission was VERIFIED on an ATS
+    -- confirmation page (agents/job_applier/confirm.py). NULL is the normal
+    -- state and means "unverified", NOT "not submitted": every row starts
+    -- optimistic (Phase A writes it when the user confirms the apply modal) and
+    -- only a positive match ever stamps this. Nothing clears it — see
+    -- agents/application_tracker/store.mark_confirmed.
+    confirmed_at  TEXT
 );
 
 -- ---------------------------------------------------------------------------

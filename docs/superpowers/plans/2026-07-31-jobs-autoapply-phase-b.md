@@ -716,10 +716,37 @@ comment at the top of the test.
 
 Phase A records applications optimistically on the modal's confirm. Greenhouse/Lever/Ashby all land on a confirmation page after a real submit, so the agent can verify it.
 
-- [ ] Add `applications.confirmed_at TEXT` (idempotent `_migrate` guard; `_migrate` runs BEFORE `executescript`; Prisma mirror; `db:check` must pass).
-- [ ] Detection matches confirmation text/URL per ATS; on match, stamp `confirmed_at`. **No match must never un-confirm or delete anything** — absence of evidence is not evidence.
-- [ ] UI shows confirmed vs optimistic in the tracker.
-- [ ] Tests: each ATS's confirmation fixture stamps the row; a non-confirmation page leaves it untouched; a second detection is idempotent.
+- [x] Add `applications.confirmed_at TEXT` (idempotent `_migrate` guard; `_migrate` runs BEFORE `executescript`; Prisma mirror; `db:check` must pass).
+- [x] Detection matches confirmation text/URL per ATS; on match, stamp `confirmed_at`. **No match must never un-confirm or delete anything** — absence of evidence is not evidence.
+- [x] UI shows confirmed vs optimistic in the tracker.
+- [x] Tests: each ATS's confirmation fixture stamps the row; a non-confirmation page leaves it untouched; a second detection is idempotent.
+
+> **Task 9 as built** (`agents/job_applier/confirm.py`; full report in
+> `.superpowers/sdd/.../task-9-report.md`):
+> - **The confirmation fixtures are SYNTHETIC and have never been compared against a real
+>   post-submit page.** Capturing one requires actually submitting an application, which THE ONE RULE
+>   forbids. The *negative* evidence is real: the detector is run over the three captured live apply
+>   forms and required to refuse them. Positive matches prove design intent, not board behaviour.
+> - **Detection reads VISIBLE TEXT, not raw HTML**, because two of the three captured *unsubmitted*
+>   forms contain confirmation-shaped strings: `lever-form.html` ships
+>   `.confirmation-message {text-align: center;}` in a `<style>` (plus a card headed "AU Clearance
+>   Confirmation") and `ashby-form.html` embeds `"applicationSubmittedSuccessMessage":null` in a
+>   `<script>`. `"confirmation" in html` is True on an empty Lever form.
+> - A stamp needs **all four** of: a recognised ATS host; a past-tense completion phrase in visible
+>   text; no failure/negation phrase (checked first — "was **not** submitted" contains a completion
+>   phrase); and no `<input type="file">` left on the page. The URL is recorded (`url_hint`) and
+>   decides nothing — every captured URL is pre-submit, so `/thanks` et al. are the one unverifiable
+>   claim here. Ashby's success view is at the same path as its form, so a URL change is not required
+>   either.
+> - `mark_confirmed` is the only writer of the column: write-once (a second detection keeps the FIRST
+>   timestamp), never clears, touches no other column. A non-match performs **no DB access at all**.
+> - **Not wired, deliberately:** nothing calls `detect_confirmation` / `stamp_if_confirmed`. The human
+>   submits *after* the graph exits, so there is nothing to detect at graph-exit time — Task 10 owns
+>   the trigger. No re-navigate node was added (see Task 8's KNOWN LIMIT above).
+> - **The production migration already ran**, not by hand: the 08:00 `launchd` jobscraper called
+>   `store_db.init_db()` with the edited files on disk. Verified read-only as correct (nullable, no
+>   default, all three existing rows NULL). `npx prisma generate` has NOT been run, so the live
+>   Next.js client still ignores the column and every row renders "unverified" until it is.
 
 ---
 
