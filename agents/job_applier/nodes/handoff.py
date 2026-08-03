@@ -193,20 +193,47 @@ _BAND_HEADING: dict[str, str] = {
     DONE: "FILLED AND VERIFIED — nothing to do; open it to spot-check",
 }
 
-#: The first line of every report, on every path. Deliberately a constant: the
-#: statement that nothing was submitted is not something a caller may omit, and
-#: a test asserts every render starts with it.
-NOT_SUBMITTED_HEADLINE = (
-    "NOTHING WAS SUBMITTED. The browser window is still open on this form, "
-    "waiting for you."
+#: The UNCONDITIONAL guarantee, and the prefix of the first and last line of
+#: every report on every path. Deliberately a constant: that nothing was
+#: submitted is not something a caller may omit, and a test asserts every render
+#: starts with it.
+NOT_SUBMITTED_HEADLINE = "NOTHING WAS SUBMITTED."
+
+#: What follows it depends on whether a browser window was actually handed over,
+#: which is NOT unconditional and used to be asserted as if it were.
+#:
+#: Task 7 rendered "the browser window is still open" only where it was true —
+#: it built reports for a live session. Task 8 then ran the same renderer on
+#: paths where the window had been closed (a node raised, so the graph tore it
+#: down) or had never existed at all (Playwright missing), and told the user to
+#: work through the list "in the open browser window" while she hunted for a
+#: window nothing had opened. Worse, a test asserted that sentence on all eight
+#: failure routes, so the false claim had become a locked-in requirement.
+#:
+#: So the window clause is now driven by `HandoffReport.browser_open`, which
+#: defaults to False: claiming a window is open takes positive evidence.
+_OPEN_CLAUSE = " The browser window is still open on this form, waiting for you."
+_CLOSED_CLAUSE = (
+    " No browser window is open — the agent either never got one or closed it "
+    "when it stopped, so nothing on the form is waiting for you."
 )
 
+BROWSER_OPEN_HEADLINE = NOT_SUBMITTED_HEADLINE + _OPEN_CLAUSE
+BROWSER_CLOSED_HEADLINE = NOT_SUBMITTED_HEADLINE + _CLOSED_CLAUSE
+
 #: The standing instruction, repeated at the end so it is the last thing read
-#: as well as the first.
+#: as well as the first. Two versions for the same reason as the headline: one
+#: of them tells her to act in a window that is on her screen, and the other
+#: cannot.
 HANDOFF_INSTRUCTION = (
     "The agent does not press Submit and never will. Work through the list "
     "below in the open browser window, fix anything that is wrong, and press "
     "Submit yourself when you are happy with it."
+)
+HANDOFF_INSTRUCTION_CLOSED = (
+    "The agent does not press Submit and never will, and it has not left a "
+    "window open for you either. Open the form yourself, work through the list "
+    "below, and press Submit only when you are happy with it."
 )
 
 _HEADING_FALLBACK = "Other questions"
@@ -320,6 +347,19 @@ class HandoffReport:
     #: partial report that does not say it is partial is a lie by omission.
     error: str = ""
     submitted: bool = False
+    #: Whether a live browser window was handed to the human. Drives the
+    #: headline and the closing instruction, and is exposed as a field so a UI
+    #: does not have to parse prose to find out. Defaults to False: the report
+    #: may only promise a window when the caller says there is one.
+    browser_open: bool = False
+
+    def headline(self) -> str:
+        """The first and last line. Always starts with `NOT_SUBMITTED_HEADLINE`."""
+        return BROWSER_OPEN_HEADLINE if self.browser_open else BROWSER_CLOSED_HEADLINE
+
+    def instruction(self) -> str:
+        """The standing instruction, matched to whether a window exists."""
+        return HANDOFF_INSTRUCTION if self.browser_open else HANDOFF_INSTRUCTION_CLOSED
 
     def group(self, name: str) -> tuple[ReportItem, ...]:
         return tuple(i for i in self.items if i.group == name)
@@ -372,7 +412,7 @@ class HandoffReport:
         `show_filled=False` drops the `DONE` band, which is the text-mode
         equivalent of leaving it collapsed; the band is last either way.
         """
-        out: list[str] = [NOT_SUBMITTED_HEADLINE, ""]
+        out: list[str] = [_wrap(self.headline(), indent="", hang=""), ""]
 
         title = " — ".join(p for p in (self.job_title, self.company) if p)
         if title:
@@ -397,7 +437,7 @@ class HandoffReport:
         if self.resume_note:
             out.append(_wrap(f"RÉSUMÉ: {self.resume_note}", indent="", hang=""))
         out.append("")
-        out.append(_wrap(HANDOFF_INSTRUCTION, indent="", hang=""))
+        out.append(_wrap(self.instruction(), indent="", hang=""))
 
         for band in GROUPS:
             items = self.group(band)
@@ -415,7 +455,7 @@ class HandoffReport:
 
         out.append("")
         out.append(_RULE)
-        out.append(_wrap(NOT_SUBMITTED_HEADLINE, indent="", hang=""))
+        out.append(_wrap(self.headline(), indent="", hang=""))
         return "\n".join(out).rstrip() + "\n"
 
 
@@ -521,8 +561,13 @@ def build_report(
     company: str = "",
     form_url: str = "",
     error: str = "",
+    browser_open: bool = False,
 ) -> HandoffReport:
     """Assemble the handoff. Never raises, never claims a submission.
+
+    `browser_open` defaults to False, which is the conservative direction: the
+    report promises a window is waiting for the user only when the caller says
+    one is. See `_OPEN_CLAUSE`.
 
     `page_locator` is a `locate_dom.PageLocator`; its `questions()`,
     `unreadable()` and `withheld_eeo()` are read from the ONE snapshot it
@@ -628,6 +673,7 @@ def build_report(
         resume_filename=_basenames(resume_outcome.intended) if resume_outcome else "",
         resume_note=resume_note,
         error=error,
+        browser_open=bool(browser_open),
     )
 
 
@@ -759,6 +805,13 @@ def handoff_node(state: dict) -> dict:
     `state` is an `agents.job_applier.state.ApplierState`; it is annotated as a
     plain dict for the same reason `fill_node` is — this module's imports are
     asserted, and a TypedDict is a dict at runtime anyway.
+
+    **`browser_open` is computed, not read.** "There is a context object in the
+    state" is not the same claim as "a window will be on her screen when she
+    reads this": the graph closes the browser on every failing path, so a run
+    that errored has a stale handle. The condition is therefore "a context AND no
+    error" — which is also independent of whether the teardown happens before or
+    after this node runs, and so cannot be broken by reordering it.
     """
     job = state.get("job") or {}
     report = build_report(
@@ -768,5 +821,6 @@ def handoff_node(state: dict) -> dict:
         company=str(job.get("company") or ""),
         form_url=str(state.get("form_url") or job.get("url") or ""),
         error=str(state.get("message") or "") if state.get("error") else "",
+        browser_open=bool(state.get("browser")) and not state.get("error"),
     )
     return {"report": report, "message": report.render_text()}

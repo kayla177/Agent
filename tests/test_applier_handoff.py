@@ -220,7 +220,8 @@ _merge = merge_answers
 
 
 def _build(board: str, *, profile=None, resume_path="", elements=None,
-           job_title="Software Engineer Intern", company="Palantir"):
+           job_title="Software Engineer Intern", company="Palantir",
+           browser_open=False):
     """A report built end-to-end from a real captured board. No browser."""
     page = _Page(_html(board), **(elements or {}))
     locator = PageLocator(page)
@@ -241,6 +242,7 @@ def _build(board: str, *, profile=None, resume_path="", elements=None,
         job_title=job_title,
         company=company,
         form_url=f"https://example.invalid/{board}/apply",
+        browser_open=browser_open,
     )
     return report, fill_report, questions, page
 
@@ -348,6 +350,11 @@ def _every_code_path(resume_path: str) -> list[tuple[str, HandoffReport]]:
     reports.append(("empty", build_report(None)))
     reports.append(("empty+error", build_report(
         None, error="the browser closed before the form loaded.")))
+    # Both sides of the window clause, so the claim detector below covers the
+    # OPEN headline and instruction too — they are prose like everything else.
+    reports.append(("lever/window-open", _build("lever", resume_path=resume_path,
+                                                browser_open=True)[0]))
+    reports.append(("empty/window-open", build_report(None, browser_open=True)))
     reports.append(("no-outcomes", build_report(FillReport())))
     reports.append(("everything-filled", _report_of([
         _outcome("Full name", FILLED, value="Testy McTestface", source="profile"),
@@ -422,18 +429,50 @@ def test_the_detector_does_not_fire_on_what_the_report_legitimately_says(resume)
         assert not _claims_submission(benign), benign
 
 
-def test_every_report_says_the_browser_is_open_and_waiting(resume):
+def test_every_report_says_nothing_was_submitted_first_and_last(resume):
     """Not enough to omit a false claim — the true one has to be stated, first
-    and last, on every path."""
+    and last, on every path. THIS part is unconditional and always will be."""
     for name, report in _every_code_path(resume):
         text = report.render_text()
         flat = " ".join(text.split())
         # First and last, so it is true whether she reads the report or skims to
         # the end of it. Flattened for the tail because the footer is wrapped.
         assert text.startswith(NOT_SUBMITTED_HEADLINE), name
-        assert flat.endswith(NOT_SUBMITTED_HEADLINE), name
-        assert "browser window is still open" in flat, name
+        assert flat.endswith(report.headline()), name
+        assert report.headline().startswith(NOT_SUBMITTED_HEADLINE), name
         assert "does not press Submit" in flat, name
+
+
+def test_the_window_clause_is_conditional_and_not_a_standing_claim(resume):
+    """It used to be part of `NOT_SUBMITTED_HEADLINE`, i.e. asserted here on every
+    path — including the ones where the caller had no browser at all. Task 8's
+    graph then ran this renderer after tearing the window down, and the user was
+    told to work "in the open browser window" while she hunted for one that had
+    been closed. So the clause now follows `browser_open`, both ways."""
+    opened, _, _, _ = _build("lever", resume_path=resume, browser_open=True)
+    closed, _, _, _ = _build("lever", resume_path=resume, browser_open=False)
+
+    open_text = " ".join(opened.render_text().split())
+    closed_text = " ".join(closed.render_text().split())
+
+    assert "browser window is still open" in open_text
+    assert "in the open browser window" in open_text
+    assert "No browser window is open" not in open_text
+
+    assert "browser window is still open" not in closed_text
+    assert "No browser window is open" in closed_text
+    assert "Open the form yourself" in closed_text
+
+    # The invariant survives both.
+    for text in (open_text, closed_text):
+        assert text.startswith(NOT_SUBMITTED_HEADLINE)
+
+
+def test_browser_open_defaults_to_false_so_a_window_is_never_promised_by_omission():
+    """The conservative direction. A caller that forgets to say must not have the
+    report invent a window for it."""
+    assert build_report(None).browser_open is False
+    assert "No browser window is open" in build_report(None).render_text()
 
 
 def test_submitted_is_a_false_field_and_nothing_sets_it_true():

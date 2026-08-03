@@ -48,6 +48,7 @@ from agents.job_applier.nodes import fetch_form as fetch_form_mod
 from agents.job_applier.nodes import load_profile as load_profile_mod
 from agents.job_applier.nodes.draft import merge_answers
 from agents.job_applier.nodes.fill import ATTACHED, FILLED
+from agents.job_applier.nodes.fill import fill_node as _real_fill_node
 from agents.job_applier.nodes.handoff import BLOCKING, NOT_SUBMITTED_HEADLINE
 from agents.job_scraper import store as jobstore
 from agents.registry import REGISTRY, get_spec
@@ -309,6 +310,75 @@ def test_the_drafted_answers_are_marked_and_the_declined_ones_are_not_promised(
     assert "left for the AI drafting step" not in state["message"]
 
 
+def test_a_profile_answer_is_never_overwritten_by_a_draft():
+    """`merge_answers` claims "a question the resolver ANSWERED from the profile
+    is never overwritten by a draft", and NOTHING proved it: on all three
+    captured boards there are ZERO questions where `resolved.source != "blank"`
+    and `drafted.kind == "free_text"`, so the `r.source == "blank"` guard was a
+    fixture accident. Dropping it left the whole suite green.
+
+    The form that exercises it: a textarea the resolver matches to a profile
+    field ("Where are you based?" → `location`) that drafting also classifies as
+    free text. Without the guard the real value is replaced by drafting's refusal
+    and the field goes out EMPTY.
+    """
+    question = _q("Where are you based?", kind="textarea", key="based")
+    from_profile = resolver.Answer(
+        question=question, value="Milwaukee, WI", source="profile", kind="location",
+    )
+    declined = resolver.Answer(
+        question=question, value="", source="blank",
+        note="this box reads as a request for a video recording.", kind="free_text",
+    )
+
+    kept = merge_answers([from_profile], [declined])
+    assert kept == [from_profile]
+    assert kept[0].value == "Milwaukee, WI"
+
+
+def test_a_blank_the_resolver_stepped_aside_from_is_overwritten_by_the_draft():
+    """The other direction, so the guard above cannot be satisfied by a merge
+    that simply always keeps the resolver's answer — which is the whole point of
+    the policy and is what Task 7's report test depends on."""
+    question = _q("Why do you want this job?", kind="textarea", key="why")
+    stepped_aside = resolver.Answer(
+        question=question, value="", source="blank",
+        note="free-text answer left for the AI drafting step, which marks its "
+             "output as AI-drafted for you to review.",
+        kind="free_text",
+    )
+    written = resolver.Answer(
+        question=question, value=f"{drafting.DRAFT_MARKER}\n\nBecause the work is real.",
+        source="drafted", kind="free_text",
+    )
+    declined = resolver.Answer(
+        question=question, value="", source="blank",
+        note="this box reads as a request for a video or audio recording.",
+        kind="free_text",
+    )
+
+    assert merge_answers([stepped_aside], [written]) == [written]
+    # A refusal wins too — that is ruling 1, and the report depends on it.
+    assert merge_answers([stepped_aside], [declined]) == [declined]
+
+
+def test_the_merge_is_positional_over_equal_length_lists():
+    """Both inputs are one-per-question in the questions' own order. A merge that
+    silently truncated to the shorter list would drop the tail of the form."""
+    questions = [_q(f"Q{i}", key=f"q{i}") for i in range(3)]
+    resolved = [
+        resolver.Answer(question=q, value=f"v{i}", source="profile", kind="other")
+        for i, q in enumerate(questions)
+    ]
+    drafted = [
+        resolver.Answer(question=q, value="", source="blank", kind="other")
+        for q in questions
+    ]
+    merged = merge_answers(resolved, drafted)
+    assert [a.question.key for a in merged] == ["q0", "q1", "q2"]
+    assert [a.value for a in merged] == ["v0", "v1", "v2"]
+
+
 def test_the_graph_uses_the_one_merge_policy_and_does_not_reinvent_it(board, resume):
     """`merge_answers` lives in the draft node and is imported by the Task 7
     tests. This asserts the GRAPH's output is that function's output, so a
@@ -457,16 +527,91 @@ def failure_messages(temp_db, monkeypatch, fake_model):
     )
     monkeypatch.setattr(graph_mod, "fill_node", exploding_fill, raising=True)
     out.append(("node_raised", build_job_applier_graph().invoke({"job_id": job_id})["message"]))
+
+    # The route two mutants slipped through: a node that RETURNS `error` without
+    # raising, while the browser is open. The exception path clears the handle on
+    # its way out, so it is the only route where a stale live-looking context
+    # reaches the handoff — i.e. the only one that can produce a false "the window
+    # is open" claim. It was missing from this catalogue.
+    monkeypatch.setattr(graph_mod, "fill_node", _real_fill_node, raising=True)
+    monkeypatch.setattr(
+        graph_mod, "resolve_node",
+        lambda state: {"error": "resolve_failed", "message": "the resolver gave up."},
+    )
+    out.append((
+        "node_returned_error_with_browser_open",
+        build_job_applier_graph().invoke({"job_id": job_id})["message"],
+    ))
     return out
 
 
 def test_every_failure_still_tells_the_user_nothing_was_submitted(failure_messages):
     """The failure paths are where a bare traceback or an empty string is most
-    tempting. Every one of them renders the full handoff headline."""
+    tempting. Every one of them renders the handoff, and the "nothing was
+    submitted" guarantee is UNCONDITIONAL — unlike the window clause below, it is
+    true on every path and must stay first."""
     assert len(failure_messages) >= 7, "the failure catalogue stopped covering the paths"
     for label, message in failure_messages:
         assert message.startswith(NOT_SUBMITTED_HEADLINE), label
         assert "THE AGENT STOPPED EARLY" in message, label
+
+
+def test_a_failed_run_never_claims_a_browser_window_is_open(failure_messages):
+    """The other half, and the half that was WRONG. Task 7's headline says "the
+    browser window is still open on this form, waiting for you" and its footer
+    says to work through the list "in the open browser window". Task 8 ran that
+    renderer on paths where the graph had just closed the window (a node raised)
+    or where none had ever been opened (Playwright missing) — and the test above
+    asserted the false sentence across all eight routes, so a guard was
+    protecting the bug.
+
+    Failure scenario it was hiding: `fill` raises on a real Lever form and Kayla
+    reads that the window is open and waiting, while she hunts for a window the
+    graph destroyed.
+    """
+    for label, message in failure_messages:
+        assert "browser window is still open" not in message, label
+        assert "in the open browser window, fix anything" not in message, label
+        # And it says what IS true instead, rather than going quiet about it.
+        assert "No browser window is open" in message, label
+
+
+def test_a_successful_run_does_say_the_window_is_open(board, resume):
+    """The true case, asserted separately so "never claims it" cannot be
+    satisfied by never saying it at all."""
+    state, _, _ = board("lever", resume_path=resume)
+    assert state["report"].browser_open is True
+    assert "browser window is still open" in state["message"]
+    assert "No browser window is open" not in state["message"]
+
+
+def test_the_report_exposes_browser_open_as_a_field_not_only_as_prose(
+    temp_db, monkeypatch, fake_model, resume
+):
+    """Task 10 renders this in a web UI and must not have to grep the prose. The
+    flag has to agree with the text on both sides."""
+    jobstore.upsert_records([_posting("lever")])
+    profile_store.upsert_profile(**PROFILE)
+    context = _FakeContext(_Page(_html("lever")))
+    monkeypatch.setattr(browser, "is_available", lambda: True)
+    monkeypatch.setattr(browser, "launch_context", lambda: context)
+
+    def _flat(text):
+        return " ".join(text.split())  # the renderer wraps at 78 columns
+
+    good = build_job_applier_graph().invoke(
+        {"job_id": _posting("lever")["id"], "resume_path": resume}
+    )
+    assert good["report"].browser_open is True
+    assert good["report"].headline() in _flat(good["message"])
+
+    monkeypatch.setattr(graph_mod, "fill_node", lambda state: 1 / 0)
+    bad = build_job_applier_graph().invoke({"job_id": _posting("lever")["id"]})
+    assert bad["report"].browser_open is False
+    assert bad["report"].headline() in _flat(bad["message"])
+    # The state agrees with the report: a closed handle is cleared, so a UI
+    # cannot mistake it for a live window either.
+    assert bad.get("browser") is None
 
 
 # ===========================================================================
@@ -500,7 +645,7 @@ def test_a_run_that_cannot_open_a_browser_still_produces_a_handoff(
     assert "uv" not in state["report"].error, "uv is not installed on this machine"
     assert state["message"].startswith(NOT_SUBMITTED_HEADLINE)
     # And it never got as far as opening anything.
-    assert "browser" not in state
+    assert state.get("browser") is None
 
 
 def test_an_unavailable_browser_never_reaches_the_later_nodes(
@@ -621,6 +766,13 @@ def test_the_browser_is_closed_when_a_node_after_it_sets_an_error(
     assert state["error"] == "resolve_failed"
     assert context.closes >= 1
     assert "the resolver gave up." in state["report"].error
+    # This is the ONLY route where a live-looking handle reaches the handoff (the
+    # exception path clears it on the way out), so it is the only one that can
+    # produce a false "the window is open" claim — and two mutants slipped
+    # through here because nothing asserted it.
+    assert state["report"].browser_open is False
+    assert "browser window is still open" not in state["message"]
+    assert state.get("browser") is None, "a closed handle was left in the state"
 
 
 def test_a_page_that_cannot_be_read_closes_the_browser_it_opened(
@@ -642,7 +794,62 @@ def test_a_page_that_cannot_be_read_closes_the_browser_it_opened(
 
     assert state["error"] == "form_unreachable"
     assert context.closes == 1
-    assert "browser" not in state, "a context that was closed must not be handed on"
+    assert state.get("browser") is None, "a closed context must not be handed on"
+
+
+def test_a_ctrl_c_while_the_form_loads_closes_the_browser_fetch_form_opened(
+    temp_db, monkeypatch, fake_model
+):
+    """`fetch_form`'s `except BaseException` branch, which was untested — the
+    `except Exception` test above covers only the other half.
+
+    Reachable for real: `KeyboardInterrupt` or `SystemExit` during `goto` /
+    `wait_for_selector`, i.e. Ctrl-C while a slow board loads. The graph's guard
+    cannot help, because the context is not in the state yet, so deleting this
+    branch leaks a headed Chromium plus a driver subprocess on every Ctrl-C.
+    """
+    jobstore.upsert_records([_posting("lever")])
+
+    class _Interrupted(_Page):
+        def goto(self, url, wait_until=None, timeout=None):
+            raise KeyboardInterrupt("ctrl-c while the board loaded")
+
+    context = _FakeContext(_Interrupted(_html("lever")))
+    monkeypatch.setattr(browser, "is_available", lambda: True)
+    monkeypatch.setattr(browser, "launch_context", lambda: context)
+
+    with pytest.raises(KeyboardInterrupt):
+        build_job_applier_graph().invoke({"job_id": _posting("lever")["id"]})
+    assert context.closes == 1, "Ctrl-C during navigation leaked the browser"
+
+
+def test_a_teardown_failure_does_not_replace_the_actionable_message(
+    temp_db, monkeypatch, fake_model
+):
+    """`ManagedBrowserContext.close()` PROPAGATES a context-close error, so a bare
+    `.close()` at a cleanup site turns "the application form at <url> could not
+    be read" into a generic teardown traceback — and the graph's guard cannot
+    retry it, because the context is not in the state yet."""
+    jobstore.upsert_records([_posting("lever")])
+
+    class _Unreadable(_Page):
+        def wait_for_selector(self, selector, timeout=None):
+            raise TimeoutError("no form ever rendered")
+
+    class _StickyContext(_FakeContext):
+        def close(self):
+            self.closes += 1
+            raise RuntimeError("the driver had already gone away")
+
+    context = _StickyContext(_Unreadable("<html></html>"))
+    monkeypatch.setattr(browser, "is_available", lambda: True)
+    monkeypatch.setattr(browser, "launch_context", lambda: context)
+
+    state = build_job_applier_graph().invoke({"job_id": _posting("lever")["id"]})
+
+    assert state["error"] == "form_unreachable", state.get("message")
+    assert "could not be read" in state["report"].error
+    assert context.closes == 1
 
 
 def test_a_base_exception_closes_the_browser_and_is_not_swallowed(
@@ -970,28 +1177,46 @@ def test_every_test_the_graph_docstring_cites_actually_exists():
     assert cited <= defined, f"cited but missing: {sorted(cited - defined)}"
 
 
-def test_the_graph_module_never_clicks_anything():
-    """`agents/job_applier/nodes/*.py` is scanned by the guard in
-    `tests/test_applier_locate.py`, which globs that directory — `graph.py` and
-    `state.py` sit one level up and would get no scan at all. This is a narrower
-    guard for the two of them: they route state and manage a lifetime, and the
-    only Playwright-shaped call either may make is `close()`."""
-    banned = {
-        "click", "dblclick", "tap", "submit", "press", "dispatch_event",
-        "set_checked", "request_submit", "fill", "check", "uncheck", "type",
-        "select_option", "set_input_files", "evaluate", "goto", "keyboard",
+def test_the_graph_touches_the_page_only_to_close_the_browser():
+    """**The ONE-RULE scan for `graph.py` and `state.py` is NOT here.** It is the
+    four-rule AST guard in `tests/test_applier_locate.py`, which now globs the
+    whole package recursively; `test_every_applier_module_is_scanned` there names
+    both files so the coverage cannot quietly lapse.
+
+    This test used to BE that scan, re-implemented with a flat banned-attribute
+    list — and it was strictly weaker than the guard it stood in for:
+    `add_init_script`, `add_script_tag`, `evaluate_handle`, `eval_on_selector`,
+    `query_selector`, `locator` and `get_by_role` were all missing from the list,
+    so `page.add_init_script("document.forms[0].submit()")` in `graph.py` left the
+    whole suite green.
+
+    What is left here is the complement the shared guard cannot express: this
+    module's ONLY interaction with a browser object is closing it. `state.py`
+    interacts with nothing at all.
+    """
+    graph_path = pathlib.Path(graph_mod.__file__)
+    state_path = graph_path.parent / "state.py"
+
+    calls = {
+        node.func.attr
+        for node in ast.walk(ast.parse(graph_path.read_text()))
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
     }
-    for path in (
-        pathlib.Path(graph_mod.__file__),
-        pathlib.Path(graph_mod.__file__).parent / "state.py",
-    ):
-        tree = ast.parse(path.read_text())
-        for node in ast.walk(tree):
-            if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute):
-                assert node.func.attr not in banned, f"{path.name} calls .{node.func.attr}()"
-        # Non-vacuous: the one call it IS allowed to make is present.
-        if path.name == "graph.py":
-            assert ".close()" in path.read_text()
+    # Everything else here is dict/graph/string plumbing, named explicitly so a
+    # new browser-shaped call has to be added to this list to pass.
+    allowed = {
+        "close", "close_quietly", "get", "add_node", "add_edge", "compile",
+        "join", "strip", "items", "format", "upper", "lower",
+    }
+    assert calls - allowed == set(), f"graph.py calls {sorted(calls - allowed)}"
+    assert calls & {"close", "close_quietly"}, (
+        "non-vacuous: the one browser call it IS allowed to make"
+    )
+
+    assert not [
+        node for node in ast.walk(ast.parse(state_path.read_text()))
+        if isinstance(node, ast.Call)
+    ], "state.py should be a TypedDict and nothing else"
 
 
 def test_the_graph_declares_the_nodes_it_documents():

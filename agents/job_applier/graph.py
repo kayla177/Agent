@@ -36,13 +36,21 @@ close it" and "the product" pull in opposite directions
 `fetch_form` opens a headed, persistent Chromium and puts the
 `ManagedBrowserContext` in the state. From then on:
 
-  * **Every failing path closes it.** A node that raises, a node that sets
-    `error`, a `fetch_form` that got a page but could not read it — all of them
-    end with `release_browser`, which is idempotent and never raises. That is
-    what stops a crash from leaking a visible window plus an invisible
+  * **Every failing path closes it**, and then clears the handle out of the
+    state, so "is there a window on screen" is answerable by a later node or a
+    UI rather than being a stale object nobody can interpret. Four paths, each
+    with its own pin:
+      - a node raising mid-graph
+        (`test_a_node_raising_mid_graph_closes_the_browser`);
+      - the LAST node raising, which the handoff's own teardown cannot cover
+        (`test_a_raise_in_the_final_node_still_closes_the_browser`);
+      - a node returning `error` without raising
+        (`test_the_browser_is_closed_when_a_node_after_it_sets_an_error`);
+      - `fetch_form` getting a context but no readable page, which it must clean
+        up itself because the context is not in the state yet
+        (`test_a_page_that_cannot_be_read_closes_the_browser_it_opened`).
+    That is what stops a crash from leaking a visible window plus an invisible
     Playwright driver subprocess into a long-lived server process.
-    (`test_a_node_raising_mid_graph_closes_the_browser`,
-    `test_the_browser_is_closed_when_a_node_after_it_sets_an_error`.)
 
   * **The successful path deliberately leaves it OPEN**, and that is not an
     oversight. The entire product is "the agent fills the form and stops so the
@@ -53,6 +61,25 @@ close it" and "the product" pull in opposite directions
     `release_browser(final_state)` is exported for whoever ends that session
     (Task 9's confirmation detection, or a UI teardown).
     (`test_a_successful_run_leaves_the_window_open_for_the_human`.)
+
+  * **The report is told which of the two happened**, via
+    `HandoffReport.browser_open`. It used to be unconditional prose — "the
+    browser window is still open on this form, waiting for you", printed on the
+    paths where the graph had just closed the window or had never opened one.
+    (`test_a_failed_run_never_claims_a_browser_window_is_open`.)
+
+KNOWN LIMIT: `release_browser` can only close the context it finds under
+`state["browser"]`. A future node that REPLACES that context — a re-navigate step
+for Task 9's confirmation detection is the obvious candidate — would orphan the
+one it displaced, and nothing here would notice. No node does today; one that
+needs a second context must close the first itself, or the state has to grow a
+list.
+
+Note on the docstring citations above:
+`test_every_test_the_graph_docstring_cites_actually_exists` catches a name that
+no longer exists. It does NOT catch a citation naming a real test that does not
+pin the claim beside it — a mis-citation reads as green. This file shipped two of
+those in Task 8; they are corrected above.
 """
 
 from __future__ import annotations
@@ -61,6 +88,7 @@ from typing import Any, Callable
 
 from langgraph.graph import END, START, StateGraph
 
+from agents.job_applier import browser
 from agents.job_applier.nodes.draft import draft_node
 from agents.job_applier.nodes.fetch_form import fetch_form_node
 from agents.job_applier.nodes.fill import fill_node
@@ -83,18 +111,23 @@ def release_browser(state: Any) -> bool:
     """Close the run's browser if it has one. Returns whether it did anything.
 
     Idempotent and total: `ManagedBrowserContext.close()` is itself idempotent,
-    a state with no browser is fine, and an exception while closing is
-    swallowed — a teardown failure must not become the thing the user hears
+    a state with no browser is fine, and `browser.close_quietly` swallows a
+    teardown failure — that failure must not become the thing the user hears
     about instead of their half-filled form.
+
+    It also clears the handle out of the mapping it was given, best-effort, so a
+    closed context cannot be mistaken for a live one. The authoritative clear is
+    the `{"browser": None}` the graph's own steps return; this covers a caller
+    that holds the final state and closes it by hand.
     """
     context = (state or {}).get("browser")
-    if context is None:
-        return False
-    try:
-        context.close()
-    except Exception:
-        return False
-    return True
+    closed = browser.close_quietly(context)
+    if context is not None:
+        try:
+            state["browser"] = None
+        except Exception:
+            pass  # a read-only mapping is not a reason to fail a teardown
+    return closed
 
 
 def _step(
@@ -115,6 +148,9 @@ def _step(
                     f"The agent stopped at the “{name}” step "
                     f"({type(exc).__name__}: {exc})."
                 ),
+                # The handle is closed; say so in the state, or the next reader
+                # cannot tell a live window from a dead one.
+                "browser": None,
             }
         except BaseException:
             # Not converted into a report: KeyboardInterrupt, and the test
@@ -124,6 +160,7 @@ def _step(
             raise
         if run_on_error and (state.get("error") or out.get("error")):
             release_browser(state)
+            return {**out, "browser": None}
         return out
 
     node.__name__ = name

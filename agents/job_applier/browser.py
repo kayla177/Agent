@@ -98,6 +98,30 @@ class ManagedBrowserContext:
             self._playwright.stop()
 
 
+def close_quietly(context: Any) -> bool:
+    """Close `context` if there is one, swallowing any teardown failure.
+
+    Returns whether it actually closed. Lives here rather than in the graph
+    because two modules need identical semantics at four call sites, and the
+    module that owns the browser's lifetime is the right one to own "close it and
+    do not let the teardown become the thing the user hears about".
+
+    `ManagedBrowserContext.close()` PROPAGATES a context-close error (its own
+    `try/finally` guarantees the driver is stopped, not that `.close()` is
+    quiet). A bare call at a cleanup site therefore replaces an actionable
+    message — "the application form at <url> could not be read" — with a generic
+    teardown traceback, and can skip a second cleanup attempt entirely. `None` is
+    accepted so callers do not each repeat the check.
+    """
+    if context is None:
+        return False
+    try:
+        context.close()
+    except Exception:
+        return False
+    return True
+
+
 def launch_context() -> ManagedBrowserContext:
     """Launch a visible, persistent Chromium context for the applier agent.
 

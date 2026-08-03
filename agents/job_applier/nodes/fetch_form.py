@@ -122,7 +122,12 @@ def fetch_form_node(state: dict) -> dict:
         locator = PageLocator(page)
         questions = locator.questions()
     except Exception as exc:
-        context.close()
+        # `close_quietly`, not a bare `.close()`. `ManagedBrowserContext.close()`
+        # propagates a context-close error, and raising it from here would
+        # replace this actionable sentence with a generic teardown traceback —
+        # and the graph's own guard could not retry the close, because the
+        # context is not in the state yet.
+        browser.close_quietly(context)
         return {
             "error": "form_unreachable",
             "message": (
@@ -131,9 +136,10 @@ def fetch_form_node(state: dict) -> dict:
             ),
         }
     except BaseException:
-        # KeyboardInterrupt, or a test guard deriving from BaseException. Still
-        # must not leak a headed window and a driver subprocess.
-        context.close()
+        # KeyboardInterrupt / SystemExit during `goto` or `wait_for_selector`,
+        # i.e. Ctrl-C while a slow board loads. Still must not leak a headed
+        # window and a driver subprocess.
+        browser.close_quietly(context)
         raise
 
     # An empty `questions` list is NOT an error. The browser is open on the real

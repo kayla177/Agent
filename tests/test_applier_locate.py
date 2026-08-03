@@ -3758,32 +3758,125 @@ def test_a_choice_target_that_is_not_a_radio_or_checkbox_is_refused():
 NODES_DIR = pathlib.Path(fill_mod.__file__).parent
 _NODE_MODULES = sorted(p for p in NODES_DIR.glob("*.py") if p.name != "__init__.py")
 
+#: EVERY module in the package, recursively — not just `nodes/*.py`.
+#:
+#: The glob used to stop at `nodes/`, which left three kinds of hole. Task 8's
+#: `graph.py` and `state.py` sit one level up and got no four-rule scan at all
+#: (a bespoke banned-attribute list in `tests/test_applier_graph.py` stood in for
+#: it, and `add_init_script("document.forms[0].submit()")` walked straight past
+#: that). `browser.py` is imported by a node module and holds the live
+#: `BrowserContext`, and was named by `_UNSCANNABLE` as "a helper in ANOTHER
+#: module" with no scan covering it. And any module added to this package in
+#: future would have repeated the same mistake.
+#:
+#: Scanning the whole package costs nothing — the pure modules have no browser
+#: calls to begin with — and makes the coverage question answer itself.
+PACKAGE_DIR = NODES_DIR.parent
+_GUARDED_MODULES = sorted(PACKAGE_DIR.rglob("*.py"))
 
-@pytest.mark.parametrize("path", _NODE_MODULES, ids=lambda p: p.name)
-def test_every_applier_node_module_obeys_the_one_rule(path):
-    """Parametrised over a GLOB, not over a hardcoded path. The guard was
-    anchored to `fill.py` alone, so the next `agents/job_applier/nodes/*.py` —
-    Task 7's handoff, Task 8's graph — would have got no ONE-RULE scan at all."""
+
+@pytest.mark.parametrize("path", _GUARDED_MODULES, ids=lambda p: str(p.relative_to(PACKAGE_DIR)))
+def test_every_applier_module_obeys_the_one_rule(path):
+    """Parametrised over a RECURSIVE glob of the whole package, not over a
+    hardcoded path. The guard was anchored to `fill.py` alone, then to
+    `nodes/*.py`; either way the next module added anywhere else in
+    `agents/job_applier/` would have got no ONE-RULE scan."""
     assert _submit_click_violations(path.read_text()) == [], path.name
 
 
-def test_every_applier_node_module_is_scanned():
+def test_every_applier_module_is_scanned():
     """The equivalent of `test_the_capture_probe_is_covered_by_the_one_rule_guard`
-    for the write side: if the glob ever comes back empty, or fill.py is renamed
-    out of it, this fails loudly rather than silently covering nothing."""
-    names = {p.name for p in _NODE_MODULES}
-    assert "fill.py" in names
-    assert names == {p.name for p in NODES_DIR.glob("*.py")} - {"__init__.py"}
-    for path in _NODE_MODULES:
+    for the write side: if the glob ever comes back empty, or a module is renamed
+    out of it, this fails loudly rather than silently covering nothing.
+
+    The four names are asserted individually because each one is a hole this
+    guard has actually had: `fill.py` (the only module that writes), `graph.py`
+    and `state.py` (added by Task 8, outside the old `nodes/*.py` glob), and
+    `browser.py` (imported by a node, holds the live context, named by
+    `_UNSCANNABLE` with no scan behind it)."""
+    names = {p.name for p in _GUARDED_MODULES}
+    for required in ("fill.py", "handoff.py", "graph.py", "state.py", "browser.py"):
+        assert required in names, required
+    assert set(_GUARDED_MODULES) == set(PACKAGE_DIR.rglob("*.py"))
+    assert set(_NODE_MODULES) <= set(_GUARDED_MODULES)
+    for path in _GUARDED_MODULES:
         assert path.is_file(), path
 
 
-def test_the_fill_executor_only_imports_scanned_or_pure_modules():
+def _imported_module_paths(source: str) -> dict[str, pathlib.Path]:
+    """{dotted name: file} for every `agents.*` / root-level module `source`
+    imports. `from agents.job_applier import browser` resolves to `browser.py`,
+    not to the package's `__init__.py` — getting that wrong is what makes an
+    import guard silently vacuous."""
+    tree = ast.parse(source)
+    names: set[str] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ImportFrom) and (node.module or "").startswith("agents"):
+            for alias in node.names:
+                names.add(f"{node.module}.{alias.name}")
+            names.add(node.module or "")
+        elif isinstance(node, ast.Import):
+            for alias in node.names:
+                if alias.name.startswith("agents"):
+                    names.add(alias.name)
+    out: dict[str, pathlib.Path] = {}
+    for name in sorted(names):
+        try:
+            module = __import__(name, fromlist=["_"])
+        except ImportError:
+            continue  # `from x import SomeClass` — the leaf is not a module
+        file = getattr(module, "__file__", None)
+        if file:
+            out[name] = pathlib.Path(file)
+    return out
+
+
+@pytest.mark.parametrize("path", _NODE_MODULES, ids=lambda p: p.name)
+def test_every_node_module_only_imports_scanned_or_pure_modules(path):
     """One of the holes `_UNSCANNABLE` names is "a helper in another module that
-    clicks". This closes it for the imports fill.py actually has: every
-    in-package import is a module that is itself guarded — `locate_dom` by
-    `test_module_has_no_mutating_call`, and the other three by having no browser
-    code at all (asserted here, not assumed)."""
+    clicks". This closes it for the imports the node modules actually have.
+
+    Two rules, because the imports fall into two kinds:
+      * inside `agents/job_applier/` — must be a module the guard above scans.
+        Task 8 added a node importing `browser.py`, the one module in the package
+        holding a live `BrowserContext`, and the fill-only version of this test
+        said nothing about it.
+      * outside it (`agents.job_scraper.store`, `agents.resume_generator.store`)
+        — these are DB stores, so instead of a scan they must contain no
+        page-mutating call at all. Asserted, not assumed.
+    """
+    imported = _imported_module_paths(path.read_text())
+    assert imported, f"{path.name} imports nothing — the resolver is broken"
+    scanned = set(_GUARDED_MODULES) | set(_READ_ONLY_FILES)
+    for module, imported_path in sorted(imported.items()):
+        if imported_path.is_relative_to(PACKAGE_DIR):
+            assert imported_path in scanned, f"{path.name} imports unscanned {module}"
+            continue
+        code = _executable_source(imported_path)
+        for call in _MUTATING:
+            assert call not in code, f"{module} (imported by {path.name}) calls {call}"
+        assert not re.search(r"^\s*(?:import|from)\s+playwright", code, re.M), module
+
+
+def test_the_import_guard_resolves_a_submodule_not_its_package():
+    """Non-vacuity for the resolver above, which is the part that can silently
+    stop covering anything: `from agents.job_applier import browser` must land on
+    `browser.py`. Resolved as the PACKAGE it would land on `__init__.py`, which is
+    nine lines of docstring and passes everything."""
+    resolved = _imported_module_paths(
+        "from agents.job_applier import browser\n"
+        "from agents.job_applier.resolver import Answer\n"
+    )
+    assert resolved["agents.job_applier.browser"].name == "browser.py"
+    assert resolved["agents.job_applier.resolver"].name == "resolver.py"
+    # `Answer` is a class, not a module: skipped rather than mis-resolved.
+    assert "agents.job_applier.resolver.Answer" not in resolved
+
+
+def test_the_fill_executor_only_imports_scanned_or_pure_modules():
+    """The narrower, older form of the test above, kept because it pins the EXACT
+    import list of the one module that writes to the page — a new import there is
+    a fact a reviewer should have to look at, not a set that quietly grows."""
     tree = ast.parse(FILL_MODULE.read_text())
     imported = {
         node.module for node in ast.walk(tree)

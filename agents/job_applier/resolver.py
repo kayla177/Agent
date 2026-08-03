@@ -760,13 +760,25 @@ def _emit(question: Question, kind: str, value: str, note: str = "") -> Answer:
     return Answer(question=question, value=value, source="profile", note=note, kind=kind)
 
 
-#: Prefix added to every note on an eligibility answer whose country came from
-#: the POSTING rather than from the question's own wording. The user is told
-#: which way the agent guessed, because the guess picks the profile field.
+#: Appended — as its own complete sentence, at the END — to every note on an
+#: eligibility answer whose country came from the POSTING rather than from the
+#: question's own wording. The user is told which way the agent guessed, because
+#: the guess is what picks the profile field.
+#:
+#: A SUFFIX rather than a prefix, and it names the field exactly once. As a
+#: prefix it produced "work authorization — this question does not name a
+#: country, …your profile conflicts…" (a lower-case clause spliced into the
+#: middle of another sentence), and the field ended up named twice once
+#: `fill.py` appended this note to its own refusal text.
 _FROM_POSTING_NOTE = (
-    "this question does not name a country, so the posting's own country "
-    "({country}) decided which profile field applies. "
+    "This question names no country, so the posting's own country ({country}) "
+    "is what selected {field}."
 )
+
+
+def _with_country_note(note: str, from_posting: str) -> str:
+    """Join a note and the posting-country disclosure, skipping empty parts."""
+    return " ".join(part for part in (note.strip(), from_posting.strip()) if part)
 
 
 def _resolve_eligibility(
@@ -797,14 +809,20 @@ def _resolve_eligibility(
             "(US or Canada), so I cannot tell which profile field applies; "
             "answer it yourself.",
         )
+    auth_field = f"{country}_work_auth"
+
     # Said on every outcome below, not only the ones that fill something: a
     # blank that names `ca_work_auth` on a question that never said "Canada"
     # is just as much an inference as a filled one.
-    from_posting = _FROM_POSTING_NOTE.format(country=country.upper()) if named is None else ""
+    from_posting = (
+        _FROM_POSTING_NOTE.format(country=country.upper(), field=auth_field)
+        if named is None else ""
+    )
 
     # A status maps to "Yes"/"No" only for a label that actually asks a yes/no
     # question. On a select/checkbox the option gate plays that role instead,
-    # so the shape of the label doesn't have to.
+    # so the shape of the label doesn't have to. No country disclosure here: this
+    # path never looked at a profile field, so there is nothing to disclose.
     if question.kind in ("text", "textarea") and not _is_yes_no_question(label):
         return _blank(
             question, kind,
@@ -812,7 +830,6 @@ def _resolve_eligibility(
             "profile's status is not an answer to it; answer it yourself.",
         )
 
-    auth_field = f"{country}_work_auth"
     status = str(profile.get(auth_field) or "").strip()
 
     # `needs_sponsorship` is ONE country-agnostic checkbox, so it can never
@@ -823,26 +840,32 @@ def _resolve_eligibility(
     if _is_true(profile.get("needs_sponsorship")) and status in ("citizen", "permanent_resident"):
         return _blank(
             question, kind,
-            f"work authorization — {from_posting}your profile conflicts: it says "
-            f"you need sponsorship but {auth_field} is “{status}”. Fix the profile "
-            f"or answer this question yourself.",
+            _with_country_note(
+                f"work authorization — your profile conflicts: it says you need "
+                f"sponsorship but {auth_field} is “{status}”. Fix the profile or "
+                f"answer this question yourself.",
+                from_posting,
+            ),
         )
 
     if not status:
         return _blank(
             question, kind,
-            f"{from_posting}work authorization is not set in your profile "
-            f"({auth_field}) — this answer must be yours; it is never guessed.",
+            _with_country_note(
+                f"work authorization is not set in your profile ({auth_field}) — "
+                f"this answer must be yours; it is never guessed.",
+                from_posting,
+            ),
         )
 
     if status in _CONDITIONAL_STATUS_TEXT:
         return _emit(
             question, kind, _CONDITIONAL_STATUS_TEXT[status],
-            note=(
-                f"{from_posting}conditional status ({status}): a plain yes/no "
-                f"depends on visa specifics this system does not model, so your "
-                f"profile's status is stated instead — review and edit before "
-                f"submitting."
+            note=_with_country_note(
+                f"conditional status ({status}): a plain yes/no depends on visa "
+                f"specifics this system does not model, so your profile's status "
+                f"is stated instead — review and edit before submitting.",
+                from_posting,
             ),
         )
 
@@ -853,13 +876,13 @@ def _resolve_eligibility(
         # Blank rather than a stab at what it might mean.
         return _blank(
             question, kind,
-            f"work authorization — {from_posting}your profile's {auth_field} value "
-            f"“{status}” has no defined form answer; answer this yourself.",
+            _with_country_note(
+                f"work authorization — your profile's {auth_field} value "
+                f"“{status}” has no defined form answer; answer this yourself.",
+                from_posting,
+            ),
         )
-    return _emit(
-        question, kind, answer,
-        note=f"{from_posting}read from your profile's {auth_field}." if from_posting else "",
-    )
+    return _emit(question, kind, answer, note=from_posting)
 
 
 def _missing_note(field_name: str) -> str:
