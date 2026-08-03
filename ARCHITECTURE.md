@@ -31,6 +31,13 @@ mutation is proxied to FastAPI, which writes through the Python stores.
 - `GET|PUT /data/profile` — applicant profile (typed autofill fields + fit-scoring summary)
 - `POST /data/jobs/{apply,dismiss,status,undo-apply}` — job status + application logging
 - `GET /data/jobs/resume-pdf` — compiled résumé PDF (content-versioned cache)
+- `POST /data/jobs/assisted-apply` — start the job-applier agent on a posting (greenhouse
+  /lever/ashby only); returns `{run_id}`. Records **no** application: the agent fills a
+  form and stops, so nothing is applied until the human says she pressed Submit.
+  `GET /data/jobs/assisted-apply/report?run_id=` returns that run's handoff as structured
+  data; `POST /data/jobs/assisted-apply/close` closes the window it left open.
+- `POST /data/jobs/confirm-submission` — re-read the still-open form and, on a positive
+  match only, stamp `applications.confirmed_at`. Never un-confirms or deletes anything.
 - `GET|PUT /data/resume/master` — master résumé; `GET /data/resumes/{job_id}/versions`
 - `POST /data/render`, `POST /data/resume/pdf` — markdown render + LaTeX→PDF (Tectonic)
 - `GET /stocks/desk` — latest persisted `stock_analysis` (no model call on page load).
@@ -91,6 +98,15 @@ No migration framework — `CREATE TABLE IF NOT EXISTS` from `schema.sql` plus a
 3. On completion the run is marked `success`/`error` with the final `output_message`.
 4. Agents' **domain writes** (applications/jobs/resumes) happen inside graph nodes via the
    per-agent `store.py`, separate from run bookkeeping.
+
+**`job_applier` is the one exception to step 1–2**, and deliberately so. Its state carries a
+live Playwright context across two nodes, and Playwright's sync API is thread-affine (a
+greenlet switch), while `astream` runs sync nodes in the event loop's default executor — a
+*pool*. So assisted apply is driven by `server/applier_run.py` on the single dedicated thread
+owned by `agents/job_applier/session.py`, which also parks the finished run's browser window
+so the later confirmation read happens on the same thread. Run bookkeeping is byte-identical
+(`runs` row, `node_events`, the same events published to `runner.manager`), so `RunStream` and
+`/runs/{id}/events` cannot tell the difference. The generic driver is untouched.
 
 The job scraper's pipeline is a linear chain: `fetch → filter → dedupe → backfill →
 freshness → rank → notify`. It also accepts a `backfill` input flag (set via

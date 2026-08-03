@@ -487,3 +487,27 @@ table.mini th { color: var(--muted); font-weight: 400; font-size: .72rem; letter
 .undo-banner { display: flex; gap: 0.5rem; align-items: center; }
 button.link { background: none; border: none; color: #e07a4a; cursor: pointer; text-decoration: underline; padding: 0; }
 .jobs-header-actions { display: flex; gap: 0.5rem; align-items: center; }
+
+/* Assisted apply: the agent fills the form, the human submits it.
+   `.banner` on its own is the NEUTRAL state — used for "this will not submit
+   anything" and for "logged but not verified", neither of which is an error and
+   neither of which is a success. Before this, a bare `banner` class had no rule
+   at all and rendered as unstyled body text. */
+.banner { background: var(--panel-2); border: 1px solid var(--border-soft); padding: .5rem .75rem; border-radius: 10px; margin-bottom: .5rem; }
+.apply-modal { max-width: 640px; }
+.apply-autofill { margin-top: 1rem; padding: .75rem; border: 1px solid var(--border-soft); border-radius: 10px; background: var(--panel-2); }
+.apply-autofill strong { display: block; margin-bottom: .25rem; }
+.apply-autofill .muted.small { margin-top: .25rem; }
+.handoff { margin-top: .75rem; max-height: 45vh; overflow-y: auto; }
+.handoff-headline { font-weight: 600; }
+.handoff-band { margin-top: .9rem; }
+.handoff-band h4, .handoff-band summary { margin: 0 0 .4rem; font-size: .82rem; font-weight: 600; letter-spacing: .3px; color: var(--muted); cursor: default; }
+.handoff-band summary { cursor: pointer; }
+.handoff-band.blocking h4 { color: var(--red); }
+.handoff-item { padding: .35rem 0 .35rem .6rem; border-left: 2px solid var(--border-soft); margin-bottom: .3rem; }
+.handoff-item.blocking { border-left-color: var(--red); }
+.handoff-item.review { border-left-color: #e0b15a; }
+.handoff-item.done { border-left-color: var(--green); }
+.handoff-label { font-size: .88rem; }
+.handoff-tag { margin-left: .4rem; font-size: .7rem; color: var(--muted); border: 1px solid var(--border-soft); border-radius: 6px; padding: 0 .3rem; white-space: nowrap; }
+.handoff-tag.req { color: var(--red); border-color: var(--red); }

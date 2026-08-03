@@ -21,6 +21,7 @@ import hashlib
 import os
 import re
 import tempfile
+from pathlib import Path
 
 import config
 from agents.resume_generator.latex import compile_tex
@@ -117,3 +118,29 @@ def ensure_pdf(job_id: str | None) -> tuple[str, bytes]:
             pass
         raise
     return key, pdf
+
+
+def pdf_path(job_id: str | None) -> tuple[str, Path]:
+    """`(cache_key, absolute path)` of a résumé PDF on disk, compiling on a miss.
+
+    This exists because the job-applier agent takes a `resume_path`, not bytes:
+    `fill.attach_resume` hands the path to Playwright's `set_input_files`, and
+    without one the handoff says (correctly, and uselessly) that no résumé was
+    attached. `ensure_pdf` already writes `PDF_DIR / f"{key}.pdf"` atomically, so
+    this is a two-line accessor rather than a second cache.
+
+    **The path is derived from the key `ensure_pdf` RETURNS — never recomputed by
+    calling `cache_key()` again.** That is the whole point of the function. The
+    two would disagree on a real, already-shipped path: a tailored résumé with no
+    LaTeX of its own falls back to the master's source, and `ensure_pdf`
+    deliberately returns the MASTER's key for it (see `key_job`). Recomputing
+    `cache_key(job_id, ...)` here would name a file that does not exist, and the
+    agent would be handed a path to nothing.
+
+    Raises exactly what `ensure_pdf` raises — `LookupError` when there is no
+    résumé to compile, `CompileError` when LaTeX fails — so callers keep the one
+    error contract. Neither is fatal to an application: the caller may start the
+    run with no résumé path at all and say so.
+    """
+    key, _ = ensure_pdf(job_id)
+    return key, PDF_DIR / f"{key}.pdf"

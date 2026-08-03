@@ -158,3 +158,143 @@ export function ghostLabel(job: Job, age: number | null): string {
   if (r.startsWith("deadline passed")) return "deadline passed";
   return age !== null ? `stale ${age}d` : "stale";
 }
+
+// ---------------------------------------------------------------------------
+// Assisted apply — the agent fills the form, you submit it
+// ---------------------------------------------------------------------------
+//
+// The one rule the whole feature is built around: NO code path submits an
+// application. Nothing in this file, and nothing in ApplyModal, may ever offer to
+// press Submit — the agent fills, the human sends. `tests/test_applier_ui.py`
+// scans the modal for that.
+
+// The three boards the DOM locator was written and measured against.
+//
+// MIRRORS `agents.job_applier.nodes.load_profile.SUPPORTED_ATS`, and the mirror
+// is pinned: `test_the_boards_the_ui_offers_autofill_for_are_the_ones_the_agent_supports`
+// reads this array out of this file and fails if the two drift. Offering autofill
+// for a fourth board would put a button in front of the user that the agent
+// refuses at its first node — a guess about a DOM nobody has looked at, typed
+// into a real employer's form.
+export const AUTOFILL_ATS = ["greenhouse", "lever", "ashby"] as const;
+
+export function supportsAutofill(ats: string | null | undefined): boolean {
+  return (AUTOFILL_ATS as readonly string[]).includes((ats ?? "").trim().toLowerCase());
+}
+
+// Why the button is not there. Phase A's manual flow is the answer for every
+// other board, and saying so beats an absent control the user cannot ask about.
+export function autofillUnavailableNote(ats: string | null | undefined): string {
+  const board = (ats ?? "").trim().toLowerCase();
+  const boards = AUTOFILL_ATS.join(", ");
+  return board
+    ? `Autofill can only read ${boards} application forms, and this posting is on ${board}. Open the posting and fill it in yourself.`
+    : `Autofill can only read ${boards} application forms, and this posting's board is unknown. Open the posting and fill it in yourself.`;
+}
+
+// The handoff report, as `agents/job_applier/nodes/handoff.py` builds it and
+// `GET /data/jobs/assisted-apply/report` serves it. Structured data, NOT the
+// rendered text: the bands below are ordered here, and a UI that parsed
+// `render_text()` would break the first time a heading was reworded.
+
+// Render order. Mirrors `handoff.GROUPS` — blocking first because it is the only
+// band that costs you the application if you miss it, `done` last because it
+// exists to be skimmed. Pinned against the Python tuple by
+// `test_the_ui_bands_match_the_report_bands`.
+export const HANDOFF_GROUPS = ["blocking", "review", "withheld", "done"] as const;
+export type HandoffGroup = (typeof HANDOFF_GROUPS)[number];
+
+export const HANDOFF_GROUP_LABEL: Record<HandoffGroup, string> = {
+  blocking: "Required and still empty — the form will not submit until you fill these",
+  review: "Needs your review — the agent put something here, or could not",
+  withheld: "Left untouched on purpose — voluntary self-identification",
+  done: "Filled and verified — nothing to do, open it to spot-check",
+};
+
+// Why an item is where it is. The KEYS mirror `handoff.REASONS` and are pinned by
+// `test_the_ui_knows_every_reason_the_report_can_emit`; the wording is the UI's
+// own (the text report has room for a sentence, a badge does not). The three
+// "left alone" reasons stay distinct here for the same reason they do there —
+// "find it yourself" and "confirm it yourself" are different jobs.
+export const HANDOFF_REASON_TAG: Record<string, string> = {
+  refused: "yours to answer",
+  unreadable: "no readable label — find it on the page",
+  withheld_eeo: "not touched on purpose",
+  empty: "not filled",
+  changed: "the page rewrote your value",
+  drafted: "AI-DRAFTED — read every word",
+  filled: "filled",
+  attached: "attached",
+};
+
+export type HandoffItem = {
+  key: string;
+  label: string;
+  group: string;
+  reason: string;
+  section: string;
+  required: boolean;
+  status: string;
+  value: string;
+  intended: string;
+  suggestion: string;
+  note: string;
+  drafted: boolean;
+  kind: string;
+};
+
+export type HandoffReport = {
+  items: HandoffItem[];
+  job_title: string;
+  company: string;
+  form_url: string;
+  resume_filename: string;
+  resume_note: string;
+  error: string;
+  // Always false. A literal field rather than an absence, so the UI has
+  // something to assert on; nothing in the agent can set it true.
+  submitted: boolean;
+  browser_open: boolean;
+  // Computed server-side so the UI never rewords them.
+  headline: string;
+  instruction: string;
+  summary_line: string;
+  counts: Record<string, number>;
+  needs_you: number;
+  total: number;
+};
+
+export function handoffGroup(report: HandoffReport, group: HandoffGroup): HandoffItem[] {
+  return report.items.filter((i) => i.group === group);
+}
+
+// The badge for an item, falling back to the raw reason rather than to nothing:
+// a future Python reason this file has not learned yet must still render as
+// SOMETHING, or a field would silently lose the only text explaining its state.
+export function handoffReasonTag(item: HandoffItem): string {
+  return HANDOFF_REASON_TAG[item.reason] ?? item.reason;
+}
+
+// What the verify button came back with. `checked: false` is a don't-know, not a
+// failure, and must never be shown as one — see the endpoint's docstring.
+export type Verification = {
+  checked: boolean;
+  confirmed: boolean;
+  reason: string;
+};
+
+// One sentence for each of the three outcomes. Only `confirmed` is good news;
+// neither of the other two is bad news, and the wording must not let them read
+// that way — "not verified" is a don't-know, and the row is logged in all three
+// cases. The tracker renders the same distinction per row (ApplicationRow's
+// ConfirmedMark), so this is the modal saying the same thing at the moment it
+// happens.
+export function verificationLine(v: Verification): string {
+  if (v.confirmed) {
+    return "✓ Verified — an ATS confirmation page was read for this application.";
+  }
+  if (v.checked) {
+    return `Logged, but not verified: ${v.reason} That is not a failure — it only means nothing could vouch for the submission, so the tracker will show it as unverified.`;
+  }
+  return `Logged. The form window could not be re-read (${v.reason}), so this application stays unverified.`;
+}
