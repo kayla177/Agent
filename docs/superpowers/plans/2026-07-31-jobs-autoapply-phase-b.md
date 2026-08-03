@@ -748,6 +748,49 @@ Phase A records applications optimistically on the modal's confirm. Greenhouse/L
 >   default, all three existing rows NULL). `npx prisma generate` has NOT been run, so the live
 >   Next.js client still ignores the column and every row renders "unverified" until it is.
 
+> **Task 9 outcome (`f65d754`) — and a process failure worth more than the feature.**
+>
+> **A stamp requires ALL FOUR of:** a recognised ATS host (dot-boundary suffix match on
+> `greenhouse.io` / `lever.co` / `ashbyhq.com`); a past-tense completion phrase in **visible** text;
+> **no** failure/negation phrase (checked first); and **no `<input type=file>` left on the page**. The
+> URL is recorded as `url_hint` and decides nothing.
+>
+> **The asymmetry that drove every choice:** a false negative just means no stamp and the optimistic
+> row still shows. A false positive tells the user an application is submitted when it is not, so she
+> stops chasing a job she never applied for. Conservative by construction.
+>
+> **The confirmation fixtures are SYNTHETIC and have never been compared against a real post-submit
+> page** — capturing one requires actually submitting an application. Only the *refusals* are
+> measured, against the three captured live apply forms. **The first real submission is what
+> validates the phrase lists.** Do not let a later change imply these are captured fixtures.
+>
+> **THE PROCESS FAILURE: production was migrated by the scheduler, not by decision.** I told the
+> implementer "I will decide when the production migration runs." `launchd`'s jobscraper called
+> `store_db.init_db()` with the edited `schema.sql`/`store_db.py` on disk, and
+> `data/control_center.db` now has `confirmed_at`. Verified read-only: nullable, no default, all
+> three rows NULL, `applications` diffs column-for-column against a temp DB built from `schema.sql`
+> — the landed state is the correct one. Corroborating evidence: `-wal` mtime is 08:30 while the
+> `runs` table has NO row since 2026-08-01, i.e. a process ran `init_db()` and died before recording
+> a run.
+>
+> **THE NEAR MISS, which is the real lesson.** The mutation harness rewrites `store_db.py` IN PLACE,
+> and four of its mutations make that file mis-migrate this exact column (backfill / `NOT NULL
+> DEFAULT ''` / wrong order / no guard). The launchd agents were loaded the whole time. Had the
+> scraper fired inside one of those windows, **production would have been migrated by a mutant.** It
+> did not — both observable fingerprints of those mutants are absent from the live schema.
+>
+> **STANDING RULE from here on:** mutation testing must never rewrite a file in place when a loaded
+> `launchd` job imports it. Copy the repo (most agents on this branch did) or unload the agents
+> first. This is the controller's failure, not the implementer's — I dispatched mutation testing on
+> every task without ever naming this constraint.
+>
+> **Pre-existing drifts found while checking, unrelated to this task:** `jobs` and `master_resume`
+> have migrated columns in a different *order* than `schema.sql` declares, and production's
+> `resumes.job_id` is nullable where the script says `NOT NULL`.
+>
+> **NOT DONE:** `npx prisma generate` has not run, so the generated client has no `confirmedAt` and
+> every row renders "unverified" regardless of the column. Needs a Next restart — Kayla's call.
+>
 ---
 
 ## Task 10: UI entry point
