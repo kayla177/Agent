@@ -802,6 +802,65 @@ Phase A records applications optimistically on the modal's confirm. Greenhouse/L
 - [ ] Must state before starting that it fills but does not submit.
 - [ ] Verify: `npm run lint`, `npx tsc --noEmit`, `npm run check:jobs`.
 
+> **Task 10 outcome (`17188a8`) — the entry point, plus a latent bug in the server path.**
+>
+> **Playwright's sync API is thread-affine.** `SyncBase._sync()` switches to a greenlet created
+> by `sync_playwright().start()`, and greenlets cannot cross threads — a context made on one
+> thread is *unusable* from another. Two consequences nobody had noticed: (a) reading the
+> handed-over page from a FastAPI handler could never have worked, so the obvious shape of the
+> confirmation trigger would have shipped a button that cannot succeed; (b) `server/runner.py`
+> drives graphs with `astream`, and LangGraph runs sync nodes in the event loop's **default
+> executor — a pool**, so `fetch_form` opening the context on one worker and `fill` typing into
+> it from another is exactly the broken case. That is a pre-existing hazard in Tasks 1/6/8's
+> server path, not something Task 10 introduced.
+>
+> **The fix is scoped, not global.** `agents/job_applier/session.py` owns ONE dedicated worker
+> thread (a plain `Thread` + `Queue`: a pool's `.submit()` is rejected by the one-rule AST scan,
+> and `max_workers=1` is a configuration promise where this needs a structural one) plus the
+> registry of the parked window. `server/applier_run.py` runs the whole graph on that thread with
+> the sync `graph.stream`, then queues the later page read onto the same thread. Bookkeeping is
+> byte-identical to `runner._drive` (`runs` row, `node_events`, same events on
+> `runner.manager`, publishes via `loop.call_soon_threadsafe`), so `RunStream` and
+> `/runs/{id}/events` cannot tell the difference. **`server/runner.py` is untouched** — six
+> working agents were not put at risk for this. Any FUTURE agent holding a thread-affine object
+> across two sync nodes still has the hazard; documented in `ARCHITECTURE.md`.
+>
+> **The résumé path was the real gap.** `resume_pdf.pdf_path()` derives the path from the key
+> `ensure_pdf` RETURNED, never by recomputing `cache_key()` — the two disagree on a shipped path
+> (a tailored résumé with no LaTeX compiles the master's source and is keyed as the master), so
+> recomputing names a file that was never written. `fill.py`'s attach-last / verified-by-filename
+> machinery had been dead code because nothing produced a path.
+>
+> **Nothing is logged until the human says she submitted.** Starting a run records no
+> application. "I pressed Submit" calls the EXISTING `/data/jobs/apply` (so Undo and the pinned
+> PDF key behave identically) and then `/data/jobs/confirm-submission`, which validates ownership
+> by exact `job_id` BEFORE reading anything, reads the parked page on the session thread, and
+> calls Task 9's detector only on a successful read. A failed read performs **no database access**;
+> a read that does not vouch leaves the row **identical**. Neither is rendered as a failure, and a
+> test forbids the string "not submitted" in that wording — it would be the same false claim in
+> the opposite direction.
+>
+> **TWO MUTANTS SURVIVED FIRST, AND BOTH WERE BAD TESTS.** The errored-run test nulled the
+> browser handle in its own fixture, so the "context AND no error" condition was never exercised
+> and a driver that parked a window over a failed run passed. The single-thread test compared
+> `thread.name`, which every worker shares, so a fresh-thread-per-call mutant passed. Both now
+> assert the property they claim. All eleven mutants ran against an `rsync` copy — never in place,
+> per Task 9's standing rule.
+>
+> **1889 passed** (1817 at `ae25350`). lint / tsc / check:jobs / db:check clean. DB fingerprint
+> unchanged. No browser launched, no ATS contacted, no agent run, `npm run build` not run.
+>
+> **STILL NOT DONE / FOLLOW-UPS:** `npx prisma generate` still has not run, so the tracker renders
+> every row "unverified" regardless of the column (Kayla's call, needs a Next restart). The
+> single-thread driver has never been run against a real browser — "sync `.stream` yields the same
+> `(mode, data)` shapes as `astream`" is inferred from symmetry, and the first real run is what
+> validates it. Confirmation phrase lists remain validated only in the negative direction. A
+> report is lost if the server restarts before the modal fetches it (rendered text survives in run
+> history). Closing the modal mid-run leaves the run going with no way back to the checklist. Only
+> one assisted-apply window is kept at a time, by design. The worker is a daemon thread, so a
+> server shutdown can still leave Chromium running — `/data/jobs/assisted-apply/close` is the
+> manual escape hatch.
+
 ---
 
 ## Done criteria
