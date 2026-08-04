@@ -36,6 +36,7 @@ from __future__ import annotations
 
 import ast
 import collections
+import inspect
 import json
 import pathlib
 import re
@@ -2435,7 +2436,19 @@ class _Element:
         no_file_api: bool = False,
         option_values: dict[str, str] | None = None,
         reverts: bool = False,
+        live_tag: str | None = None,
+        live_type: str | None = None,
+        no_shape_api: bool = False,
     ) -> None:
+        # What the LIVE element reports for `tagName` / the `type` attribute,
+        # overriding whatever the snapshot HTML said. `None` means "the live DOM
+        # agrees with the snapshot", which is the case for every test that is not
+        # about a re-mount. `no_shape_api=True` models a driver whose `evaluate`
+        # cannot answer at all — a *don't know*, which must not be read as "this
+        # is not a radio". See `fill._live_choice_refusal`.
+        self.live_tag = live_tag
+        self.live_type = live_type
+        self.no_shape_api = no_shape_api
         self.value = value
         # `reverts` models a React-controlled input that re-renders from its own
         # state after ANY write, including the clearing one — so the field snaps
@@ -2503,6 +2516,19 @@ class _FormLocator:
     def evaluate(self, script: str, arg=None, timeout: int | None = None):
         self._page.read_timeouts.append(("evaluate", timeout))
         el = self._el
+        if "tagName" in script:
+            # The LIVE shape. Defaults to what the snapshot HTML says for this
+            # selector, so the overwhelming majority of tests — the ones where
+            # nothing re-mounted — need configure nothing; `live_tag`/`live_type`
+            # simulate a page that changed under the agent.
+            if el.no_shape_api:
+                raise RuntimeError("this driver's evaluate cannot read tagName")
+            tag, input_type = self._page.snapshot_shape(self._selector)
+            if el.live_tag is not None:
+                tag = el.live_tag
+            if el.live_type is not None:
+                input_type = el.live_type
+            return f"{tag.upper()}|{input_type}"
         if "selectedOptions" in script:
             # The option's LABEL — deliberately not the same string
             # `input_value()` returns when `option_values` is configured.
@@ -2573,6 +2599,7 @@ class _FormPage:
     def __init__(self, html: str, **elements: _Element) -> None:
         self._html = html
         self._elements: dict[str, _Element] = dict(elements)
+        self._shapes: dict[str, tuple[str, str]] | None = None
         self.writes: list[tuple[str, str, object]] = []
         self.visibility_checks: list[str] = []
         self.read_timeouts: list[tuple[str, int | None]] = []
@@ -2580,6 +2607,21 @@ class _FormPage:
 
     def element(self, selector: str) -> _Element:
         return self._elements.setdefault(selector, _Element())
+
+    def snapshot_shape(self, selector: str) -> tuple[str, str]:
+        """`(tag, input_type)` for `selector` according to the snapshot HTML.
+
+        Parsed LAZILY — the Lever fixture is 687 KB and most tests never take the
+        code path that asks. This is what makes the stub's default behaviour
+        "the live DOM agrees with the snapshot" rather than "the live DOM is
+        blank", so a test only has to say something when it wants a disagreement.
+        """
+        if self._shapes is None:
+            self._shapes = {
+                c.selector: (c.tag, c.input_type)
+                for c in parse_controls(self._html) if c.selector
+            }
+        return self._shapes.get(selector, ("", ""))
 
     def content(self) -> str:
         self.content_calls += 1
@@ -2628,10 +2670,43 @@ _SUBMIT_RE = re.compile(r"submit|apply\s*now|send\s+application", re.IGNORECASE)
 # actionability checks at all — `dispatch_event("click")` on a submit button is
 # a click by any honest reading, and it was the widest hole in the first version
 # of this guard.
+#
+# `check`, `uncheck` and `type` were ABSENT from the first three versions of this
+# set, and each absence was a live hole rather than a stylistic gap:
+#   * `loc.type("yes\n")` is the deprecated alias of `press_sequentially` and goes
+#     through the SAME driver alias map, so it presses Enter on a `\n`/`\r` — and
+#     no newline gate consults it, because `_may_type_character_by_character` runs
+#     only inside `_write_text`. The Enter hole, reopened under another name.
+#   * `uncheck()` performs a real click, exactly as `check()` does.
+#   * `check()` is the one clicking call this package legitimately needs (there is
+#     no non-clicking way to tick a radio), so it is banned HERE and allowed at
+#     exactly one named call site via `_ALLOWED_CLICKS` — not omitted from the
+#     ban list. Omitting it meant the scan gave no answer at all about a call
+#     that clicks, in the one module that writes.
+# The drag family is here for the same reason `hover` is: a mousedown/mouseup
+# pair aimed at a control is an input-device action on it, and nothing in this
+# package drags. `select_text` focuses and selects, and `focus` is already banned.
 _CLICK_METHODS = frozenset({
     "click", "dblclick", "tap", "submit", "press", "hover", "focus_and_click",
     "dispatch_event", "set_checked", "request_submit",
+    "check", "uncheck", "type",
+    "drag_to", "drag_and_drop", "drop", "select_text", "focus",
 })
+
+#: The clicking calls a NAMED module is allowed, keyed on file name. Everything
+#: not in here gets none. `check` is allowed only in `fill.py`, and only because
+#: Playwright offers no way to tick a radio without a click; the target is proved
+#: to be a real radio/checkbox twice, once from the DOM snapshot and once from a
+#: live `evaluate` read (`fill._live_choice_refusal`). The allowance is per FILE
+#: and per METHOD so that widening it is a visible edit here, and
+#: `test_the_only_clicking_call_allowed_in_the_package_is_one_check` pins that it
+#: is not vacuous — that fill.py really does have exactly one such call and no
+#: other module has any.
+_ALLOWED_CLICKS: dict[str, frozenset[str]] = {"fill.py": frozenset({"check"})}
+
+
+def _allowance_for(path: pathlib.Path) -> frozenset[str]:
+    return _ALLOWED_CLICKS.get(path.name, frozenset())
 
 # Attributes that hand control of the input devices to the caller wholesale.
 # `page.keyboard.down("Enter")` presses Enter with no method name this guard
@@ -2644,6 +2719,12 @@ _INPUT_DEVICE_ATTRS = frozenset({"keyboard", "mouse", "touchscreen"})
 _SELECTOR_CALLS = frozenset({
     "locator", "query_selector", "query_selector_all", "wait_for_selector",
     "get_by_role", "get_by_text", "get_by_label", "get_by_title", "eval_on_selector",
+    # The rest of the `get_by_*` family and the two locator-narrowing calls. A
+    # submit-shaped literal is addressing a submit control whichever accessor
+    # spells it: `get_by_test_id("submit-application")` is not different in kind
+    # from `get_by_role("button", name="Apply now")`.
+    "get_by_placeholder", "get_by_alt_text", "get_by_test_id",
+    "frame_locator", "filter",
 })
 
 # Calls that execute ARBITRARY JavaScript in the page. `fill.py` legitimately
@@ -2654,6 +2735,10 @@ _SELECTOR_CALLS = frozenset({
 _EVALUATE_CALLS = frozenset({
     "evaluate", "evaluate_handle", "evaluate_all", "eval_on_selector",
     "eval_on_selector_all", "add_init_script", "add_script_tag",
+    # `wait_for_function` takes a JS expression and polls it in the page, so
+    # `wait_for_function("() => document.forms[0].submit()")` submits the form
+    # with no click and no `evaluate` anywhere.
+    "wait_for_function",
 })
 
 # JavaScript that submits or clicks. Deliberately broader than `_SUBMIT_RE`:
@@ -2682,27 +2767,37 @@ _UNSCANNABLE = """
     `test_every_applier_node_module_is_scanned` covers every node module, and
     `test_the_fill_executor_only_imports_scanned_or_pure_modules` pins that
     fill.py's package imports are all modules that are themselves guarded.
-  * What Playwright does INTERNALLY. `check()` clicks; that is expected and is
-    why `_fill_choice_group` refuses any target that is not a real
-    radio/checkbox input.
+  * What Playwright does INTERNALLY. `check()` clicks. That is expected, it is
+    the ONE clicking call allowed anywhere in the package (`_ALLOWED_CLICKS`),
+    and `_fill_choice_group` refuses any target that is not a real
+    radio/checkbox input — twice: once from the DOM snapshot, and once from a
+    live `evaluate` read, because the snapshot predates the drafting model calls
+    and `[id="x"]` matches any tag.
 """
 
 
-def _submit_click_violations(source: str) -> list[str]:
+def _submit_click_violations(source: str, *, allow: frozenset[str] = frozenset()) -> list[str]:
     """Every way `source` could click a submit control. Empty list == clean.
 
     Four rules. Each one alone is defeatable, which is why there are four —
     and even together they are not complete; see `_UNSCANNABLE`.
 
-      1. ANY click-family call at all. The executor clicks nothing, so there is
-         no legitimate one to allow, and a rule that only rejected clicks whose
-         literal argument looked submit-ish would miss
-         `page.locator(sel).click()`.
+      1. ANY click-or-keystroke-family call at all, except the method names in
+         `allow`. A rule that only rejected clicks whose literal argument looked
+         submit-ish would miss `page.locator(sel).click()`.
       2. Any use of `page.keyboard` / `mouse` / `touchscreen`.
       3. Any `evaluate`-family call whose JavaScript submits or clicks — or
          whose JavaScript is not a plain string literal at all, since a
          constructed script cannot be read here.
       4. Any submit-shaped string literal handed to a selector lookup.
+
+    `allow` exists because ONE clicking call is unavoidable — there is no
+    non-clicking Playwright API for ticking a radio — and the honest way to
+    handle that is to keep `check` in `_CLICK_METHODS` and name the single
+    exception at the single call site that has it (`_ALLOWED_CLICKS`), rather
+    than dropping it from the ban list and leaving every other module in the
+    package unscanned for it. Default empty: a module gets no allowance unless
+    someone writes one down.
     """
     tree = _strip_docstrings(ast.parse(source))
     bad: list[str] = []
@@ -2712,7 +2807,7 @@ def _submit_click_violations(source: str) -> list[str]:
         if not isinstance(node, ast.Call) or not isinstance(node.func, ast.Attribute):
             continue
         attr = node.func.attr
-        if attr in _CLICK_METHODS:
+        if attr in _CLICK_METHODS and attr not in allow:
             bad.append(f"calls .{attr}()")
         if attr in _EVALUATE_CALLS:
             script = node.args[0] if node.args else None
@@ -2736,8 +2831,17 @@ def _submit_click_violations(source: str) -> list[str]:
 
 
 def test_the_fill_executor_never_clicks_a_submit_control():
-    """THE ONE RULE, for the one module that can break it."""
-    assert _submit_click_violations(FILL_MODULE.read_text()) == []
+    """THE ONE RULE, for the one module that can break it.
+
+    The allowance is `check`, and only `check`. What it is NOT allowed is pinned
+    right below by `test_the_only_clicking_call_allowed_in_the_package_is_one_check`,
+    which runs this same scan with no allowance at all and requires the single
+    violation to be exactly one `.check()` — so a second one, or a `.click()`
+    smuggled in beside it, still fails.
+    """
+    assert _submit_click_violations(
+        FILL_MODULE.read_text(), allow=_allowance_for(FILL_MODULE)
+    ) == []
 
 
 def test_the_fill_executor_is_allowed_to_fill_and_to_attach():
@@ -2777,6 +2881,164 @@ def test_the_submit_guard_accepts_filling_and_rejects_clicking():
 
     presses_enter = "def go(page):\n    page.locator('#email').press('Enter')\n"
     assert _submit_click_violations(presses_enter), "Enter submits a form implicitly"
+
+
+@pytest.mark.parametrize(
+    "method, why",
+    [
+        ("type", "`type` is the deprecated alias of press_sequentially and uses the "
+                 "SAME driver alias map, so it presses Enter on a \\n or \\r — and no "
+                 "newline gate consults it"),
+        ("uncheck", "`uncheck` performs a real click, exactly as `check` does"),
+        ("check", "`check` clicks; it is allowed at ONE named call site, never by "
+                  "being absent from the ban list"),
+        ("drag_to", "a mousedown/mouseup pair aimed at a control is an input-device "
+                    "action on it"),
+        ("focus", "focus is an input-device action and nothing here focuses"),
+    ],
+)
+def test_the_guard_rejects_the_page_mutating_apis_that_reopened_the_enter_hole(method, why):
+    """The three-versions-late half of the guard, proved one API at a time.
+
+    `Locator.type`, `Locator.uncheck` and `Locator.check` all EXIST on the
+    installed driver and none of them was in `_CLICK_METHODS`, so
+    `loc.type("yes\\n")` — a value carrying a newline typed character by
+    character, pressing Enter, triggering HTML implicit submission — passed the
+    scan clean. Parametrised so the failure message says which API regressed.
+    """
+    source = f"def go(page):\n    page.locator('#q').{method}('x')\n"
+    assert _submit_click_violations(source), why
+
+
+def test_the_typing_alias_is_caught_even_though_press_sequentially_is_allowed():
+    """The distinction the guard has to make, in one test.
+
+    `press_sequentially` is the executor's legitimate retry and must stay
+    allowed; `type` is its alias and must not. AST attribute equality is what
+    keeps them apart — a substring grep for "type" would ban `input_type`,
+    `content_type` and half the codebase, and one for "press" would ban both.
+    """
+    assert _submit_click_violations(
+        "def go(loc, v):\n    loc.press_sequentially(v)\n"
+    ) == []
+    assert _submit_click_violations("def go(loc, v):\n    loc.type(v)\n") == [
+        "calls .type()"
+    ]
+
+
+# The Playwright surface, ENUMERATED. Every public method name on the five types
+# a caller could reach from `fill.py`'s `page` argument, sorted into exactly one
+# bucket by hand and reviewed once. The point is the equality assertion in
+# `test_the_playwright_surface_is_fully_classified_by_the_one_rule_guard`: a
+# Playwright upgrade that adds a method FAILS the suite until a human decides
+# which bucket it belongs in, instead of arriving as a silent new hole. That is
+# the difference between a guard built by enumeration and one built by guessing
+# which method names sounded dangerous — the latter is how `type`, `uncheck`,
+# `check` and `wait_for_function` were all missing at once.
+#
+# Measured against playwright as installed in this venv on 2026-08-03.
+_PLAYWRIGHT_TYPES = ("Locator", "Page", "Frame", "FrameLocator", "ElementHandle")
+
+#: Writes this package legitimately performs (`clear` is `fill("")` — no keys).
+_PERMITTED_WRITES = frozenset({
+    "fill", "set_input_files", "press_sequentially", "select_option", "clear",
+})
+
+#: Reads, navigation, waits, event plumbing, network routing and handle
+#: bookkeeping. Nothing here dispatches a pointer event or a keystroke at a
+#: control, and nothing here executes caller-supplied JavaScript.
+_HARMLESS_SURFACE = frozenset({
+    "add_locator_handler", "add_style_tag", "all", "all_inner_texts",
+    "all_text_contents", "and_", "aria_snapshot", "as_element", "blur",
+    "bounding_box", "bring_to_front", "cancel_pick_locator", "child_frames",
+    "clear_console_messages", "clear_page_errors", "clock", "close",
+    "console_messages", "content", "content_frame", "context", "count",
+    "describe", "description", "dispose", "element_handle", "element_handles",
+    "emulate_media", "expect_console_message", "expect_download", "expect_event",
+    "expect_file_chooser", "expect_navigation", "expect_popup", "expect_request",
+    "expect_request_finished", "expect_response", "expect_websocket",
+    "expect_worker", "expose_binding", "expose_function", "first", "frame",
+    "frame_element", "frames", "get_attribute", "get_properties", "get_property",
+    "go_back", "go_forward", "goto", "hide_highlight", "highlight", "inner_html",
+    "inner_text", "input_value", "is_checked", "is_closed", "is_detached",
+    "is_disabled", "is_editable", "is_enabled", "is_hidden", "is_visible",
+    "json_value", "last", "local_storage", "main_frame", "name", "normalize",
+    "nth", "on", "once", "opener", "or_", "owner", "owner_frame", "page",
+    "page_errors", "parent_frame", "pause", "pdf", "pick_locator", "reload",
+    "remove_listener", "remove_locator_handler", "request", "request_gc",
+    "requests", "route", "route_from_har", "route_web_socket", "screencast",
+    "screenshot", "scroll_into_view_if_needed", "session_storage", "set_content",
+    "set_default_navigation_timeout", "set_default_timeout",
+    "set_extra_http_headers", "set_viewport_size", "text_content", "title",
+    "unroute", "unroute_all", "url", "video", "viewport_size", "wait_for",
+    "wait_for_element_state", "wait_for_event", "wait_for_load_state",
+    "wait_for_timeout", "wait_for_url", "workers",
+})
+
+
+def _playwright_surface() -> set[str]:
+    sync_api = pytest.importorskip(
+        "playwright.sync_api",
+        reason="playwright is an optional heavy dependency; the rest of the suite "
+               "runs without it and so must this audit",
+    )
+    names: set[str] = set()
+    for type_name in _PLAYWRIGHT_TYPES:
+        cls = getattr(sync_api, type_name)
+        names |= {n for n in dir(cls) if not n.startswith("_")}
+    return names
+
+
+def test_the_one_rule_guard_names_no_method_that_does_not_exist():
+    """A guard entry that matches nothing is a guard entry that has stopped
+    working, and it looks identical to one that works. Every name this scan bans
+    or permits has to be a real attribute on the real driver — which is also what
+    proves the additions above (`type`, `uncheck`, `check`, `wait_for_function`,
+    the rest of `get_by_*`) were APIs and not guesses.
+
+    `focus_and_click`, `submit` and `request_submit` are the deliberate
+    exceptions: they are not Playwright methods at all. They are banned because a
+    helper or a wrapper in this repo could be named that, and a `.submit()` in
+    this package is never something the scan should have to reason about.
+    """
+    surface = _playwright_surface()
+    not_playwright = {"focus_and_click", "submit", "request_submit"}
+    for name in sorted((_CLICK_METHODS - not_playwright) | _EVALUATE_CALLS
+                       | _INPUT_DEVICE_ATTRS | _SELECTOR_CALLS | _PERMITTED_WRITES):
+        assert name in surface, f"the guard names .{name}(), which the driver does not have"
+    for name in sorted(not_playwright):
+        assert name not in surface, (
+            f".{name}() is a real Playwright method now — move it out of the "
+            f"'not a Playwright method' list and re-justify it"
+        )
+
+
+def test_the_playwright_surface_is_fully_classified_by_the_one_rule_guard():
+    """The enumeration itself: no method on the surface is unaccounted for.
+
+    This is the test that would have caught `type`/`uncheck`/`check`/
+    `wait_for_function` on the day they were missed, and it is the only one here
+    that scales — the guard's coverage stops being a matter of whether anyone
+    thought of a method name and becomes a matter of whether the sets add up.
+
+    A failure means Playwright grew (or renamed) a method. Do NOT paste it into
+    `_HARMLESS_SURFACE` to go green: decide whether it can dispatch a pointer
+    event or a keystroke at an element (`_CLICK_METHODS`), execute
+    caller-supplied JavaScript (`_EVALUATE_CALLS`), address an element by a
+    string (`_SELECTOR_CALLS`), or none of those (`_HARMLESS_SURFACE`).
+    """
+    surface = _playwright_surface()
+    classified = (
+        _CLICK_METHODS | _EVALUATE_CALLS | _INPUT_DEVICE_ATTRS | _SELECTOR_CALLS
+        | _PERMITTED_WRITES | _HARMLESS_SURFACE
+    )
+    unclassified = sorted(surface - classified)
+    assert not unclassified, (
+        f"Playwright methods no ONE RULE bucket knows about: {unclassified}"
+    )
+    # And the audit is not vacuous in the other direction either: the harmless
+    # list must not have quietly absorbed a name that is also banned.
+    assert not (_HARMLESS_SURFACE & (_CLICK_METHODS | _EVALUATE_CALLS))
 
 
 def test_the_fill_executor_imports_no_playwright():
@@ -2937,11 +3199,11 @@ def test_a_write_that_raises_is_reported_blank_with_the_reason():
     assert "TimeoutError" in out.note and "x@y.invalid" in out.note
 
 
-def test_a_multiline_value_is_never_typed_into_a_single_line_input():
+def test_a_multiline_value_is_never_typed_character_by_character():
     """The hazard a click-scanning guard would not catch: `press_sequentially`
     on a value containing a newline sends Enter, and Enter in a text input
     inside a `<form>` triggers HTML's implicit submission. So the typing retry
-    is refused outright for a multi-line value in anything but a textarea."""
+    is refused outright for a multi-line value."""
     page = _FormPage(_TEXT_HTML, **{'[id="e"]': _Element(swallow=True)})
     out = fill_one(page, parse_controls(_TEXT_HTML), _answer("Email", "line one\nline two"))
     assert out.status == BLANK
@@ -2949,16 +3211,37 @@ def test_a_multiline_value_is_never_typed_into_a_single_line_input():
     assert "Enter keystroke" in out.note
 
 
-def test_a_multiline_value_is_typed_into_a_textarea_on_retry():
-    """The other direction: Enter in a textarea inserts a newline and submits
-    nothing, so the retry is allowed there — the refusal above is about the
-    control, not about the value."""
+def test_the_typing_retry_is_refused_in_a_textarea_too_because_the_tag_is_stale():
+    """The textarea exemption is GONE, and this is the test that used to assert
+    the opposite (`test_a_multiline_value_is_typed_into_a_textarea_on_retry`).
+
+    The old reasoning — Enter in a textarea inserts a newline and submits nothing
+    — is true about textareas and irrelevant to the decision, because the tag it
+    trusted is a snapshot fact. `page.content()` is read ONCE for the whole graph,
+    `draft` then makes a model call per question, and `[id="t"]` is not
+    tag-scoped: `_single_locator`'s live `count() == 1` is satisfied just as well
+    by an `<input type="text" id="t">` that re-mounted in the meantime. Typing a
+    multi-line draft into that, inside Lever's `method="POST"` form (which ships
+    an `<input type="submit" class="hidden">`), submits the application.
+
+    So the exemption cost the one guarantee this feature rests on and bought a
+    second retry strategy on one control type. A textarea whose `fill()` was
+    swallowed is now `blank` with the text to paste, which is honest and cheap.
+    """
     html = '<label for="t">Cover letter</label><textarea id="t"></textarea>'
     page = _FormPage(html, **{'[id="t"]': _Element(swallow=True)})
     out = fill_one(page, parse_controls(html), _answer("Cover letter", "para one\npara two",
                                                        kind="textarea"))
-    assert out.status == FILLED and out.strategy == "type"
-    assert "press_sequentially" in page.methods
+    assert out.status == BLANK
+    assert page.methods == ["fill"], "no keystroke may reach ANY field for a \\n value"
+    assert "Enter keystroke" in out.note
+    assert "para one" in out.note, "the value she has to paste must be in the note"
+    # And the single-line retry still works for a value with no newline in it —
+    # the refusal is about the VALUE now, so it must not have become blanket.
+    single = _FormPage(html, **{'[id="t"]': _Element(swallow=True)})
+    ok = fill_one(single, parse_controls(html), _answer("Cover letter", "one paragraph",
+                                                       kind="textarea"))
+    assert ok.status == FILLED and ok.strategy == "type"
 
 
 # --------------------------------------------------------------------------
@@ -3100,6 +3383,90 @@ def test_a_radio_answer_matching_no_option_ticks_nothing():
                            kind="select", options=["Yes", "No"]))
     assert out.status == BLANK and page.writes == []
     assert "no option" in out.note
+
+
+def test_the_tag_is_re_read_live_before_anything_is_ticked():
+    """`check()` is the only call in this module that dispatches a click, and the
+    evidence that its target is a real radio must not be a snapshot fact.
+
+    ONE `page.content()` is taken for the whole graph, before `draft` makes a
+    model call per question, and `input[name="q1"][value="Yes"]` is not
+    tag-scoped. So `count() == 1` can be satisfied by a `<button role="radio">`
+    that re-mounted in the same slot while the model was thinking, and clicking
+    a button is the one thing THE ONE RULE forbids — with the source scan green,
+    because the click happens inside Playwright.
+
+    Three assertions, and the third is the one that makes this non-vacuous: the
+    same fixture with nothing re-mounted DOES tick (above), the re-mounted one
+    does not, and the page was never written to.
+    """
+    page = _FormPage(
+        _RADIO_HTML,
+        **{'input[name="q1"][value="Yes"]': _Element(live_tag="button", live_type="")},
+    )
+    out = fill_one(page, parse_controls(_RADIO_HTML),
+                   _answer("Do you have a driver's licence?", "Yes",
+                           kind="select", options=["Yes", "No"]))
+    assert out.status == BLANK
+    assert page.writes == [], "check() reached an element that is no longer an input"
+    assert "<button>" in out.note and "not the radio or checkbox" in out.note
+    # A text input in the same slot is refused for the same reason — the snapshot
+    # said radio, the page says otherwise, and the page wins.
+    retyped = _FormPage(
+        _RADIO_HTML,
+        **{'input[name="q1"][value="Yes"]': _Element(live_tag="input", live_type="text")},
+    )
+    out2 = fill_one(retyped, parse_controls(_RADIO_HTML),
+                    _answer("Do you have a driver's licence?", "Yes",
+                            kind="select", options=["Yes", "No"]))
+    assert out2.status == BLANK and retyped.writes == []
+    assert "type=text" in out2.note
+
+
+def test_an_unreadable_live_shape_does_not_block_a_legitimate_tick():
+    """The asymmetry, stated as a test: a *don't know* is not a refusal.
+
+    A read that positively disagrees with the snapshot is new information and
+    stops the tick. A read that could not be performed at all is not information,
+    and refusing on it would silently stop ticking every radio on a driver whose
+    `evaluate` behaves unexpectedly — while buying nothing, because the hazard the
+    stale snapshot actually opened (an Enter keystroke) is refused
+    unconditionally in `_may_type_character_by_character`, not here.
+    """
+    page = _FormPage(_RADIO_HTML,
+                     **{'input[name="q1"][value="Yes"]': _Element(no_shape_api=True)})
+    out = fill_one(page, parse_controls(_RADIO_HTML),
+                   _answer("Do you have a driver's licence?", "Yes",
+                           kind="select", options=["Yes", "No"]))
+    assert out.status == FILLED
+    assert page.writes == [("check", 'input[name="q1"][value="Yes"]', True)]
+    # And the helper's own contract, directly: "" tag means don't-know, not "no".
+    assert fill_mod._live_shape(_FormLocator(page, "nope")) == ("", "")
+
+
+def test_the_live_shape_read_is_a_plain_literal_the_guard_can_read():
+    """The live re-read is an `evaluate`, and `evaluate` is the single most
+    dangerous call in this module — `document.forms[0].submit()` inside one is a
+    submission with no Python-level click anywhere. The ONE RULE scan therefore
+    only tolerates an `evaluate` whose script it can READ, which means every one
+    of them has to be an inline string constant rather than a named module
+    constant. Hoisting this script to `_SHAPE_SCRIPT` flipped the guard from
+    "the JavaScript is `el => …tagName…`" to "the JavaScript is unknown", and the
+    scan caught it. This pins that it stays inline and stays inert.
+    """
+    tree = _strip_docstrings(ast.parse(FILL_MODULE.read_text()))
+    scripts = [
+        node.args[0].value
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+        and node.func.attr == "evaluate" and node.args
+        and isinstance(node.args[0], ast.Constant)
+    ]
+    assert len(scripts) == 3, f"every evaluate must be a literal; found {scripts}"
+    assert any("tagName" in s for s in scripts)
+    for script in scripts:
+        assert not _JS_MUTATION_RE.search(script), script
+        assert not _SUBMIT_RE.search(script), script
 
 
 def test_a_tick_that_does_not_stick_is_reported_blank():
@@ -3470,20 +3837,36 @@ def test_every_enter_producing_character_is_refused_not_just_newline():
     That pair is EXHAUSTIVE, not a guess, which is what makes this test an
     invariant rather than two examples: it is asserted against the module's own
     `_ENTER_CHARS`, so a character added there without a matching refusal fails
-    here."""
+    here.
+
+    The rule is now TAG-BLIND — `_may_type_character_by_character` takes only the
+    value — which is why there is no textarea case here any more. See
+    `test_the_typing_retry_is_refused_in_a_textarea_too_because_the_tag_is_stale`.
+    """
     assert fill_mod._ENTER_CHARS == frozenset({"\n", "\r"})
-    text = Control(tag="input", input_type="text", label="x", label_source="label",
-                   kind="text", required=False, required_source="")
-    area = Control(tag="textarea", input_type="", label="x", label_source="label",
-                   kind="textarea", required=False, required_source="")
     for ch in sorted(fill_mod._ENTER_CHARS):
-        assert not fill_mod._may_type_character_by_character(text, f"a{ch}b"), repr(ch)
-        assert fill_mod._may_type_character_by_character(area, f"a{ch}b"), repr(ch)
+        assert not fill_mod._may_type_character_by_character(f"a{ch}b"), repr(ch)
     # Characters that are NOT Enter aliases go through insertText and press no
     # key, so they must not be refused — over-refusing would silently disable
     # the retry for ordinary unicode text.
     for ch in (" ", " ", "\t", " ", "é", "。"):
-        assert fill_mod._may_type_character_by_character(text, f"a{ch}b"), repr(ch)
+        assert fill_mod._may_type_character_by_character(f"a{ch}b"), repr(ch)
+
+
+def test_the_newline_refusal_takes_no_control_at_all():
+    """Structural, and the point of the whole fix: the gate CANNOT consult the
+    snapshot's tag, because it is not given one.
+
+    A behavioural test can be satisfied by a gate that still reads the tag and
+    happens to refuse anyway; only the signature proves the tag is out of reach.
+    Restoring the parameter — the mutation this pins — fails here even if every
+    behavioural test above were somehow still green.
+    """
+    params = inspect.signature(fill_mod._may_type_character_by_character).parameters
+    assert list(params) == ["value"], (
+        "the newline gate must not be able to see a Control: a tag read from the "
+        "pre-draft DOM snapshot is not evidence about the live element"
+    )
 
 
 @pytest.mark.parametrize("value", ["bad\r", "\rbad", "a\rb", "a\r\nb", "a\nb"])
@@ -3781,7 +4164,31 @@ def test_every_applier_module_obeys_the_one_rule(path):
     hardcoded path. The guard was anchored to `fill.py` alone, then to
     `nodes/*.py`; either way the next module added anywhere else in
     `agents/job_applier/` would have got no ONE-RULE scan."""
-    assert _submit_click_violations(path.read_text()) == [], path.name
+    assert _submit_click_violations(
+        path.read_text(), allow=_allowance_for(path)
+    ) == [], path.name
+
+
+def test_the_only_clicking_call_allowed_in_the_package_is_one_check():
+    """`_ALLOWED_CLICKS` is an exception, so it has to be measured, not asserted.
+
+    Scans EVERY module with NO allowance and requires the complete result to be
+    exactly one `.check()` in `fill.py`. That makes three separate things fail
+    loudly instead of silently:
+
+      * a second `check()` call appearing in fill.py (the allowance is per
+        method, so a per-method allowance would have let an unbounded number of
+        them through);
+      * `check()` appearing in any OTHER module in the package;
+      * the allowance going stale — if fill.py ever stops calling `check()`, this
+        fails and `_ALLOWED_CLICKS` gets deleted rather than sitting there as a
+        permanently open door nothing needs.
+    """
+    found = {
+        str(path.relative_to(PACKAGE_DIR)): _submit_click_violations(path.read_text())
+        for path in _GUARDED_MODULES
+    }
+    assert {k: v for k, v in found.items() if v} == {"nodes/fill.py": ["calls .check()"]}
 
 
 def test_every_applier_module_is_scanned():
@@ -3920,7 +4327,9 @@ def test_the_one_rule_guard_documents_what_it_cannot_catch():
     passes. Overclaiming is worse than a narrow guarantee, because the next
     reader stops looking for the gap."""
     assert "_SUBMITISH_RE" in FILL_MODULE.read_text()
-    assert _submit_click_violations(FILL_MODULE.read_text()) == []
+    assert _submit_click_violations(
+        FILL_MODULE.read_text(), allow=_allowance_for(FILL_MODULE)
+    ) == []
     for hole in ("VARIABLE", "Dynamic attribute", "ANOTHER module", "INTERNALLY"):
         assert hole in _UNSCANNABLE, hole
 

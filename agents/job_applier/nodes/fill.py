@@ -7,35 +7,65 @@ is pure, `drafting` calls a model. So the safety properties that were previously
 explicitly from here on.
 
 THE ONE RULE for all of Phase B — no code path may ever click a submit button —
-is enforced four ways in this module, not one:
+is enforced five ways in this module, not one:
 
-  1. **Nothing here clicks, and nothing here scripts the page.** There is no
-     `.click()`, `.dblclick()`, `.tap()`, `.submit()`, `.press()`,
-     `.dispatch_event()` and no `page.keyboard` in this file. Filling,
-     selecting, checking and attaching are the only four things it does.
+  1. **Exactly one call here can dispatch a click, and it is aimed only at a
+     control proved to be a radio or a checkbox.** There is no `.click()`,
+     `.dblclick()`, `.tap()`, `.submit()`, `.press()`, `.type()`,
+     `.uncheck()`, `.dispatch_event()` and no `page.keyboard` in this file.
+     Filling, selecting, ticking and attaching are the only four things it
+     does, and the ticking one — `Locator.check()` — clicks inside Playwright,
+     which is why decision 5 exists.
      (`test_the_fill_executor_never_clicks_a_submit_control`.)
   2. **A source scan, whose exact guarantee is narrower than it looks.** It
-     rejects: any click-family call at all; any `evaluate`-family call whose
-     JavaScript mentions submitting or clicking, or whose JavaScript is not a
-     plain literal; and any submit-shaped string literal *passed to a selector
-     lookup*. It does NOT reject the word "submit" appearing anywhere else —
-     which is why `_SUBMITISH_RE` below can contain it. What the scan cannot
-     see at all is written down in `_UNSCANNABLE` in the test module rather
-     than glossed over. Proved in BOTH directions — it accepts a filling module
-     and rejects nine separate clicking ones — by
-     `test_the_submit_guard_accepts_filling_and_rejects_clicking`, because a
-     guard that never fails on anything is worse than no guard.
+     rejects: any click-or-keystroke-family call at all (with ONE named,
+     justified exception — `check`, in this module, at one call site); any
+     `evaluate`-family call whose JavaScript mentions submitting or clicking, or
+     whose JavaScript is not a plain literal; and any submit-shaped string
+     literal *passed to a selector lookup*. It does NOT reject the word
+     "submit" appearing anywhere else — which is why `_SUBMITISH_RE` below can
+     contain it. What the scan cannot see at all is written down in
+     `_UNSCANNABLE` in the test module rather than glossed over.
+
+     Proved in BOTH directions, because a guard that never fails on anything is
+     worse than no guard: `test_the_submit_guard_accepts_filling_and_rejects_clicking`
+     accepts one filling module and rejects THREE clicking ones (a `.click()`,
+     an "Apply now" role lookup and a `press("Enter")`);
+     `test_the_guard_rejects_the_page_mutating_apis_that_reopened_the_enter_hole`
+     adds the three that were missing from it — `type`, `uncheck` and `check`;
+     and `test_the_playwright_surface_is_fully_classified_by_the_one_rule_guard`
+     enumerates the live `Locator`/`Page` surface so a method this guard has
+     never heard of fails the suite instead of passing through it. An earlier
+     version of this paragraph claimed "nine separate clicking ones", which was
+     never true of any test.
   3. **At runtime**, `_is_submitish` refuses to act on any control whose label,
      name, id or selector reads like a submit control, even though
      `locate_dom` already declines to discover `type=submit`. The check lives
      inside `_single_locator`, so it is impossible to obtain a locator for such
      a control at all rather than merely impolite to.
      (`test_a_control_that_looks_like_submit_is_refused_at_runtime`.)
-  4. **No Enter keystroke can reach a single-line field.** HTML's *implicit
-     submission* means Enter in a text input inside a `<form>` submits it — THE
-     ONE RULE broken with no click anywhere, and with the source scan green.
-     The character-by-character retry is therefore refused for a value
-     containing a newline in anything but a `<textarea>`.
+  4. **No Enter keystroke can reach ANY field — not "any single-line field".**
+     HTML's *implicit submission* means Enter in a text input inside a `<form>`
+     submits it — THE ONE RULE broken with no click anywhere, and with the
+     source scan green. The character-by-character retry is therefore refused
+     outright for a value containing a newline, **whatever the control's tag
+     says it is**.
+
+     The earlier version exempted `<textarea>`, reasoning that Enter in a
+     textarea inserts a newline and submits nothing. That reasoning is right
+     about textareas and wrong about the exemption, because the tag it trusted
+     is a SNAPSHOT fact: `page.content()` is read exactly once for the whole
+     graph (`fetch_form` → `resolve` → `draft` → `fill`), and `draft` sits in
+     the middle making a model call per question. `[id="…"]` selectors are not
+     tag-scoped, so `_single_locator`'s live `count() == 1` is satisfied by an
+     element of a *different* tag. A form that re-mounted `<textarea id="q">` as
+     `<input type="text" id="q">` while the model was thinking would have had a
+     multi-line draft typed into a single-line input inside Lever's
+     `method="POST"` form — which ships `<input type="submit" class="hidden">` —
+     i.e. implicit submission. The exemption bought one retry strategy on one
+     control type; it cost the only guarantee this feature rests on. A textarea
+     whose `fill()` was swallowed is now reported `blank` with the value to
+     paste, which is the cheap, honest outcome.
 
      "Newline" here means `\\n` **or `\\r`**, and that pair is exhaustive rather
      than a guess: Playwright's driver holds ONE character→key alias map
@@ -45,6 +75,20 @@ is enforced four ways in this module, not one:
      classic-Mac or stray `\\r` would have typed Enter into a single-line input.
      See `_may_type_character_by_character`; this is the one hazard a
      click-scanning source guard would not have caught.
+     (`test_a_multiline_value_is_never_typed_character_by_character`,
+     `test_every_enter_producing_character_is_refused_not_just_newline`.)
+  5. **The one clicking call re-reads the element's tag from the LIVE page
+     before it fires.** `check()` clicks, so the check that its target is a real
+     `<input type=radio|checkbox>` may not rest on the same stale snapshot
+     decision 4 just stopped trusting. `_live_shape` reads `tagName` and the
+     `type` attribute off the page — a read, which is permitted — and a positive
+     disagreement with the snapshot is a refusal. A read that cannot be
+     performed at all leaves the snapshot's word standing; that is not a
+     widening, it is exactly the pre-snapshot-aware behaviour, and the hazard
+     the seam actually opened (an Enter keystroke) is closed unconditionally by
+     decision 4 rather than by this read.
+     (`test_the_tag_is_re_read_live_before_anything_is_ticked`,
+     `test_an_unreadable_live_shape_does_not_block_a_legitimate_tick`.)
 
 Design decisions, and why
 =========================
@@ -524,6 +568,75 @@ def _same(intended: str, actual: str) -> bool:
     return (intended or "").strip() == (actual or "").strip()
 
 
+def _live_shape(locator: Any, timeout_ms: int = DEFAULT_TIMEOUT_MS) -> tuple[str, str]:
+    """`(tag, input_type)` as the LIVE page reports them, lowercased.
+
+    `("", "")` means "could not be determined" — never "it is not an input".
+    Callers must treat the two differently; see `_is_live_choice_input`.
+
+    This is a READ. It exists because every `Control` in this module arrived from
+    a DOM snapshot captured before `draft` made its per-question model calls, and
+    a `[id="x"]` selector is not tag-scoped: the element the selector resolves to
+    now can be a different KIND of element than the one that was parsed. Anything
+    that decides whether it is safe to ACT therefore has to ask the page, not the
+    snapshot. Returned as one delimited string rather than a JS array so the
+    result survives any driver that only marshals scalars.
+
+    The script is written INLINE as a plain literal, not lifted to a module
+    constant, and that is not a style choice: the ONE RULE source scan rejects
+    any `evaluate` whose first argument it cannot read as a string constant,
+    because a script it cannot read is a script that might submit the form. A
+    named constant is unreadable to it, so hoisting this string would flip the
+    guard from "the JavaScript is `el => …tagName…`" to "the JavaScript is
+    unknown" — the exact hole the rule exists for. See the two other `evaluate`
+    calls in this module; they are inline for the same reason.
+    """
+    try:
+        raw = locator.evaluate(
+            "el => (el.tagName || '') + '|' + (el.getAttribute('type') || '')",
+            timeout=timeout_ms,
+        )
+    except Exception:
+        return "", ""
+    text = str(raw or "")
+    if "|" not in text:
+        # A stub or a driver that answered with something else entirely. Not
+        # evidence about the element either way.
+        return "", ""
+    tag, _, input_type = text.partition("|")
+    return tag.strip().lower(), input_type.strip().lower()
+
+
+def _live_choice_refusal(
+    locator: Any, label: str, timeout_ms: int = DEFAULT_TIMEOUT_MS
+) -> str:
+    """`""` if the live element may be ticked, else the sentence saying why not.
+
+    Fail-OPEN on an unreadable shape and fail-CLOSED on a disagreement, and the
+    asymmetry is deliberate. A read that positively reports `<button>` or
+    `<input type="text">` is new information that contradicts the snapshot, and
+    `check()` — the one call in this module that dispatches a click — must not
+    fire on it. A read that produced nothing at all is not information; refusing
+    there would silently stop ticking radios on any driver whose `evaluate`
+    behaves unexpectedly, and it would buy nothing, because the hazard the stale
+    snapshot actually opened is an Enter keystroke and that one is refused
+    unconditionally in `_may_type_character_by_character`.
+
+    One read, not two: the message quotes what the page said, so asking twice
+    would let the answer change between the decision and the explanation.
+    """
+    tag, input_type = _live_shape(locator, timeout_ms)
+    if not tag:
+        return ""
+    if tag == "input" and input_type in ("radio", "checkbox"):
+        return ""
+    shown = f"<{tag}{f' type={input_type}' if input_type else ''}>"
+    return (
+        f"“{label}” is a {shown} on the page right now, not the radio or checkbox "
+        f"the agent read a moment ago, so nothing was ticked — choose it yourself."
+    )
+
+
 # ---------------------------------------------------------------------------
 # Writers — the only four page mutations in this package
 # ---------------------------------------------------------------------------
@@ -554,22 +667,31 @@ def _presses_enter(value: str) -> bool:
     return any(ch in _ENTER_CHARS for ch in (value or ""))
 
 
-def _may_type_character_by_character(control: Control, value: str) -> bool:
-    """Whether the attempt-2 typing strategy is safe for this control.
+def _may_type_character_by_character(value: str) -> bool:
+    """Whether the attempt-2 typing strategy is safe for `value`. Tag-blind.
 
     An Enter keypress in a text input inside a `<form>` triggers HTML's
     **implicit submission** — which would submit the application without
     anything in this module ever calling a click. That is THE ONE RULE broken by
     a keystroke, so the typing retry is refused outright for a value containing
-    any `_ENTER_CHARS` character in anything but a `<textarea>` (where Enter
-    only inserts a newline and submits nothing).
+    any `_ENTER_CHARS` character.
+
+    **This takes no `Control`, deliberately.** It used to exempt
+    `control.tag == "textarea"`, and that tag comes from the ONE DOM snapshot the
+    whole graph runs on — taken before `draft`'s per-question model calls, and
+    addressed by selectors (`[id="…"]`) that are not tag-scoped. A control the
+    snapshot called a textarea can be a live single-line `<input>` by the time
+    this runs, and `_single_locator`'s `count() == 1` cannot tell. The exemption
+    is therefore gone rather than re-checked: the only thing it ever bought was a
+    second retry strategy on textareas, and what it risked was the one
+    unrecoverable failure in Phase B. See decision 4 in the module docstring.
 
     `fill()` — attempt 1 — is unaffected: it sets the value directly and
     dispatches no key events at all, so multi-line values are filled normally.
-    (`test_a_multiline_value_is_never_typed_into_a_single_line_input`,
+    (`test_a_multiline_value_is_never_typed_character_by_character`,
     `test_every_enter_producing_character_is_refused_not_just_newline`.)
     """
-    return not _presses_enter(value) or control.tag == "textarea"
+    return not _presses_enter(value)
 
 
 def _typing_timeout(value: str, timeout_ms: int) -> int:
@@ -631,7 +753,7 @@ def _fill_text(
     actual = ""
     made = 0
     for attempt in range(1, MAX_ATTEMPTS + 1):
-        if attempt > 1 and not _may_type_character_by_character(control, value):
+        if attempt > 1 and not _may_type_character_by_character(value):
             if last_error:
                 # A real error is a more useful explanation than "we declined to
                 # retry"; fall through to the error note below.
@@ -639,10 +761,11 @@ def _fill_text(
             return _outcome(
                 answer, BLANK, "", strategy, made,
                 note=(
-                    "the field would not accept its value, and it spans several "
-                    "lines, so the agent did not retry by typing it — an Enter "
-                    "keystroke in a single-line field can submit the form. Paste "
-                    "it in yourself."
+                    f"the field would not accept its value, and it spans several "
+                    f"lines, so the agent did not retry by typing it — an Enter "
+                    f"keystroke can submit the form, and the agent will not risk "
+                    f"that on the word of a page snapshot about what kind of field "
+                    f"this is. Paste it in yourself: “{value}”."
                 ),
             )
         made = attempt
@@ -754,6 +877,11 @@ def _fill_choice_group(
     # this, a future change to how a group's members are discovered could point
     # it at a `<button role="radio">` — which a click-scanning source guard
     # would not catch, because the click is inside Playwright.
+    #
+    # This is the SNAPSHOT half of that check: cheap, and it refuses before a
+    # locator is even requested. It is not sufficient on its own — see the live
+    # half below — but it is not redundant either: it is the only one that runs
+    # when the control has no unique selector to address at all.
     if target.tag != "input" or target.input_type not in ("radio", "checkbox"):
         return _outcome(
             answer, BLANK, "", "", 0,
@@ -774,6 +902,12 @@ def _fill_choice_group(
     refusal = _gate(target, locator, timeout_ms)
     if refusal:
         return _outcome(answer, BLANK, "", "", 0, note=refusal)
+    # The LIVE half. The `target.tag` above came from a snapshot taken before the
+    # drafting model calls, and `[id="…"]` matches any tag, so `count() == 1` is
+    # no evidence that the element still IS a radio. Decision 5.
+    live_refusal = _live_choice_refusal(locator, target.label, timeout_ms)
+    if live_refusal:
+        return _outcome(answer, BLANK, "", "", 0, note=live_refusal)
     try:
         locator.check(timeout=timeout_ms)
     except Exception as exc:
@@ -849,6 +983,13 @@ def fill_one(
     a snapshot from `PageLocator.controls`, passed in rather than re-read so that
     every field in one pass acts on ONE DOM snapshot — the same correctness
     property `PageLocator` documents.
+
+    That snapshot is a description of the page as it was BEFORE `draft` made its
+    per-question model calls, and it is trusted for *matching* (which control
+    answers which question) and never for *safety*. The two safety decisions that
+    used to read `Control.tag` no longer do: the typing retry refuses a newline
+    whatever the tag claims (decision 4), and the one clicking call re-reads the
+    tag off the live page (decision 5).
     """
     if not is_typeable(answer):
         return _refusal_outcome(answer)
@@ -1126,7 +1267,9 @@ def fill_form(
     `page_locator` is a `locate_dom.PageLocator`. Its `controls` snapshot is read
     ONCE and reused for the whole pass: re-reading mid-pass would mean acting on
     selectors from one DOM using questions from another, which is the bug
-    `PageLocator` already documents for `questions()`.
+    `PageLocator` already documents for `questions()`. That is a rule about
+    *matching*, and it says nothing about trusting the snapshot's word on whether
+    an action is SAFE — see `fill_one` and decisions 4 and 5.
 
     The résumé goes last because Greenhouse and Lever run a parse-and-prefill on
     upload that overwrites already-filled fields. That ordering is pinned by

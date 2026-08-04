@@ -1,9 +1,19 @@
 """Fetch node — open the application form in a visible browser and read it.
 
-The only node in the graph that touches a browser. It opens Task 1's headed,
+The node that OPENS the browser, and the only one that navigates. (`fill` drives
+the same live page afterwards and `session` reads it later; "the only node that
+touches a browser" was this docstring's own overclaim.) It opens Task 1's headed,
 persistent Chromium, navigates to the posting's application URL, waits for a
 form control to exist, and hands the rest of the graph a `PageLocator` over
 that one DOM snapshot.
+
+**Where the URL is allowed to come from.** That Chromium runs on a persistent
+profile holding the user's live ATS session cookies, so the URL this node opens
+is a security boundary, not a parameter. A posting's own scraped `url` is
+trusted (it came from her saved jobs, and is routinely a company redirector that
+must keep working); a caller-supplied `state["form_url"]` override is not, and
+has to pass `override_refusal` — http(s), on a recognised ATS host — before any
+browser call happens at all. See `override_refusal`.
 
 Failure is LOUD, never silent. Playwright missing, Chromium missing, a URL that
 will not load, a page with no form on it at all — each sets `error` plus a
@@ -25,6 +35,7 @@ from __future__ import annotations
 from urllib.parse import urlsplit
 
 from agents.job_applier import browser
+from agents.job_applier.confirm import identify_ats
 from agents.job_applier.locate_dom import PageLocator
 
 #: Navigation budget. Generous compared with the executor's 5s per-field
@@ -53,13 +64,74 @@ _APPLY_PATH = {
 }
 
 
+#: Schemes this agent will navigate to. `file:`, `data:`, `javascript:` and
+#: `chrome-extension:` are all things a URL string can start with and none of
+#: them is a job application; `javascript:` in particular executes in whatever
+#: page is open, which is a filled form.
+_ALLOWED_SCHEMES = frozenset({"http", "https"})
+
+
+def override_refusal(override: str) -> str:
+    """`""` if `override` is a URL this agent may open, else why not. PURE.
+
+    The browser this URL is handed to is **headed, persistent and carrying the
+    user's live ATS session cookies** (`browser.PROFILE_DIR`). So "navigate
+    wherever the caller said" is not a neutral instruction: it points an
+    authenticated browser at an attacker-chosen origin, and the agent then reads
+    the page and types profile values into whatever looks like a form on it.
+    A caller-supplied URL therefore has to earn the navigation.
+
+    Two conditions, and they are the minimum rather than a judgement call:
+
+      1. **`http`/`https` only.**
+      2. **A recognised ATS host**, via `confirm.identify_ats` — the SAME
+         dot-boundary suffix match the confirmation detector uses, deliberately
+         reused rather than re-implemented. Two copies of "which hosts are a real
+         job board" drift, and the one that drifts is whichever is not the one
+         being read at the time. It is also strictly wider than `_APPLY_PATH`'s
+         table (which only knows the two hosts that need a path suffix appended),
+         so Greenhouse and every regional host still work.
+
+    Note the asymmetry with the NON-override path, which is deliberate: a scraped
+    `job["url"]` is routinely a company's own careers-site redirector
+    (`databricks.com/company/careers/...?gh_jid=`) and must keep working. That
+    URL came from the scraper, out of the user's own saved postings; an override
+    comes from whoever made the request.
+    """
+    raw = (override or "").strip()
+    if not raw:
+        return ""
+    scheme = urlsplit(raw).scheme.lower()
+    if scheme not in _ALLOWED_SCHEMES:
+        return (
+            f"The form URL given to the agent is not an http(s) address "
+            f"(“{raw[:120]}”), so nothing was opened and nothing was filled in."
+        )
+    if not identify_ats(raw):
+        return (
+            f"The form URL given to the agent is not on a job board this agent "
+            f"knows (greenhouse.io / lever.co / ashbyhq.com): “{raw[:120]}”. The "
+            f"browser it would open carries your saved ATS logins, so it does not "
+            f"follow a URL from somewhere else. Nothing was opened."
+        )
+    return ""
+
+
 def apply_url(job: dict, override: str = "") -> str:
     """The URL to open for `job` — pure, so it is testable without a browser.
 
-    `override` (the caller's `state["form_url"]`) always wins: it is the escape
-    hatch for a posting whose saved URL is a redirector.
+    `override` (the caller's `state["form_url"]`) wins over the posting's own
+    URL, because it is the escape hatch for a posting whose saved URL is a
+    redirector — but only if `override_refusal` passes it. A refused override
+    yields `""`, i.e. "there is nothing to open", and never silently falls back
+    to the posting's URL: opening a *different* page than the caller asked for is
+    its own kind of wrong. The node checks `override_refusal` first so the user
+    gets the specific reason; this check is the backstop that makes the refusal
+    structural rather than a convention every future caller has to remember.
     """
     if (override or "").strip():
+        if override_refusal(override):
+            return ""
         return override.strip()
     url = str((job or {}).get("url") or "").strip()
     if not url:
@@ -90,6 +162,14 @@ def _unavailable_message() -> str:
 
 def fetch_form_node(state: dict) -> dict:
     job = state.get("job") or {}
+
+    # FIRST, before `is_available()` and long before `launch_context()`: a refused
+    # override must cost zero browser calls, so that "the agent never navigated
+    # there" is provable by the absence of a call rather than by reading the
+    # ordering of the code below.
+    refusal = override_refusal(state.get("form_url") or "")
+    if refusal:
+        return {"error": "bad_form_url", "message": refusal}
 
     if not browser.is_available():
         return {"error": "no_browser", "message": _unavailable_message()}

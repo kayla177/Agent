@@ -37,7 +37,7 @@ import re
 import pytest
 
 import profile_store
-from agents.job_applier import browser, drafting, resolver
+from agents.job_applier import browser, confirm, drafting, resolver
 from agents.job_applier import graph as graph_mod
 from agents.job_applier.graph import (
     NODE_ORDER,
@@ -1054,11 +1054,85 @@ def test_a_company_redirector_url_is_never_rewritten():
 
 
 def test_an_explicit_form_url_wins_and_is_what_the_graph_opens(board, resume):
-    state, page, _ = board(
-        "lever", resume_path=resume, form_url="https://example.invalid/custom/apply"
-    )
-    assert page.visited == ["https://example.invalid/custom/apply"]
-    assert state["form_url"] == "https://example.invalid/custom/apply"
+    """The escape hatch still works — for a URL on a real board.
+
+    The override used to be `https://example.invalid/custom/apply`, which now gets
+    refused: an override is caller-supplied and the browser it opens carries her
+    live ATS cookies, so it has to be on a recognised board
+    (`fetch_form.override_refusal`). The property under test is unchanged — an
+    override beats the posting's own URL and is what gets navigated to — and it is
+    still a URL the per-board suffix logic would never have produced on its own.
+    """
+    override = "https://jobs.lever.co/palantir/some-other-id/apply?utm=x"
+    state, page, _ = board("lever", resume_path=resume, form_url=override)
+    assert page.visited == [override]
+    assert state["form_url"] == override
+
+
+def test_a_form_url_override_off_the_known_boards_opens_no_browser_at_all(board, resume):
+    """The hole this closes, end to end, asserted by ABSENCE OF A CALL.
+
+    `state["form_url"]` was returned by `apply_url` after nothing more than
+    `.strip()` — no scheme check, no host check. The browser it feeds is headed
+    and runs on a PERSISTENT profile holding her live Greenhouse/Lever/Ashby
+    session cookies, so an arbitrary override points an authenticated browser at
+    an origin of the caller's choosing, which the agent then reads and types
+    profile values into.
+
+    Asserted on `page.visited` being empty rather than on the error string,
+    because "it reported an error" and "it never navigated" are different facts
+    and only the second one is the safety property. The run still ends in a
+    handoff that says nothing was submitted.
+    """
+    for hostile in (
+        "https://evil.example.invalid/collect",
+        "https://jobs.lever.co.attacker.invalid/x/apply",   # suffix lookalike
+        "file:///Users/somebody/.ssh/id_rsa",
+        "javascript:document.forms[0].submit()",
+        "http://127.0.0.1:8001/data/profile",
+    ):
+        state, page, _ = board("lever", resume_path=resume, form_url=hostile)
+        assert page.visited == [], f"the browser navigated to {hostile!r}"
+        assert state["error"] == "bad_form_url", hostile
+        assert state["report"].submitted is False
+        assert NOT_SUBMITTED_HEADLINE in state["message"]
+
+
+def test_the_override_host_check_reuses_the_confirmation_detectors_own_table():
+    """One table of "which hosts are a real job board", not two.
+
+    `confirm.identify_ats` already does dot-boundary suffix matching for all
+    three boards, including regional hosts (`jobs.eu.lever.co`,
+    `job-boards.eu.greenhouse.io`). `_APPLY_PATH` is NOT that table — it knows
+    only the two hosts that need a path suffix appended — so validating against it
+    would have refused every Greenhouse URL. Asserted by identity of behaviour so
+    a second hardcoded host list cannot appear without this failing.
+    """
+    for url in ("https://job-boards.greenhouse.io/cf/jobs/1",
+                "https://job-boards.eu.greenhouse.io/cf/jobs/1",
+                "https://jobs.eu.lever.co/acme/1/apply",
+                "https://jobs.ashbyhq.com/snowflake/41e6/application"):
+        assert fetch_form_mod.override_refusal(url) == "", url
+        assert confirm.identify_ats(url)
+    for url in ("https://acme.invalid/careers/1", "https://greenhouse.io.evil.invalid/x"):
+        assert fetch_form_mod.override_refusal(url), url
+        assert not confirm.identify_ats(url)
+    # Empty is not a refusal — it means "no override", the overwhelmingly common
+    # case, and it must not turn every ordinary run into an error.
+    assert fetch_form_mod.override_refusal("") == ""
+    assert fetch_form_mod.override_refusal("   ") == ""
+
+
+def test_a_refused_override_never_falls_back_to_the_postings_own_url():
+    """`apply_url`'s backstop, pure. A refused override yields `""`, not the
+    posting's URL: the caller asked for a specific page, and quietly opening a
+    DIFFERENT one — then filling her profile into it — is its own kind of wrong.
+    The node checks `override_refusal` first so she gets the real reason; this is
+    what makes the refusal structural rather than a convention every future
+    caller has to remember."""
+    job = {"ats": "lever", "url": "https://jobs.lever.co/palantir/395a4483"}
+    assert fetch_form_mod.apply_url(job, "https://evil.example.invalid/x") == ""
+    assert fetch_form_mod.apply_url(job) == job["url"] + "/apply"
 
 
 # ===========================================================================

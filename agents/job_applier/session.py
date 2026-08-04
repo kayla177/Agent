@@ -45,8 +45,17 @@ That matters here for two separate reasons:
 
      (This is a real hazard for the generic path, not a hypothetical: any agent
      holding a thread-affine object across two sync nodes has it. The applier is
-     the only agent that does, and it now avoids the generic driver entirely —
-     `server/runner.py` is deliberately left alone.)
+     the only agent that does.
+
+     This paragraph used to say the applier "now avoids the generic driver
+     entirely". That was true of every route the UI offers and false of the API:
+     `POST /agents/job_applier/run` looked up the applier's spec like any other
+     agent and handed it to `runner.start_run`, i.e. to exactly the pooled
+     `astream` driver described above — and, with a JSON body, seeded its state
+     too. It is now a **refusal** rather than a convention: `_WRONG_ENTRY_POINT`
+     in `server/routers/runs.py` returns 409 for this agent key before a `runs`
+     row is created, and says which endpoint to use. `server/runner.py` itself is
+     still deliberately left alone.)
 
 The worker is a plain `Thread` draining a `Queue` rather than a
 `ThreadPoolExecutor`, for two reasons: a pool's `max_workers=1` is a

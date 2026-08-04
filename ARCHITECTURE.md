@@ -106,7 +106,13 @@ greenlet switch), while `astream` runs sync nodes in the event loop's default ex
 owned by `agents/job_applier/session.py`, which also parks the finished run's browser window
 so the later confirmation read happens on the same thread. Run bookkeeping is byte-identical
 (`runs` row, `node_events`, the same events published to `runner.manager`), so `RunStream` and
-`/runs/{id}/events` cannot tell the difference. The generic driver is untouched.
+`/runs/{id}/events` cannot tell the difference. `server/runner.py` itself is untouched — but
+"untouched" was doing double duty here and one half of it was wrong: step 1 is not merely
+*bypassed* for this agent, it is **refused**. `POST /agents/job_applier/run` used to resolve
+the applier's spec like any other agent and hand it to the pooled `astream` driver (and, with
+a JSON body, seed its state — including the `form_url` a cookie-carrying browser would
+navigate to). It now returns 409 with a pointer to `POST /data/jobs/assisted-apply`, before a
+`runs` row exists. The only correct entry point is that one.
 
 The job scraper's pipeline is a linear chain: `fetch → filter → dedupe → backfill →
 freshness → rank → notify`. It also accepts a `backfill` input flag (set via

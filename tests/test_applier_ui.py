@@ -46,7 +46,9 @@ from agents.job_applier import session  # noqa: E402
 from agents.job_applier.nodes import handoff as handoff_mod  # noqa: E402
 from agents.job_applier.nodes.load_profile import SUPPORTED_ATS  # noqa: E402
 from agents.job_scraper import store as jobstore  # noqa: E402
+from agents.registry import REGISTRY  # noqa: E402
 from server import applier_run, resume_pdf  # noqa: E402
+from server.routers import runs as runs_router  # noqa: E402
 
 # The canonical ONE-RULE guard, imported rather than re-implemented: a second copy
 # would drift, and the point is that these files are held to the SAME rules as the
@@ -684,6 +686,49 @@ def test_assisted_apply_starts_a_run_and_records_no_application(client, monkeypa
     assert started == [(_GREENHOUSE_JOB["id"], "")]
     assert appstore.load_all() == [], "nothing is applied until the human says so"
     assert jobstore.load_records()[_GREENHOUSE_JOB["id"]]["status"] == "new"
+
+
+def test_the_generic_run_endpoint_refuses_the_applier_and_says_where_to_go(client):
+    """The other door into this agent, closed.
+
+    `POST /agents/{key}/run` resolved the applier's spec like any other agent and
+    handed it to `runner.start_run`, i.e. to the pooled `astream` driver that
+    `agents/job_applier/session.py` documents as a hard cross-thread failure for
+    a graph holding a live Playwright context. Three separate things were wrong
+    with that, and only the first is a crash:
+
+      * `greenlet.error` when `fill` touches a browser `fetch_form` opened on a
+        different pool worker;
+      * nothing registers the run in `session._SESSIONS`, so the window it leaves
+        open can never be closed by `/data/jobs/assisted-apply/close`;
+      * a JSON body on this route is passed straight through as the graph's
+        initial state, which for this agent includes `form_url` — the URL a
+        browser carrying her live ATS cookies navigates to.
+
+    409, not 400: the request is well-formed, it is the entry point that is
+    wrong, and the message has to say which one is right or this is just a wall.
+    """
+    for body in (None, {"input": {"job_id": "Palantir:lever:1"}},
+                 {"input": {"form_url": "https://evil.example.invalid/collect"}}):
+        res = client.post("/agents/job_applier/run",
+                          **({} if body is None else {"json": body}))
+        assert res.status_code == 409, body
+        error = res.json()["error"]
+        assert "/data/jobs/assisted-apply" in error
+        assert "run_id" not in res.json(), "a refused request must not create a run"
+    # Not a blanket refusal of the endpoint: every other agent still starts here,
+    # which is what makes the test above about `job_applier` and not about routing.
+    assert set(runs_router._WRONG_ENTRY_POINT) == {"job_applier"}
+    assert "job_applier" in REGISTRY, "the key has to be real for the refusal to bite"
+
+
+def test_the_refused_run_leaves_no_row_in_the_runs_table(client, run_db):
+    """The refusal happens before `db.create_run`, so a rejected call is not
+    visible in the run history at all — a run row with no driver behind it shows
+    up in the UI as an agent that started and never finished."""
+    before = run_db.latest_run("job_applier")
+    assert client.post("/agents/job_applier/run").status_code == 409
+    assert run_db.latest_run("job_applier") == before
 
 
 def test_assisted_apply_refuses_a_board_the_agent_cannot_read(client, monkeypatch):
