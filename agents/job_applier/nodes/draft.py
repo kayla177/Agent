@@ -16,12 +16,16 @@ per caller:
 
 The resolver blanks every `free_text` question with the note "free-text answer
 left for the AI drafting step, which marks its output as AI-drafted for you to
-review". Drafting then DECLINES some of those: on the captured Lever form it
-declines four, including both video prompts, where the box wants a YouTube URL
-rather than prose and drafting's own note ("this box reads as a request for a
-video or audio recording") is the true and useful one. If the merge kept the
-resolver's answer whenever drafting came back blank, the handoff would promise
-the user a draft that is never coming, on four fields of one real form.
+review". Drafting then DECLINES some of those: MEASURED on the captured Lever
+form, 7 of its questions are free-text and it declines **five** of them (this
+paragraph said four). Both video prompts are among them, where the box wants a
+YouTube URL rather than prose and drafting's own note ("this box reads as a
+request for a video or audio recording") is the true and useful one; the other
+three are ungroundable in the profile ("Give us three numbers that describe
+you", "something you know an unreasonable amount about", "Additional
+information"). If the merge kept the resolver's answer whenever drafting came
+back blank, the handoff would promise the user a draft that is never coming, on
+five fields of one real form.
 
 THE ONE RULE for all of Phase B: no code path may ever click a submit button.
 This module writes no browser code at all.

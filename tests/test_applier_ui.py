@@ -965,6 +965,45 @@ def _ts_object_keys(source: str, name: str) -> list[str]:
     return re.findall(r"^\s*([A-Za-z_][A-Za-z0-9_]*)\s*:", match.group(1), re.M)
 
 
+def _ts_type_keys(source: str, name: str) -> list[str]:
+    """Field names of an `export type Name = { … };` literal, comments ignored."""
+    match = re.search(rf"export type {name} = \{{(.*?)\n\}};", source, re.S)
+    assert match, f"type {name} not found"
+    body = re.sub(r"//[^\n]*", "", match.group(1))
+    return re.findall(r"^\s*([A-Za-z_][A-Za-z0-9_]*)\s*:", body, re.M)
+
+
+def test_the_ui_handoff_item_type_carries_every_field_the_report_emits():
+    """The two field lists are in two languages, so the mirror needs a test.
+
+    A Python field with no TS counterpart is a signal the UI cannot see — which
+    is exactly how `label_source` would have been added: the payload would carry
+    it, `tsc` would be perfectly happy, and the "LABEL UNVERIFIED" warning would
+    simply never render. Enumerated from the dataclass rather than listed by hand,
+    so the NEXT field is covered without anyone remembering to come back here.
+    """
+    import dataclasses
+
+    python_fields = [f.name for f in dataclasses.fields(handoff_mod.ReportItem)]
+    assert "label_source" in python_fields, "the field this test was added for"
+    assert set(_ts_type_keys(JOBS_LIB_SOURCE, "HandoffItem")) == set(python_fields)
+
+
+def test_the_ui_handoff_report_type_carries_every_computed_field_too():
+    """Same mirror for the report-level payload, which is the dataclass PLUS the
+    computed fields `report_payload` adds — `required_caveat` among them, and a
+    caveat the UI does not know about is a caveat that is never shown."""
+    import dataclasses
+
+    stored = [f.name for f in dataclasses.fields(handoff_mod.HandoffReport)]
+    computed = ["headline", "instruction", "summary_line", "required_caveat",
+                "counts", "needs_you", "total"]
+    # `required_unknown` is the raw count behind `required_caveat`; the UI renders
+    # the sentence, not the number, so it is deliberately not in the TS type.
+    expected = (set(stored) | set(computed)) - {"required_unknown"}
+    assert set(_ts_type_keys(JOBS_LIB_SOURCE, "HandoffReport")) == expected
+
+
 def test_the_boards_the_ui_offers_autofill_for_are_the_ones_the_agent_supports():
     """A fourth board in the UI would be a button that always errors at
     `load_profile`'s first gate; a missing one hides a working feature. The lists

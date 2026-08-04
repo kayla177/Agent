@@ -482,10 +482,13 @@ def _refusal_note(plan: _Plan) -> str:
 _PROMPT_PROFILE_FIELDS: tuple[str, ...] = ("summary", "school", "degree", "grad_date")
 
 # Character caps. The local model's context is pinned at `config.OLLAMA_NUM_CTX`
-# (32768 tokens); these caps keep the worst-case prompt an order of magnitude
-# inside it, so nothing is ever silently truncated by the server instead of
-# visibly truncated here. `test_the_worst_case_prompt_fits_the_pinned_context`
-# does the arithmetic against the real config value.
+# (32768 tokens); these caps keep the worst-case prompt COMFORTABLY inside it —
+# `test_the_worst_case_prompt_fits_the_pinned_context` pins the ratio at > 2.5x
+# and measures 2.58x — so nothing is ever silently truncated by the server
+# instead of visibly truncated here. Not "an order of magnitude", which this
+# comment claimed, and not the "4x" a still earlier version claimed: the test
+# does the arithmetic against the real config value and the prose now matches
+# the number the test actually asserts.
 _CAP_LABEL = 1200
 _CAP_DESCRIPTION = 6000
 _CAP_RESEARCH = 2000

@@ -56,10 +56,12 @@ Concretely, a stamp requires ALL FOUR of:
      re-render saying "your application was not submitted" contains the word
      "submitted"; the negation has to be looked for explicitly.
   4. **No résumé/file-upload control left on the page.** A confirmation page
-     does not ask for the résumé again; all three real form fixtures do have a
-     `type="file"` input (3 / 2 / 1 respectively). This is the structural half
-     of the check: it distinguishes "the form is gone" from "the form is still
-     here with encouraging words on it".
+     does not ask for the résumé again; all three real form fixtures do have at
+     least one `type="file"` input. MEASURED, per board, because an earlier
+     "(3 / 2 / 1 respectively)" here mapped every number to the wrong board:
+     **greenhouse 2, lever 1, ashby 3**. This is the structural half of the
+     check: it distinguishes "the form is gone" from "the form is still here
+     with encouraging words on it".
 
 The URL is read, recorded, and NOT allowed to decide anything on its own — see
 `AtsMarkers.url_paths` for why.
@@ -121,9 +123,17 @@ class AtsMarkers:
 
 
 #: Phrases every board is checked for. Each one asserts a *completed* action;
-#: none of them appears in any of the three captured apply-form fixtures
-#: (`test_no_real_apply_form_is_read_as_a_confirmation` measures that, rather
-#: than this comment asserting it).
+#: none of them appears in any of the three captured apply-form fixtures.
+#:
+#: MEASURED by `test_no_completion_phrase_appears_in_any_real_form`, which
+#: compares the phrase lists against each form's visible text DIRECTLY. This
+#: comment used to cite `test_no_real_apply_form_is_read_as_a_confirmation`
+#: instead, which does not measure it: that test asserts `confirmed is False`, the
+#: whole four-condition conjunction, and the conditions are checked in order of
+#: cost. Adding "clearance confirmation" — which IS in Lever's visible text, from
+#: its "AU Clearance Confirmation" question card — left it green, because the
+#: file-input gate refuses the page before the phrase list is reached. A citation
+#: to a test that cannot fail on the claim is worse than no citation.
 _COMPLETED = (
     "thank you for applying",
     "thanks for applying",

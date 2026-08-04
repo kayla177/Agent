@@ -86,9 +86,10 @@ def report_payload(run_id: int) -> dict | None:
     The report is handed over as **data**, not as the rendered text: the UI groups
     and orders the items itself, and a UI that had to parse `render_text()` would
     break the first time a heading was reworded. `dataclasses.asdict` covers the
-    stored fields; the four computed ones are added explicitly, because a
-    consumer must not have to re-derive "how many of these need me" or reword the
-    "nothing was submitted" headline for itself.
+    stored fields; the SEVEN computed ones below are added explicitly, because a
+    consumer must not have to re-derive "how many of these need me", reword the
+    "nothing was submitted" headline, or reconstruct the caveat that says the
+    required-and-empty list may be incomplete.
     """
     report = _REPORTS.get(int(run_id))
     if report is None:
@@ -101,6 +102,10 @@ def report_payload(run_id: int) -> dict | None:
     payload["headline"] = report.headline()
     payload["instruction"] = report.instruction()
     payload["summary_line"] = report.summary_line()
+    # `""` when every question's required-ness was positively established. The UI
+    # renders it only when non-empty, so an honest report and a fully-determined
+    # one look the same — which they should.
+    payload["required_caveat"] = report.required_caveat()
     payload["counts"] = report.counts()
     payload["needs_you"] = len(report.needs_you)
     payload["total"] = report.total

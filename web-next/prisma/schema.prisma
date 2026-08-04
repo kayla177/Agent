@@ -1,3 +1,24 @@
+// MIRROR ONLY. The root `schema.sql` is the source of truth and this file is
+// derived from it (`npx prisma db pull` against a DB built from schema.sql);
+// `npm run db:check` fails the build if the two disagree.
+//
+// DEPLOYMENT ORDERING when a column is added here — the one rule, and it is the
+// reverse of the Prisma-shaped instinct:
+//
+//   Run the PYTHON migration against the live DB BEFORE the regenerated client
+//   serves a read of the new column.
+//
+// `npx prisma generate` only rewrites a TypeScript client; it does not touch the
+// database. The only thing that ALTERs an existing `data/control_center.db` is
+// `store_db.py:_migrate`, which runs from `init_db()` — i.e. when a Python
+// process starts (server/, scripts/run.py, a launchd agent). Regenerate first
+// and restart Next.js, and every request to the applications page 500s with
+// `no such column: <name>` until some Python process happens to run. It does
+// self-heal (the jobscraper calls `init_db()` on schedule and `_migrate` is
+// additive and idempotent), but the fix costs nothing: restart the FastAPI
+// service, or `.venv/bin/python -c "import store_db; store_db.init_db()"`, and
+// only then rebuild the Next side. `confirmed_at` below is the column this was
+// learned on.
 generator client {
   provider = "prisma-client-js"
 }

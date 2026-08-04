@@ -4,6 +4,7 @@ import RunStream from "@/components/dashboard/RunStream";
 import {
   supportsAutofill, autofillUnavailableNote, verificationLine,
   HANDOFF_GROUPS, HANDOFF_GROUP_LABEL, handoffGroup, handoffReasonTag,
+  labelIsUnverified,
   type HandoffGroup, type HandoffItem, type HandoffReport, type Verification,
 } from "@/lib/jobs";
 
@@ -459,6 +460,11 @@ function Handoff({ report }: { report: HandoffReport }) {
       ) : null}
       <p className="handoff-headline">{report.headline}</p>
       <p>{report.summary_line}</p>
+      {/* Directly under the count it qualifies — a caveat below the checklist
+          would leave the number standing unqualified where she reads it. */}
+      {report.required_caveat ? (
+        <p className="muted small">{report.required_caveat}</p>
+      ) : null}
       {report.resume_note ? <p className="muted small">Résumé: {report.resume_note}</p> : null}
       <p className="muted small">{report.instruction}</p>
       {report.form_url ? (
@@ -505,8 +511,21 @@ function HandoffLine({ item, group }: { item: HandoffItem; group: HandoffGroup }
       <div className="handoff-label">
         {item.label || NO_LABEL}
         {item.required ? <span className="handoff-tag req">required</span> : null}
+        {labelIsUnverified(item) ? (
+          <span className="handoff-tag req">LABEL UNVERIFIED</span>
+        ) : null}
         <span className="handoff-tag">{handoffReasonTag(item)}</span>
       </div>
+      {/* The title of this row is a placeholder or a field name, so everything
+          else on it was decided by classifying that string as a question. */}
+      {labelIsUnverified(item) ? (
+        <div className="muted small">
+          the agent could not read a label for this field, so “{item.label}” is only
+          the {item.label_source} of the box, not the question. Anything else on this
+          row was decided from that text and may be wrong about what the field is
+          asking — find it on the page and read it yourself.
+        </div>
+      ) : null}
       {compact ? (
         item.value || item.intended ? (
           <div className="muted small">{excerpt(item.value || item.intended, 60)}</div>

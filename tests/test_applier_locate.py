@@ -176,6 +176,57 @@ def test_submit_and_hidden_controls_are_never_discovered(board, controls):
         assert control.name != "g-recaptcha-response"
 
 
+def test_the_recaptcha_rule_is_exercised_by_two_of_three_fixtures_not_three():
+    """`_MACHINE_NAMES`'s comment claimed `g-recaptcha-response` was "present in
+    all three captured fixtures". MEASURED: greenhouse 3 occurrences, ashby 3,
+    **Lever none**.
+
+    That matters for what the rule's evidence is, not for whether it is right: on
+    Lever the rule is untested by any fixture, so `test_submit_and_hidden_controls
+    _are_never_discovered` passing for Lever says nothing about it. A comment that
+    overstates its own coverage is how the untested third gets assumed covered.
+    """
+    counts = {b: _html(b).count("g-recaptcha-response") for b in BOARDS}
+    assert counts == {"greenhouse": 3, "lever": 0, "ashby": 3}
+    source = pathlib.Path(locate_dom.__file__).read_text()
+    assert "LEVER NONE" in source
+    # And the rule is genuinely load-bearing on the two that DO ship it: without
+    # `_MACHINE_NAMES` the hidden textarea would be discovered as a question.
+    html = '<textarea name="g-recaptcha-response"></textarea>'
+    assert parse_controls(html) == []
+    assert locate_dom._MACHINE_NAMES == frozenset({"g-recaptcha-response"})
+
+
+def test_the_page_locator_is_described_by_what_it_does_not_by_a_wrong_length():
+    """Decision 6 called `PageLocator` a "~25-line shim". It is 93 lines and eight
+    public accessors — and the claim worth making was never about its length: it is
+    that NONE of those accessors parses anything, which is what keeps the whole
+    matching story testable against saved fixtures with no browser.
+
+    So this asserts the property instead of policing a number: every public
+    accessor delegates, and the module-level pure functions are where the parsing
+    lives.
+    """
+    accessors = {n for n in vars(locate_dom.PageLocator) if not n.startswith("_")}
+    assert accessors == {
+        "controls", "html", "questions", "refresh", "unreadable", "withheld_eeo",
+        "locator_for_label", "locator_for_key",
+    }
+    tree = _strip_docstrings(ast.parse(pathlib.Path(locate_dom.__file__).read_text()))
+    cls = next(n for n in ast.walk(tree)
+               if isinstance(n, ast.ClassDef) and n.name == "PageLocator")
+    # No parsing in the class: `parse_controls` / `_questions_from` are CALLED, and
+    # nothing in here touches the HTML parser or the label/required helpers.
+    called = {n.func.id for n in ast.walk(cls)
+              if isinstance(n, ast.Call) and isinstance(n.func, ast.Name)}
+    assert called <= {"parse_controls", "_questions_from", "_answerable",
+                      "_unreadable", "_eeo_withheld", "find_selector", "find_by_key",
+                      "str", "list"}
+    assert "_derive_label" not in called and "_required_of" not in called
+    source = pathlib.Path(locate_dom.__file__).read_text()
+    assert "93 lines and eight accessors" in source
+
+
 def test_submit_input_with_a_label_is_still_not_discovered():
     html = """
     <label for="go">Submit Application</label>

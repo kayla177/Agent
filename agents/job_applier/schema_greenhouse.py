@@ -172,6 +172,35 @@ class Question:
     kind: str  # "text" | "textarea" | "file" | "select" | "checkbox"
     options: list[str] = field(default_factory=list)
     section: str = ""
+    #: HOW `required` was established, or `""` for "nothing on the page said
+    #: either way". Added additively for the same reason `section` was, and for a
+    #: reason that is a correctness one rather than a convenience: `required=False`
+    #: is TWO different facts wearing one boolean — "the page says this is
+    #: optional" and "the page did not say". `locate_dom._required_of` already
+    #: distinguishes them and returns the signal (`required-attr`,
+    #: `aria-required`, `group-aria-required`, `label-marker`), but `Question` had
+    #: nowhere to put it, so the handoff was structurally unable to hedge a
+    #: signal the parser knew was incomplete.
+    #:
+    #: MEASURED on the captured Ashby fixture: 13 of its question labels carry
+    #: Ashby's CSS-only required marker (a build-hashed `_required_<hash>` class)
+    #: and `_required_of` can flag 5, because the other 8 are yes/no button
+    #: widgets whose hidden `<input>` carries no `required` attribute. So eight
+    #: required questions — including the sponsorship question, the
+    #: work-authorization question and the citizenship one — were reported to the
+    #: user in the band headed "the agent put something here, or could not",
+    #: under a summary line telling her exactly how many fields would stop the
+    #: form submitting. This field is what lets the report stop asserting that.
+    required_source: str = ""
+    #: WHICH tier of `locate_dom.LABEL_SOURCES` produced `label`, or `""` when the
+    #: question did not come from a DOM parse. A label from `placeholder` or
+    #: `name` (`locate_dom.WEAK_LABEL_SOURCES`) is not a label: Ashby's required
+    #: Location combobox has no `id` and no `name`, its `<label for=…>` dangles,
+    #: and the winning tier is its placeholder — so the question reaches the user
+    #: as "Start typing...", with a note saying it is "not derivable from a typed
+    #: profile field" about a value her profile does hold. The report cannot
+    #: repair that, but it can stop presenting it as a real question.
+    label_source: str = ""
 
 
 def _slugify(label: str) -> str:
@@ -239,6 +268,15 @@ def _build_question(q: dict) -> Question | None:
         required=_truthy(q.get("required", False)),
         kind=kind,
         options=options,
+        # Greenhouse's JSON states required-ness per question as an explicit
+        # boolean, so BOTH values of it are known here — `required=False` from
+        # this payload means "the board says optional", not "nobody said". That is
+        # exactly the distinction `required_source` exists to carry, so it is set
+        # for every question and not only for the required ones.
+        required_source="schema",
+        # And the label came from the payload's own `label` key, which is a real
+        # label by construction — never a placeholder or a field name.
+        label_source="schema",
     )
 
 

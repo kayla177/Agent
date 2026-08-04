@@ -106,6 +106,29 @@ def test_the_confirmation_fixtures_are_labelled_synthetic(board):
     assert "NEVER BEEN COMPARED AGAINST A REAL" in text.upper()
 
 
+def test_the_file_input_counts_the_module_docstring_cites_are_the_real_ones():
+    """Condition 4's numbers, measured instead of remembered.
+
+    The docstring said "(3 / 2 / 1 respectively)" for a list written
+    greenhouse-lever-ashby, and every one of the three mapped to the wrong board:
+    it is greenhouse 2, lever 1, ashby 3. Wrong numbers in a docstring are not
+    cosmetic here — the whole reason condition 4 is defensible is that it does not
+    fire on a real form, and a reader checking that claim against the fixtures
+    would have concluded the code was broken.
+    """
+    counts = {b: len(confirm._FILE_INPUT_RE.findall(form_html(b))) for b in BOARDS}
+    assert counts == {"greenhouse": 2, "lever": 1, "ashby": 3}
+    # The claim the numbers support: every board has at least one, so condition 4
+    # is what refuses each captured form and not an accident of the phrase list.
+    assert all(n >= 1 for n in counts.values())
+    source = pathlib.Path(confirm.__file__).read_text()
+    # The corrected wording is present. Not asserted as the ABSENCE of the old
+    # one: the docstring deliberately quotes "(3 / 2 / 1 respectively)" to say what
+    # it got wrong, and a reader who finds only the fix learns less than one who
+    # finds the correction.
+    assert "greenhouse 2, lever 1, ashby 3" in source
+
+
 def test_the_apply_form_fixtures_really_do_carry_confirmation_shaped_strings():
     """The measured basis for reading VISIBLE TEXT instead of raw HTML.
 
@@ -126,10 +149,48 @@ def test_the_apply_form_fixtures_really_do_carry_confirmation_shaped_strings():
 # ---------------------------------------------------------------------------
 @pytest.mark.parametrize("board", BOARDS)
 def test_no_real_apply_form_is_read_as_a_confirmation(board):
-    """A captured, UNSUBMITTED apply form must never be stamped."""
+    """A captured, UNSUBMITTED apply form must never be stamped.
+
+    `confirmed is False` is the FOUR-condition conjunction, so this test alone
+    does not measure which condition did the work — see
+    `test_no_completion_phrase_appears_in_any_real_form` for the one
+    `confirm.py`'s comment actually claims.
+    """
     result = detect_confirmation(form_html(board), FORM_URLS[board])
     assert result.confirmed is False
     assert result.ats == board  # the host WAS recognised; the page was refused
+
+
+@pytest.mark.parametrize("board", BOARDS)
+def test_no_completion_phrase_appears_in_any_real_form(board):
+    """The claim `_COMPLETED`'s comment makes, measured directly on the phrases.
+
+    That comment said "none of them appears in any of the three captured apply-form
+    fixtures (`test_no_real_apply_form_is_read_as_a_confirmation` measures that,
+    rather than this comment asserting it)". It did not. That test asserts
+    `confirmed is False`, which is a conjunction of FOUR conditions, and the
+    cheapest of them fires first — so it stayed green even when a phrase list DID
+    match a real form page. Proved by adding "clearance confirmation" (which IS in
+    Lever's visible text, from its "AU Clearance Confirmation" question card) to
+    the list: the file-input gate refuses the page anyway and the test never
+    noticed.
+
+    The underlying fact is true. This is what checks it: every phrase, every
+    board's own list, against the visible text, with nothing else in the way.
+    """
+    text = visible_text(form_html(board))
+    assert text, "an empty page would make this vacuous"
+    markers = confirm._MARKERS[board]
+    hits = [p for p in markers.text_phrases if p in text]
+    assert hits == [], f"{board}'s apply form contains completion wording: {hits}"
+    # Non-vacuous in the other direction: the same comparison DOES find the phrase
+    # on the (synthetic) confirmation page, so an empty `hits` above means "not
+    # there", not "this test cannot find anything".
+    confirmed_text = visible_text(confirmation_html(board))
+    assert [p for p in markers.text_phrases if p in confirmed_text]
+    # And the shared list is covered for every board, not just whichever ones
+    # happen to add extras to it.
+    assert set(confirm._COMPLETED) <= set(markers.text_phrases)
 
 
 def test_the_naive_raw_html_check_would_have_passed_the_lever_form():

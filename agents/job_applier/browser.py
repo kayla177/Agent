@@ -3,7 +3,9 @@
 Opens a **visible** (headed) Chromium window with a persistent profile so the
 user can watch every fill happen and intervene at any point, and so logins /
 cookies survive between runs. Playwright itself is an optional, heavy
-(~150MB of Chromium) dependency: importing this module must never require it
+dependency — MEASURED at 344 MB for the Chromium build this uses
+(`~/Library/Caches/ms-playwright/chromium-1228`), not the "~150MB" this
+docstring claimed: importing this module must never require it
 — the import happens lazily, inside the functions that need it — so the rest
 of the platform keeps working when Playwright/Chromium aren't installed.
 
@@ -102,7 +104,9 @@ def close_quietly(context: Any) -> bool:
     """Close `context` if there is one, swallowing any teardown failure.
 
     Returns whether it actually closed. Lives here rather than in the graph
-    because two modules need identical semantics at four call sites, and the
+    because THREE modules need identical semantics at FIVE call sites
+    (`graph.release_browser`, `session.hand_over`, `session._close`, and both
+    cleanup paths in `nodes/fetch_form.fetch_form_node`), and the
     module that owns the browser's lifetime is the right one to own "close it and
     do not let the teardown become the thing the user hears about".
 

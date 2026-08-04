@@ -863,6 +863,173 @@ Phase A records applications optimistically on the modal's confirm. Greenhouse/L
 
 ---
 
+## Final fix round (whole-branch review, 2026-08-03)
+
+Seven items, from a review of the branch as a whole rather than of any one task. The three
+safety ones first.
+
+> **S1 — the ONE RULE source guard omitted two live APIs, and one of them reopened the Enter
+> hole under another name.** Verified against the installed driver: `Locator.type` exists and was
+> not in `_CLICK_METHODS`. It is the deprecated alias of `press_sequentially` and resolves
+> characters through the SAME driver alias map, so `loc.type("yes\n")` presses Enter — and **no
+> newline gate consults it**, because `_may_type_character_by_character` runs only inside
+> `_write_text`. `Locator.uncheck` performs a real click and was also absent. `check` was absent
+> too; the ruling was to decide and justify, and the decision is that it belongs in the ban list
+> with a **named, per-file, per-method allowance** (`_ALLOWED_CLICKS = {"fill.py": {"check"}}`),
+> because omitting it meant the scan gave no answer at all about a call that clicks in the one
+> module that writes. `test_the_only_clicking_call_allowed_in_the_package_is_one_check` scans every
+> module with NO allowance and requires the total result to be exactly one `.check()` in
+> `nodes/fill.py`, so a second call site, a `check()` in another module, and a stale allowance all
+> fail loudly.
+>
+> The guard is no longer built by guessing which method names sound dangerous. The public surface
+> of `Locator`/`Page`/`Frame`/`FrameLocator`/`ElementHandle` is **enumerated** and partitioned into
+> banned / evaluate-family / input-device / selector / permitted-write / harmless, with an equality
+> assertion — so a Playwright upgrade that adds a method fails the suite until a human classifies
+> it. That enumeration is what found `wait_for_function` (runs caller JS: `wait_for_function("() =>
+> document.forms[0].submit()")`) and the missing half of the `get_by_*` family. `select_text`,
+> `focus` and the drag family are banned too, for the same reason `hover` already was. A companion
+> test asserts every name the guard bans or permits actually EXISTS on the driver, so a dead entry
+> cannot masquerade as a working one. `fill.py`'s claim that the guard "rejects nine separate
+> clicking ones" is corrected: the cited test has one accept and three rejects, and the real
+> numbers are now stated with the two new tests that carry them.
+>
+> **S2 — the whole graph runs on ONE `page.content()` snapshot, and two safety decisions were
+> reading it.** Kayla's ruling was to do both halves.
+> **(a)** The typing retry's `<textarea>` exemption is **gone**. A `[id="q"]` selector is not
+> tag-scoped, so `_single_locator`'s live `count() == 1` is satisfied by an `<input type="text">`
+> that re-mounted while the drafting model was thinking; a multi-line draft typed into that inside
+> Lever's `method="POST"` form (which ships `<input type="submit" class="hidden">`) is implicit
+> submission with no click anywhere. A value containing `\n` or `\r` is now never typed character
+> by character, whatever the tag says, and `_may_type_character_by_character` **takes no `Control`
+> at all** — pinned by signature as well as by behaviour, because a behavioural test can be
+> satisfied by a gate that still reads the tag and happens to refuse. Cost: a textarea whose
+> `fill()` was swallowed now reports `blank` with the text to paste. That refusal note did not
+> carry the value; it does now, which is a second finding the change surfaced (a long AI draft
+> would otherwise have been reported blank with no copy of the draft anywhere the text render
+> shows).
+> **(b)** `_fill_choice_group` re-reads `tagName` and the `type` attribute off the LIVE element
+> before `check()` — the one call here that dispatches a click. Fail-CLOSED on a positive
+> disagreement, fail-OPEN on a read that cannot be performed, documented as the asymmetry it is:
+> a *don't know* is not evidence, and the hazard the stale snapshot actually opened is closed
+> unconditionally by (a) rather than by this read. The script is written INLINE as a literal
+> because the guard rejects an `evaluate` whose script it cannot read — hoisting it to a module
+> constant flipped the guard from "the JavaScript is `el => …tagName…`" to "the JavaScript is
+> unknown", and the guard caught that during this work.
+>
+> **S3 — `POST /agents/job_applier/run` pointed a cookie-carrying browser anywhere and bypassed
+> the thread-affinity design.** `apply_url` returned `override.strip()` with no scheme and no host
+> check, and the browser it feeds is headed on a persistent profile holding live ATS session
+> cookies. `fetch_form.override_refusal` now requires `http(s)` **and** a recognised ATS host via
+> `confirm.identify_ats` — reused, not duplicated; `_APPLY_PATH` is NOT that table (it knows only
+> the two hosts needing a path suffix, so validating against it would have refused every
+> Greenhouse URL). It runs before `is_available()`, so a refused override costs zero browser calls,
+> asserted by absence of a call rather than by the error string. `apply_url` refuses too, returning
+> `""` rather than silently falling back to the posting's URL. The generic endpoint returns **409**
+> for `job_applier` with a pointer to `POST /data/jobs/assisted-apply`, before a `runs` row exists.
+> Two docstrings claimed this was already impossible — ARCHITECTURE.md's "the generic driver is
+> untouched" and session.py's "it now avoids the generic driver entirely" — and both are corrected
+> to say it is now a refusal rather than a convention.
+>
+> **H1 — Ashby reported half its required fields as optional, and the report asserted the
+> opposite.** MEASURED: 13 of that fixture's 16 question labels carry Ashby's `_required_<hash>`
+> CSS marker; `_required_of` can read 5, because the other 8 are yes/no button widgets whose
+> hidden `<input>` has no `required` attribute. Among the 8: sponsorship, "are you authorized to
+> work in the country", and the U.S.-person citizenship question. `Question` now carries
+> `required_source` (additively, as `section` was in Task 5), `HandoffReport.required_unknown`
+> counts the questions that said nothing either way, `required_caveat()` states it **with the
+> number** (Ashby 11 of 16, Lever 10 of 29, Greenhouse 4 of 15 — count-bearing so it is a fact
+> about the form rather than skippable boilerplate), and the BLOCKING heading gains
+> "— AND POSSIBLY MORE (see above)" only when it is non-zero. **Detection deliberately unchanged**:
+> the marker is a build-hashed CSS-module class, there is one captured Ashby form to validate any
+> reader against, and flipping 8 questions to required would move real fields between bands on the
+> strength of a class name nobody can re-measure. Saying what is unknown costs nothing and is true.
+>
+> **H2 — Ashby's required Location field renders as an optional question called "Start typing…".**
+> `<label _required_ for="_systemfield_location">Location</label>` over an `<input
+> placeholder="Start typing…" role="combobox">` with no `id` and no `name`: label tiers 1(a) and
+> 1(d) miss and tier 3 wins. `Question.label_source` is carried through to `ReportItem`, the row is
+> tagged `LABEL UNVERIFIED` with a sentence saying the title is placeholder text and that
+> everything else on the row was decided from it, and a weak-labelled row that was nevertheless
+> FILLED is kept out of the collapsed `DONE` band — a value typed into a field the agent could not
+> identify is REVIEW's own definition. `locate_dom._WEAK_LABEL_SOURCES` became public
+> (`WEAK_LABEL_SOURCES`) so there is one definition of "weak", not two.
+>
+> **The `for=` repair was considered and NOT done, and here is the reasoning rather than a shrug.**
+> It is available and it is not a positional guess: the dangling `for` value equals the enclosing
+> `_fieldEntry` div's `data-field-path`, so the association is structural, the same shape as the
+> Lever `li.application-question` containment rule already in tier 1(b). Two reasons to leave it:
+> it depends on Ashby's private `data-field-path` attribute, validated against exactly one captured
+> form; and making it fire changes Location from *unfilled* to *auto-filled from the profile* on a
+> real application — into a `role="combobox"` whose value a typed string does not select, which on
+> Ashby routinely produces a silently invalid field. Not filling it is arguably the better
+> behaviour, and either way it is a change that wants a live-form check, not a
+> documentation-honesty round. Recorded as a follow-up.
+>
+> **M1 — the only surviving mutant of 30.** `NOT_SUBMITTED_HEADLINE = "Done."` passed all 1889
+> tests: all fifteen references were `startswith(NOT_SUBMITTED_HEADLINE)`, tautological under a
+> mutation of the constant. `test_the_report_says_nothing_was_submitted_in_those_words` asserts
+> the **literal user-visible words** on every code path, and says in its own docstring that
+> rewriting it in terms of the constant — the natural tidy-up — puts the hole straight back.
+> Mutant re-run and caught.
+>
+> **M2 — thirteen mis-citations fixed (twelve reported, plus one found in the process).** Each is
+> corrected AND, where it was a measured number, given a test so the next drift fails the suite
+> rather than aging into folklore: `resolver.py`'s dead
+> `test_the_five_date_phrasings_that_must_not_regress` (the test is
+> `test_the_date_phrasings_that_must_not_regress`, with **15** phrasings) and its "years 2020-2031"
+> (**2020–2030 plus "Other"**); `confirm.py`'s "(3 / 2 / 1 respectively)" (**greenhouse 2, lever 1,
+> ashby 3** — every number had mapped to the wrong board); `locate_dom.py`'s "present in all three
+> captured fixtures" for `g-recaptcha-response` (**3 / 0 / 3 — absent from Lever**, so the rule is
+> untested by any fixture on that board) and its "~25-line shim" for `PageLocator` (**93 lines,
+> eight accessors** — and the claim worth making was never the length but that none of them
+> parses, which is what the new test asserts); `nodes/draft.py`'s "declines four" (**five** of
+> seven, both video prompts among them); `drafting.py`'s "an order of magnitude inside it" (the
+> cited test pins **> 2.5x** and measures 2.58x, and already corrected an earlier "4x");
+> `browser.py`'s "~150MB of Chromium" (**344 MB**, corrected in this plan by `8cc35cc` and never
+> in the module — and the same wrong figure was in `tests/test_applier_browser.py`'s docstring,
+> the thirteenth) and its "two modules … four call sites" for `close_quietly` (**3 modules, 5
+> sites**); `applier_run.py`'s "the four computed ones" (**seven**, after this round added
+> `required_caveat`); `fetch_form.py`'s "The only node that touches a browser" (`fill_node` drives
+> the live page); `routers/jobs.py`'s "Nothing here touches a browser at all" (`confirm_submission`
+> reads the live page, `close_assisted_window` closes contexts — bounded, not absent).
+>
+> Plus the one that was a **bad test, not a bad number**: `confirm.py`'s `_COMPLETED` comment said
+> `test_no_real_apply_form_is_read_as_a_confirmation` "measures" that no completion phrase appears
+> in the captured forms. It asserts `confirmed is False` — the whole four-condition conjunction,
+> checked in order of cost — so adding "clearance confirmation" (which IS in Lever's visible text)
+> left it green, because the file-input gate refuses first. `test_no_completion_phrase_appears_in
+> _any_real_form` now compares the phrase lists against each form's visible text directly, and is
+> non-vacuous in both directions. That exact mutant was re-run and is caught.
+>
+> **M3 — deployment ordering, written where a deployer will see it**: a header comment in
+> `web-next/prisma/schema.prisma` (the file whose edit triggers the hazard) and a paragraph in
+> ARCHITECTURE.md's schema section. The rule is the reverse of the Prisma instinct — the Python
+> `_migrate` must reach the live DB before the regenerated client serves a read of the new column,
+> because `prisma generate` only rewrites a TypeScript client and `_migrate` runs from `init_db()`
+> in a Python process. It self-heals via the jobscraper's schedule; the free fix is to restart
+> FastAPI (or `.venv/bin/python -c "import store_db; store_db.init_db()"`) before rebuilding Next.
+>
+> **1925 passed** (1889 at `6f0d066`), 36 added, none edited except where a ruling required it:
+> `test_a_multiline_value_is_typed_into_a_textarea_on_retry` asserted the exemption S2(a) removes
+> and is inverted and renamed; `test_every_enter_producing_character_is_refused_not_just_newline`
+> lost its textarea case for the same reason; three guard call sites gained an `allow=` argument;
+> `test_an_explicit_form_url_wins_and_is_what_the_graph_opens` used an `example.invalid` override
+> that S3 now refuses and uses a real Lever URL. Five mutants (textarea exemption restored, live
+> tag read deleted, guard narrowed, headline "Done.", a phrase list matching a real form) plus two
+> more (H1 hedge removed, H2 weak-label check disabled) all caught — every one in an `rsync` copy,
+> never in place. lint / tsc / check:jobs / db:check clean; `npm run build` not run. DB fingerprint
+> unchanged. No browser launched, no ATS contacted, no agent run.
+>
+> **STILL NOT DONE / FOLLOW-UPS:** the Ashby `for=`→`data-field-path` label repair (above), which
+> would make Location fillable and needs a live check first. Ashby required-ness detection via its
+> hashed CSS class, if a second Ashby capture ever makes the convention checkable. The `_required_of`
+> gap is now *disclosed*, not closed, so on Ashby six required fields are still empty behind a
+> caveat rather than in the blocking band. The live-tag re-read is fail-open on an unreadable
+> `evaluate`, by choice. Everything in Task 10's follow-up list still stands.
+
+---
+
 ## Done criteria
 
 - [ ] `.venv/bin/python -m pytest tests/` — all pass, and the count exceeds whatever the branch

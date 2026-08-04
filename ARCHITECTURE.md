@@ -89,6 +89,21 @@ column and the blob can diverge. (The former Next-side dual-writer is gone; Next
 No migration framework — `CREATE TABLE IF NOT EXISTS` from `schema.sql` plus additive
 `store_db.py:_migrate` guards; the drift-check guards the Prisma mirror.
 
+**Deployment ordering, when a change adds a column.** There is exactly one, and it is the
+opposite of what a Prisma-shaped instinct suggests: **the Python migration must reach the live
+DB before the regenerated Prisma client serves a read of the new column.** `_migrate` is the
+only thing that `ALTER TABLE`s an existing database, and it runs from `init_db()` — i.e. when a
+Python process starts (`server/`, `scripts/run.py`, any launchd agent), never from
+`npx prisma generate`, which only rewrites a TypeScript client. So `prisma generate` first,
+restart Next.js, and the applications page 500s with `no such column: confirmed_at` on every
+request until some Python process happens to run. It self-heals — `_migrate` is additive and
+idempotent and the jobscraper calls `init_db()` on its schedule — but "self-heals within a few
+hours" is a broken page in the meantime, and the fix is free: run any Python entry point
+(`.venv/bin/python -c "import store_db; store_db.init_db()"`) or just restart the FastAPI
+service *before* rebuilding the Next side. `confirmed_at` (Phase B) is the column this was
+learned on; it has already landed in production and Prisma has already been regenerated, so
+this paragraph is for the next one.
+
 ## Agent execution flow
 
 1. `POST /agents/{key}/run` → `server/runner.py:start_run` creates a `runs` row and

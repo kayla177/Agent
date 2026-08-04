@@ -241,7 +241,21 @@ export type HandoffItem = {
   note: string;
   drafted: boolean;
   kind: string;
+  // Which label tier produced `label` (agents/job_applier/locate_dom.py's
+  // LABEL_SOURCES). "placeholder" or "name" means the title of this row is a
+  // hint or an identifier, NOT the question — Ashby's required Location combobox
+  // has no id and no name, so it arrives titled "Start typing...". Empty for a
+  // question that did not come from a DOM parse.
+  label_source: string;
 };
+
+// The label tiers that are not labels. Kept in step with
+// locate_dom.WEAK_LABEL_SOURCES; the Python side is the owner.
+const WEAK_LABEL_SOURCES = new Set(["placeholder", "name"]);
+
+export function labelIsUnverified(item: HandoffItem): boolean {
+  return WEAK_LABEL_SOURCES.has(item.label_source);
+}
 
 export type HandoffReport = {
   items: HandoffItem[];
@@ -259,6 +273,12 @@ export type HandoffReport = {
   headline: string;
   instruction: string;
   summary_line: string;
+  // Non-empty when the agent could not read required-ness for every question on
+  // the form, in which case the blocking list is what it KNOWS is required and
+  // empty rather than the whole of it. "" when every question carried a signal —
+  // render it only when set, so an honest report and a fully-determined one look
+  // the same. See HandoffReport.required_caveat in nodes/handoff.py.
+  required_caveat: string;
   counts: Record<string, number>;
   needs_you: number;
   total: number;

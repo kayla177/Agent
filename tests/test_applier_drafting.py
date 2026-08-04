@@ -49,6 +49,7 @@ from agents.job_applier.drafting import (
     topic_of,
 )
 from agents.job_applier.locate_dom import discover_questions
+from agents.job_applier.nodes import draft as draft_node_mod
 from agents.job_applier.resolver import BLOCKING_KINDS, SOURCES, classify
 from agents.job_applier.schema_greenhouse import Question
 
@@ -623,6 +624,39 @@ def test_draft_answers_the_whole_question_list_and_never_leaks_an_unmarked_draft
         else:
             assert a.value == "" and a.note
     assert any(a.source == "drafted" for a in answers), "premise: some are draftable"
+
+
+def test_the_number_of_free_text_declines_draft_py_cites_is_the_measured_one(monkeypatch):
+    """`nodes/draft.py`'s merge policy is justified by a count, so the count is
+    measured here rather than remembered there.
+
+    It said drafting "declines four" of the captured Lever form's free-text
+    questions, and the same paragraph closed with "on four fields of one real
+    form". It is FIVE of seven: both video prompts (where the box wants a YouTube
+    URL and drafting's own note says so), plus three the drafter cannot ground in
+    a profile — "Give us three numbers that describe you", "something you know an
+    unreasonable amount about", and "Additional information".
+
+    The count is the whole argument for the merge rule: if drafting's refusal did
+    not win over the resolver's "left for the AI drafting step" note, the handoff
+    would promise the user a draft that is never coming on each of those fields.
+    Undercounting it understates how often the rule fires.
+    """
+    monkeypatch.setattr(drafting, "llm", stub(GOOD_DRAFT))
+    questions = discover_questions(FIXTURE.read_text(encoding="utf-8"))
+    answers = draft(questions, job=JOB, profile=FAKE, experience=EXPERIENCE)
+    free_text = [a for a in answers if a.kind == "free_text"]
+    declined = [a for a in free_text if a.source == "blank"]
+    assert len(free_text) == 7
+    assert len(declined) == 5
+    # And WHICH five, because "five declines" would also be satisfied by declining
+    # five it should have written. Both video prompts must be among them.
+    video = [a for a in declined if "video or audio recording" in a.note]
+    assert len(video) == 2
+    assert all(a.value == "" and a.note for a in declined)
+    source = pathlib.Path(draft_node_mod.__file__).read_text()
+    assert "declines **five**" in source
+    assert "on\nfive fields of one real form" in source
 
 
 def test_draft_tolerates_an_empty_question_list():

@@ -254,11 +254,13 @@ def resume(tmp_path):
     return str(path)
 
 
-def _q(label, *, key="", kind="text", required=False, options=None, section=""):
+def _q(label, *, key="", kind="text", required=False, options=None, section="",
+       required_source="", label_source=""):
     return Question(
         key=key or (label.lower().replace(" ", "_") or "q"),
         label=label, required=required, kind=kind,
         options=list(options or []), section=section,
+        required_source=required_source, label_source=label_source,
     )
 
 
@@ -441,6 +443,37 @@ def test_every_report_says_nothing_was_submitted_first_and_last(resume):
         assert flat.endswith(report.headline()), name
         assert report.headline().startswith(NOT_SUBMITTED_HEADLINE), name
         assert "does not press Submit" in flat, name
+
+
+def test_the_report_says_nothing_was_submitted_in_those_words(resume):
+    """The only surviving mutant of thirty: `NOT_SUBMITTED_HEADLINE = "Done."`
+    passed all 1889 tests.
+
+    All fifteen references to the constant were `startswith(NOT_SUBMITTED_HEADLINE)`
+    or `== NOT_SUBMITTED_HEADLINE`, which is tautological under a mutation of the
+    constant itself — a report headed "Done." satisfied every one of them, on
+    every code path, while telling the user the exact opposite of the truth. The
+    negative detector (`_claims_submission`) is thoroughly tested and could not
+    catch it either: "Done." claims nothing.
+
+    So this asserts the LITERAL user-visible words, not the constant. It is the
+    one test in this file that must not be written in terms of
+    `NOT_SUBMITTED_HEADLINE`, and rewriting it in those terms — the natural
+    tidy-up — puts the hole straight back.
+    """
+    assert NOT_SUBMITTED_HEADLINE == "NOTHING WAS SUBMITTED."
+    for name, report in _every_code_path(resume):
+        flat = " ".join(report.render_text().split())
+        assert flat.startswith("NOTHING WAS SUBMITTED."), name
+        assert flat.count("NOTHING WAS SUBMITTED.") >= 2, name
+        assert flat.endswith(report.headline()), name
+    # And the two composed headlines really do carry the words, rather than
+    # deriving from a constant that could be anything.
+    assert handoff_mod.BROWSER_OPEN_HEADLINE.startswith("NOTHING WAS SUBMITTED.")
+    assert handoff_mod.BROWSER_CLOSED_HEADLINE.startswith("NOTHING WAS SUBMITTED.")
+    # `submitted` is a literal False field for exactly this reason: a consumer
+    # asserting on prose is asserting on prose.
+    assert all(r.submitted is False for _n, r in _every_code_path(resume))
 
 
 def test_the_window_clause_is_conditional_and_not_a_standing_claim(resume):
@@ -983,6 +1016,159 @@ def test_the_filled_band_is_collapsible_without_losing_its_count(resume):
     assert "Testy McTestface" in full and "Testy McTestface" not in folded
     # The band is still last, and the structure still carries every item.
     assert len(report.group(DONE)) == 8
+
+
+# ===========================================================================
+# The report never claims a signal it does not have (decision 10a)
+# ===========================================================================
+
+
+def test_the_report_hedges_when_required_ness_could_not_be_determined():
+    """`required=False` is TWO facts wearing one boolean, and the report used to
+    read them as one.
+
+    "1 of those is required and still empty, so the form will not submit until
+    you deal with it" is a claim of COMPLETENESS about the blocking band, and it
+    was made unconditionally — including on a form where the parser had found no
+    required signal at all for most questions. Here: one question the page
+    positively marks required, and three it says nothing about. The count stays
+    correct and the claim around it stops overreaching.
+    """
+    questions = [
+        _q("Email", required=True, required_source="required-attr"),
+        _q("Are you authorized to work in the US?", key="wa"),
+        _q("Do you require sponsorship?", key="sp"),
+        _q("Website", key="w"),
+    ]
+    report = _report_of(
+        [_outcome("Email", BLANK, note="type it yourself."),
+         _outcome("Are you authorized to work in the US?", BLANK, key="wa",
+                  kind="work_auth", note="yours to answer."),
+         _outcome("Do you require sponsorship?", BLANK, key="sp",
+                  kind="sponsorship", note="yours to answer."),
+         _outcome("Website", BLANK, key="w", note="nothing to fill this with.")],
+        questions,
+    )
+    assert report.required_unknown == 3
+    caveat = report.required_caveat()
+    assert "3 questions said nothing either way" in caveat
+    assert "the page did not say" in caveat
+    text = report.render_text()
+    assert caveat in " ".join(text.split())
+    # ...and the band heading stops asserting it is the whole list.
+    assert "AND POSSIBLY MORE" in text
+    # The hedge is CONDITIONAL. A form whose every question carries a signal gets
+    # the flat wording it had before — an unconditional disclaimer is boilerplate,
+    # and boilerplate is skipped.
+    certain = _report_of(
+        [_outcome("Email", BLANK, note="type it yourself.")],
+        [_q("Email", required=True, required_source="required-attr")],
+    )
+    assert certain.required_unknown == 0
+    assert certain.required_caveat() == ""
+    assert "AND POSSIBLY MORE" not in certain.render_text()
+    # The exact sentence that made this a finding is byte-for-byte unchanged when
+    # nothing is unknown, so this fix cannot have quietly reworded the count.
+    assert certain.summary_line() == (
+        "1 of 1 field needs you. 1 of those is required and still empty, so the "
+        "form will not submit until you deal with it."
+    )
+
+
+def test_ashby_is_the_board_the_hedge_exists_for():
+    """MEASURED on the captured fixture, because the numbers are the finding.
+
+    Ashby marks required-ness on the LABEL, via a build-hashed CSS-module class
+    (`_required_f7cvd_91`), and its yes/no questions are button widgets whose
+    hidden `<input>` carries no `required` attribute at all. So 13 of the 16
+    question labels on that form are marked required and `_required_of` can read
+    5 — and the eight it cannot include the sponsorship question, the
+    "are you authorized to work in the country" question and the U.S.-person
+    citizenship one. Those sat in the band headed "the agent put something here,
+    or could not", under a sentence telling her precisely how many fields would
+    stop the form submitting.
+
+    The detection is NOT what this fixes (see decision 10a for why: the class
+    hash changes per deploy and there is one captured Ashby form to validate any
+    reader against). What it fixes is the report asserting a completeness it
+    cannot deliver.
+    """
+    html = _html("ashby")
+    assert html.count("_required_f7cvd_91") == 13
+    report, _, questions, _ = _build("ashby")
+    assert len(questions) == 16
+    assert sum(1 for q in questions if q.required) == 5
+    assert report.required_unknown == 11
+    text = report.render_text()
+    assert "11 questions said nothing either way" in " ".join(text.split())
+    assert "AND POSSIBLY MORE" in text
+    # Every required question the parser DID flag carries the signal that flagged
+    # it, so "no source" really does mean "nothing said" and not "we lost it".
+    assert all(q.required_source for q in questions if q.required)
+    # Both work-eligibility questions are among the ones reported un-required, so
+    # this test is measuring the real gap and not a synthetic one.
+    unflagged = {q.label for q in questions if not q.required}
+    assert any("sponsorship" in lbl for lbl in unflagged)
+    assert any("authorized to work" in lbl for lbl in unflagged)
+    # The other two boards are hedged too, with their own numbers — the caveat is
+    # per form, not a constant.
+    assert _build("lever")[0].required_unknown == 10
+    assert _build("greenhouse")[0].required_unknown == 4
+
+
+def test_a_placeholder_derived_label_is_marked_untrustworthy():
+    """Ashby's required Location field, as the user actually saw it.
+
+    `<label _required_ for="_systemfield_location">Location</label>` over an
+    `<input placeholder="Start typing…" role="combobox">` with no `id` and no
+    `name`: label tiers 1(a) and 1(d) both miss, tier 3 wins, and the question
+    reaches the report titled "Start typing...". Her profile holds the location
+    and fills it on Lever and Greenhouse; here the row read "not derivable from a
+    typed profile field — fill this one in yourself", which is a confident
+    statement produced by classifying a placeholder as a question.
+
+    `locate_dom`'s existing demotion does not catch this: `WEAK_LABEL_SOURCES`
+    only demotes a weak label that is DUPLICATED, and this one is unique.
+    """
+    report, _, questions, _ = _build("ashby")
+    location = next(q for q in questions if q.label == "Start typing...")
+    assert location.label_source == "placeholder"
+    item = next(i for i in report.items if i.label == "Start typing...")
+    assert item.label_source == "placeholder"
+    text = report.render_text()
+    assert "LABEL UNVERIFIED" in text
+    flat = " ".join(text.split())
+    assert "only the placeholder of the box, not the question" in flat
+    assert "may be wrong about what the field is asking" in flat
+    # And nothing else on this form is tagged that way, so the mark still means
+    # something: Lever and Greenhouse get no such row at all.
+    assert text.count("LABEL UNVERIFIED") == 1
+    for board in ("lever", "greenhouse"):
+        assert "LABEL UNVERIFIED" not in _build(board)[0].render_text()
+
+
+def test_a_value_typed_into_an_unidentified_field_is_never_filed_as_done():
+    """The `DONE` band is collapsed by default and headed "nothing to do".
+
+    A verified write into a field whose question could not be read is, by
+    `REVIEW`'s own definition, "the agent put something here" that "may be
+    wrong" — so it is exactly the row that must not be in the band she skims.
+    Not reachable on the three captured boards (Ashby's weak-labelled field is
+    never filled), which is why it is pinned synthetically rather than left to a
+    fixture to happen to exercise.
+    """
+    filled = _outcome("Type here...", FILLED, value="Milwaukee, WI", source="profile")
+    weak = _report_of([filled], [_q("Type here...", label_source="placeholder")])
+    assert weak.items[0].group == REVIEW
+    assert "LABEL UNVERIFIED" in weak.render_text()
+
+    strong = _report_of([filled], [_q("Type here...", label_source="label")])
+    assert strong.items[0].group == DONE, "a real label still means nothing to do"
+    assert "LABEL UNVERIFIED" not in strong.render_text()
+    # A question with no label source at all (a `Question` built by hand, or one
+    # from Greenhouse's JSON) is NOT weak — absence of the field must not turn
+    # every hand-built report into a wall of warnings.
+    assert _report_of([filled], [_q("Type here...")]).items[0].group == DONE
 
 
 def test_every_test_the_module_docstring_cites_actually_exists():

@@ -11,10 +11,16 @@ asserted things that had not happened.
 
 Phase B adds the assisted-apply endpoints (`/data/jobs/assisted-apply*` and
 `/data/jobs/confirm-submission`). THE ONE RULE for all of Phase B applies to them
-too: no code path may ever click a submit button. Nothing here touches a browser
-at all — it starts the agent, hands back its report, and reads a verdict from
-`agents/job_applier/confirm.py`. In particular there is deliberately **no
-endpoint that submits a form**, and the ordering below is what keeps the tracker
+too: no code path may ever click a submit button. What this module does with a
+browser is BOUNDED rather than absent — "nothing here touches a browser at all",
+which this paragraph used to claim, was untrue of two of its endpoints:
+`confirm_submission` reads the live page (through `session.read`, queued onto the
+session thread) and `close_assisted_window` closes contexts. Neither can act on a
+control: the read returns two strings, the verdict comes from the pure
+`agents/job_applier/confirm.py`, and the package-wide AST scan is re-run over this
+file by `tests/test_applier_ui.py` exactly so that "bounded" is checked rather
+than asserted. In particular there is deliberately **no endpoint that submits a
+form**, and the ordering below is what keeps the tracker
 honest: an application row is written when the HUMAN says she pressed Submit
 (through the existing `/data/jobs/apply`), never when the agent finishes filling.
 """

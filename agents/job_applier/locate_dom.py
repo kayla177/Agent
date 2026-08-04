@@ -121,8 +121,11 @@ cannot be screened at all, and Lever produces exactly that shape.
 **6. Pure parsing, thin Playwright adapter.** Everything above operates on an
 HTML *string* using the standard library's `html.parser` — no new dependency,
 no browser, so it is unit-testable against the captured fixtures in
-`tests/fixtures/ats/`. Playwright appears only in `PageLocator`, which is a
-~25-line shim: `page.content()` in, CSS selector out. Tree walks are iterative,
+`tests/fixtures/ats/`. Playwright appears only in `PageLocator`: `page.content()`
+in, CSS selector out. It is 93 lines and eight accessors, not the "~25-line
+shim" this paragraph used to call it — and the claim worth making was never
+about its length anyway: NONE of those accessors parses anything, they all
+delegate to the pure functions above. Tree walks are iterative,
 because `html.parser` never auto-closes a tag and a page with a few thousand
 unclosed `<li>`s would otherwise turn "cannot locate anything" into a
 RecursionError.
@@ -165,9 +168,12 @@ _CONTROL_TAGS = frozenset({"input", "textarea", "select"})
 # `type=submit` in particular must never be discovered as something to fill.
 _NON_FILLABLE_INPUT_TYPES = frozenset({"hidden", "submit", "button", "reset", "image"})
 
-# reCAPTCHA injects a hidden <textarea name="g-recaptcha-response"> into every
-# board's page (present in all three captured fixtures). It is machine state,
-# never a question.
+# reCAPTCHA injects a hidden <textarea name="g-recaptcha-response"> into a
+# board's page. MEASURED on the captured fixtures: greenhouse 3 occurrences,
+# ashby 3, LEVER NONE — so "present in all three captured fixtures", which this
+# comment used to claim, was false for one of the three, and the Lever half of
+# this rule is untested by any fixture. It is machine state, never a question,
+# and costs nothing on a board that does not ship it.
 _MACHINE_NAMES = frozenset({"g-recaptcha-response"})
 
 
@@ -433,7 +439,19 @@ LABEL_SOURCES = (
 # `find_control` exists to refuse, arriving one layer earlier. Controls in that
 # situation are demoted to unlabelled (hence `unreadable_questions`) rather than
 # emitted as indistinguishable twins.
-_WEAK_LABEL_SOURCES = frozenset({"placeholder", "name"})
+#
+# PUBLIC, because the demotion above is not the only thing that has to know which
+# tiers are weak. It only fires on a DUPLICATE, so a placeholder-derived label
+# that happens to be unique survives — Ashby's required Location field is
+# reported as a question called "Start typing...", which is not a question. The
+# handoff has to be able to say "that is placeholder text, not a label", and it
+# can only do that against one shared definition of "weak"; a second copy of this
+# set in the report module is a second thing to forget to update.
+WEAK_LABEL_SOURCES = frozenset({"placeholder", "name"})
+
+#: The historical private name, kept so the two demotion sites below and the
+#: module docstring keep reading the way they were written.
+_WEAK_LABEL_SOURCES = WEAK_LABEL_SOURCES
 
 
 @dataclass(frozen=True)
@@ -1483,16 +1501,34 @@ def _questions_from(html: str) -> list[Question]:
             # A lone checkbox with no group heading is a consent box: its own
             # label *is* the question, and it has no option list.
             label, options = first.label, list(first.options)
+        required = any(c.required for c in unit)
         questions.append(
             Question(
                 key=first.name or first.element_id or _slugify(label),
                 label=label,
-                required=any(c.required for c in unit),
+                required=required,
                 kind=first.kind,
                 options=options,
                 # From the FIRST member: a choice group's controls all sit in the
                 # same section by construction, so there is nothing to reconcile.
                 section=first.section,
+                # The signal that carried `required`, so a consumer can tell "the
+                # page says optional" from "the page did not say" — see
+                # `Question.required_source` and `_required_of`. Taken from
+                # whichever MEMBER supplied the True, not from `first`: a group's
+                # required marker sits on one member (`<legend>`, the first
+                # option's label), and reading `first.required_source` reported ""
+                # for a group this parser had positively established was required.
+                required_source=next(
+                    (c.required_source for c in unit if c.required and c.required_source),
+                    "",
+                ) if required else "",
+                # Which tier produced the label. `""` where the label came from a
+                # group heading rather than from a control's own label chain — the
+                # group heading is a real heading, so there is nothing weak to
+                # report, and claiming `first.label_source` would attribute the
+                # OPTION's label tier to the QUESTION.
+                label_source=first.label_source if label == first.label else "",
             )
         )
 

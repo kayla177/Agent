@@ -338,7 +338,7 @@ _LABEL_RULES: tuple[tuple[str, re.Pattern[str]], ...] = (
     # MEASURED before the fix, on the captured Lever form with a real profile:
     #   "High School Name"               -> school    -> "University of Waterloo"
     #   "Year of High School Graduation" -> grad_date -> "2027"   (the options on
-    #        that question are the years 2020-2031, so the profile's UNIVERSITY
+    #        that question are 2020-2030 plus "Other", so the profile's UNIVERSITY
     #        graduation year really was selectable and really would have been
     #        selected — the earlier "this one is already fine" reading only held
     #        because a `grad_date` of "May 2027" matched no option verbatim.)
@@ -486,7 +486,9 @@ _LABEL_RULES: tuple[tuple[str, re.Pattern[str]], ...] = (
     # noun ("Are you a recent graduate?") falls through to `other` and goes
     # blank with a reason, which is the correct outcome: the profile records
     # when she graduates, not whether she counts as a graduate.
-    # (`test_the_five_date_phrasings_that_must_not_regress`,
+    # (`test_the_date_phrasings_that_must_not_regress` — FIFTEEN phrasings, not
+    # the five an earlier version of this citation named, and the test it named
+    # did not exist,
     # `test_graduate_the_adjective_is_never_a_date`,
     # `test_no_profile_value_lands_in_a_field_of_a_different_kind`.)
     ("grad_date", _rx(

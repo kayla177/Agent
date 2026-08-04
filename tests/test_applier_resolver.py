@@ -18,6 +18,8 @@ from agents.job_applier.resolver import (
     classify,
     resolve,
 )
+from agents.job_applier import resolver
+from agents.job_applier.locate_dom import parse_controls
 from agents.job_applier.schema_greenhouse import Question, parse_questions
 
 FAKE = {
@@ -1370,6 +1372,55 @@ def test_the_date_phrasings_that_must_not_regress(label):
     These are the common case."""
     assert classify(q(label)) == "grad_date", label
     assert resolve([q(label)], RICH)[0].value == RICH["grad_date"], label
+
+
+def test_the_grad_date_corpus_is_the_size_resolver_py_says_it_is():
+    """`resolver.py` cited this corpus as
+    `test_the_five_date_phrasings_that_must_not_regress` — a test that has never
+    existed, naming a count that was never right. It is fifteen phrasings, and the
+    "first five" the comment was reaching for are a subset of them, not the whole.
+
+    A citation to a nonexistent test is worse than none: the convention in this
+    package is that each documented decision names the test that fails when it
+    stops being true, and one dead name makes the whole convention unreliable.
+    """
+    assert len(GRAD_DATE_CORPUS) == 15
+    assert len(set(GRAD_DATE_CORPUS)) == 15, "no duplicates padding the count"
+    source = pathlib.Path(resolver.__file__).read_text()
+    assert "test_the_date_phrasings_that_must_not_regress" in source
+    assert "test_the_five_date_phrasings_that_must_not_regress" not in source
+    # Every test name resolver.py cites has to exist — the same guard fill.py and
+    # handoff.py already carry, now applied to the module where the dead citation
+    # was found. Scanned over the WHOLE suite rather than this file: resolver.py
+    # legitimately cites `test_the_resolvers_file_upload_note_does_not_contradict
+    # _the_attach`, which lives in test_applier_locate.py because that is where the
+    # executor's résumé path is tested. A per-file guard would have failed on a
+    # citation that is perfectly good.
+    cited = set(re.findall(r"\btest_[a-z0-9_]+", source))
+    defined: set[str] = set()
+    for path in sorted(pathlib.Path(__file__).parent.glob("test_*.py")):
+        defined |= set(re.findall(r"^def (test_[a-z0-9_]+)", path.read_text(), re.M))
+    assert cited, "resolver.py should name its pins"
+    assert cited <= defined, f"resolver.py cites tests that do not exist: {sorted(cited - defined)}"
+
+
+def test_the_high_school_year_options_are_the_ones_the_comment_measured():
+    """The evidence for ordering `school_level` ahead of `grad_date`.
+
+    The comment said the options on Lever's "Year of High School Graduation"
+    question "are the years 2020-2031". They are 2020-2030 plus a literal
+    "Other" — eleven years and an escape hatch, not twelve years. The point the
+    comment is making needs the profile's university year to BE selectable, so the
+    right range matters: 2027 is in this list, which is what made the leak real.
+    """
+    lever = (pathlib.Path(__file__).parent / "fixtures" / "ats" / "lever-form.html").read_text()
+    control = next(
+        c for c in parse_controls(lever) if c.label == "Year of High School Graduation"
+    )
+    assert control.options == [str(y) for y in range(2020, 2031)] + ["Other"]
+    assert "2027" in control.options, "the leak needed the university year to be selectable"
+    source = pathlib.Path(resolver.__file__).read_text()
+    assert '2020-2030 plus "Other"' in source
 
 
 @pytest.mark.parametrize("label", GRAD_DATE_YES_NO_CORPUS)

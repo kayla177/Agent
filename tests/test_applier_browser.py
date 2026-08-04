@@ -1,6 +1,8 @@
 """Browser bootstrap. The agent must degrade with a usable instruction when
 Playwright is absent, not traceback — it is an optional heavy dependency
-(~150MB of Chromium) and the rest of the platform must keep working without it."""
+(MEASURED at 344 MB for the Chromium build it installs, not the "~150MB" this
+docstring and `browser.py`'s both used to say) and the rest of the platform must
+keep working without it."""
 from __future__ import annotations
 import builtins
 import pytest
@@ -31,6 +33,53 @@ def test_launch_raises_a_clear_error_when_unavailable(monkeypatch):
     with pytest.raises(RuntimeError) as exc:
         browser.launch_context()
     assert "playwright install chromium" in str(exc.value)
+
+
+def test_close_quietly_really_does_have_the_callers_its_docstring_claims():
+    """`close_quietly` justifies living in this module by counting its callers, so
+    the count is measured rather than asserted.
+
+    It said "two modules … at four call sites"; it is THREE modules and FIVE:
+    `graph.release_browser`, `session.hand_over`, `session._close`, and both
+    cleanup paths in `nodes/fetch_form.fetch_form_node` (the `Exception` one and
+    the `BaseException` one). The undercount mattered in the direction that gets a
+    helper inlined: "only two callers" is the argument for pushing it back into the
+    graph, which is where the identical-semantics requirement came from.
+    """
+    import ast
+    import pathlib
+
+    package = pathlib.Path(browser.__file__).parent
+    sites: dict[str, int] = {}
+    for path in sorted(package.rglob("*.py")):
+        tree = ast.parse(path.read_text())
+        n = sum(
+            1 for node in ast.walk(tree)
+            if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+            and node.func.attr == "close_quietly"
+        )
+        if n:
+            sites[str(path.relative_to(package))] = n
+    assert sites == {"graph.py": 1, "nodes/fetch_form.py": 2, "session.py": 2}
+    assert len(sites) == 3 and sum(sites.values()) == 5
+    source = pathlib.Path(browser.__file__).read_text()
+    assert "THREE modules need identical semantics at FIVE call sites" in source
+
+
+def test_the_chromium_download_size_in_the_docstring_is_the_measured_one():
+    """The docstring's job is to tell a reader why the import is lazy, and "~150MB"
+    understated it by more than half — MEASURED at 344 MB for the Chromium build
+    Playwright installs (`chromium-1228`). Asserted as prose rather than by
+    stat-ing the cache, because the cache is not present on every machine and a
+    test that skipped itself there would let the number rot again.
+    """
+    import pathlib
+
+    source = pathlib.Path(browser.__file__).read_text()
+    assert "344 MB" in source
+    # The old figure survives in the sentence that corrects it, deliberately, so
+    # this asserts the correction is stated rather than that the number is gone.
+    assert 'not the "~150MB" this' in source
 
 
 def test_profile_dir_is_under_data_and_gitignored():
