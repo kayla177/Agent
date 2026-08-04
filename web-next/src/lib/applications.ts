@@ -16,6 +16,19 @@ export type Application = {
   notes: string;
   auto_detected: number; // SQLite int, 0 | 1
   resume_job_id: string | null; // which generated résumé was used to apply
+  // ISO8601 UTC instant at which a submission was VERIFIED on an ATS
+  // confirmation page (agents/job_applier/confirm.py). null is the normal state
+  // and means "unverified", NOT "not submitted": every row is written
+  // optimistically the moment the apply modal is confirmed.
+  //
+  // OPTIONAL, not `string | null`, and that is about deployment order rather
+  // than modelling. The generated Prisma client in node_modules predates this
+  // column, so until `npx prisma generate` is re-run its rows arrive WITHOUT the
+  // key — and a required field here makes the tracker page's cast a type error.
+  // `undefined` therefore has to mean the same thing as `null` ("not verified"),
+  // which is also the safe rendering: a stale client shows every row as
+  // unverified instead of claiming a confirmation it never read.
+  confirmed_at?: string | null;
 };
 
 // Per-status tint for the pill. The status WORD is always rendered beside it, so

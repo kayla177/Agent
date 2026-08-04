@@ -3,7 +3,17 @@ import { useEffect, useState } from "react";
 
 type NodeState = { node: string; status: string };
 
-export default function RunStream({ runId, onDone }: { runId: number; onDone?: () => void }) {
+// `showOutput` exists for the assisted-apply modal, which renders the run's
+// handoff as a STRUCTURED checklist fetched from
+// /data/jobs/assisted-apply/report. The `done` event carries the same report
+// already rendered to markdown, so leaving it on would print the whole thing
+// twice — once as a wall of text and once as the list the user is meant to work
+// through. Every other caller keeps the output; that is what `true` is for.
+export default function RunStream({ runId, onDone, showOutput = true }: {
+  runId: number;
+  onDone?: () => void;
+  showOutput?: boolean;
+}) {
   const [nodes, setNodes] = useState<NodeState[]>([]);
   const [outputHtml, setOutputHtml] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -44,7 +54,7 @@ export default function RunStream({ runId, onDone }: { runId: number; onDone?: (
           </div>
         ))}
       </div>
-      {outputHtml !== null ? <div className="output" dangerouslySetInnerHTML={{ __html: outputHtml }} /> : null}
+      {showOutput && outputHtml !== null ? <div className="output" dangerouslySetInnerHTML={{ __html: outputHtml }} /> : null}
       {error ? <pre className="output err">{error}</pre> : null}
     </div>
   );

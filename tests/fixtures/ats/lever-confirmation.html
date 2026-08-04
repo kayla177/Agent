@@ -1,0 +1,44 @@
+<!DOCTYPE html>
+<!--
+  ============================ SYNTHETIC FIXTURE ============================
+  THIS FILE IS HAND-WRITTEN AND HAS NEVER BEEN COMPARED AGAINST A REAL LEVER
+  CONFIRMATION PAGE. See greenhouse-confirmation.html for the full explanation:
+  capturing one requires actually submitting an application, which THE ONE RULE
+  of Phase B forbids.
+
+  One part of this file IS real, and it is the part that matters most. The
+  <style> block below is copied verbatim out of the captured
+  tests/fixtures/ats/lever-form.html — the UNSUBMITTED apply form. Lever serves
+  one stylesheet for both pages, so the string "confirmation-message" is present
+  on the form itself, and the real form additionally carries a question card
+  headed "AU Clearance Confirmation". A detector that grepped the raw HTML for
+  "confirmation" would therefore report a successful submission for a form the
+  user has not even filled in yet. That is why the detector matches on VISIBLE
+  TEXT ONLY, with <style>/<script> contents and all tag attributes removed.
+  ===========================================================================
+-->
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Palantir — Thanks</title>
+  <style>
+    /* verbatim from the captured apply form (lever-form.html) */
+    .confirmation-message {text-align: center;}
+    .confirmation-message .template-btn-submit {margin-top: 16px;}
+  </style>
+</head>
+<body>
+  <div class="content-wrapper">
+    <div class="section page-centered confirmation-message">
+      <h4>Thank you for applying</h4>
+      <p>
+        We&rsquo;ve received your application for Software Engineer and will be
+        in touch if there is a fit.
+      </p>
+      <a class="template-btn-submit" href="https://jobs.lever.co/palantir">
+        See more jobs
+      </a>
+    </div>
+  </div>
+</body>
+</html>

@@ -15,9 +15,11 @@
 // Run: npm run check:jobs
 import assert from "node:assert/strict";
 
-const { bestMatch, isScreenedOut, eligibleLabel, inCountries } = await import(
-  "../src/lib/jobs.ts"
-);
+const {
+  bestMatch, isScreenedOut, eligibleLabel, inCountries,
+  AUTOFILL_ATS, supportsAutofill, autofillUnavailableNote,
+  HANDOFF_GROUPS, handoffGroup, handoffReasonTag, verificationLine,
+} = await import("../src/lib/jobs.ts");
 
 let passed = 0;
 function test(name, fn) {
@@ -89,6 +91,92 @@ test("eligibleLabel always renders something", () => {
   assert.equal(eligibleLabel(job({ eligible_reason: "requires PhD" })), "requires PhD");
   assert.equal(eligibleLabel(job({ eligible_reason: "" })), "not undergrad-eligible");
   assert.equal(eligibleLabel(job({ eligible_reason: "   " })), "not undergrad-eligible");
+});
+
+// ---------------------------------------------------------------------------
+// Assisted apply — which boards get the button, and how the handoff is read
+// ---------------------------------------------------------------------------
+// The Python side pins the LISTS against the agent's own
+// (tests/test_applier_ui.py). What is checked here is the BEHAVIOUR those lists
+// drive, which is what the modal actually branches on.
+
+test("autofill is offered for exactly the boards the agent can read", () => {
+  for (const ats of AUTOFILL_ATS) assert.equal(supportsAutofill(ats), true, ats);
+  for (const ats of ["workday", "smartrecruiters", "workable"]) {
+    assert.equal(supportsAutofill(ats), false, ats);
+  }
+});
+
+test("an absent or oddly-cased ATS is decided, never guessed", () => {
+  // The `jobs` row is the source of truth and it is not always tidy; a blank
+  // board must fall to the manual path rather than to a button that errors.
+  assert.equal(supportsAutofill(""), false);
+  assert.equal(supportsAutofill(null), false);
+  assert.equal(supportsAutofill(undefined), false);
+  assert.equal(supportsAutofill("Greenhouse"), true);
+  assert.equal(supportsAutofill("  lever  "), true);
+});
+
+test("the unavailable note names the board and says what to do instead", () => {
+  const note = autofillUnavailableNote("workday");
+  assert.ok(note.includes("workday"), note);
+  assert.ok(note.includes("fill it in yourself"), note);
+  // An unknown board still gets a sentence rather than a dangling one.
+  assert.ok(autofillUnavailableNote("").includes("unknown"));
+});
+
+const item = (over = {}) => ({
+  key: "k", label: "Full name", group: "done", reason: "filled", section: "",
+  required: false, status: "filled", value: "x", intended: "x", suggestion: "",
+  note: "", drafted: false, kind: "text", ...over,
+});
+
+const report = (items) => ({
+  items, job_title: "", company: "", form_url: "", resume_filename: "",
+  resume_note: "", error: "", submitted: false, browser_open: true,
+  headline: "", instruction: "", summary_line: "", counts: {}, needs_you: 0,
+  total: items.length,
+});
+
+test("the blocking band is read first and the filled band last", () => {
+  // The order is the whole point: the blocking band is the only one that costs
+  // you the application if you miss it.
+  assert.equal(HANDOFF_GROUPS[0], "blocking");
+  assert.equal(HANDOFF_GROUPS[HANDOFF_GROUPS.length - 1], "done");
+});
+
+test("items are bucketed by their own group and nothing is dropped", () => {
+  const rows = [
+    item({ key: "a", group: "blocking", reason: "empty" }),
+    item({ key: "b", group: "review", reason: "drafted" }),
+    item({ key: "c", group: "withheld", reason: "withheld_eeo" }),
+    item({ key: "d", group: "done" }),
+  ];
+  const r = report(rows);
+  const seen = HANDOFF_GROUPS.flatMap((g) => handoffGroup(r, g)).map((i) => i.key);
+  assert.deepEqual(seen, ["a", "b", "c", "d"], "every item lands in exactly one band");
+});
+
+test("an unknown reason still renders as something", () => {
+  // A field that lost the only text explaining its state is worse than an ugly
+  // one, so the raw reason is the fallback.
+  assert.equal(handoffReasonTag(item({ reason: "drafted" })), "AI-DRAFTED — read every word");
+  assert.equal(handoffReasonTag(item({ reason: "some_future_reason" })), "some_future_reason");
+});
+
+test("verification wording never claims an application was not submitted", () => {
+  const confirmed = verificationLine({ checked: true, confirmed: true, reason: "" });
+  assert.ok(confirmed.includes("Verified"));
+
+  const unverified = verificationLine({ checked: true, confirmed: false, reason: "no wording." });
+  assert.ok(unverified.includes("not verified"), unverified);
+  assert.ok(unverified.includes("not a failure"), unverified);
+  assert.ok(!unverified.includes("not submitted"), unverified);
+
+  const unread = verificationLine({ checked: false, confirmed: false, reason: "no window." });
+  assert.ok(unread.includes("Logged"), unread);
+  assert.ok(unread.includes("unverified"), unread);
+  assert.ok(!unread.includes("not submitted"), unread);
 });
 
 if (process.exitCode) {

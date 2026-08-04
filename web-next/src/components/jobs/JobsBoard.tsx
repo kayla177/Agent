@@ -1,7 +1,7 @@
 "use client";
 import { useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
-import { type Job, JOB_STATUSES, byPriority, byFitDesc, byDateDesc, bestMatch, inCountries, isScreenedOut, ALL_COUNTRIES, COUNTRY_LABEL } from "@/lib/jobs";
+import { type Job, type Verification, verificationLine, JOB_STATUSES, byPriority, byFitDesc, byDateDesc, bestMatch, inCountries, isScreenedOut, ALL_COUNTRIES, COUNTRY_LABEL } from "@/lib/jobs";
 import BestMatchHero from "./BestMatchHero";
 import JobRow from "./JobRow";
 import ApplyModal, { type ResumeRow } from "./ApplyModal";
@@ -34,6 +34,10 @@ export default function JobsBoard({ jobs, resumes, hasMaster, initialCountries }
   const [undoBlocked, setUndoBlocked] = useState(false);
   const [pdfError, setPdfError] = useState<string | null>(null);
   const [rowError, setRowError] = useState<string | null>(null);
+  // Only ever set by the assisted-apply path: whether anything actually vouched
+  // for the submission. Null means nothing checked (the manual flow), which is
+  // NOT the same as "not submitted" — see ApplicationRow's ConfirmedMark.
+  const [verification, setVerification] = useState<Verification | null>(null);
 
   const countries = showAllCountries ? ALL_COUNTRIES : initialCountries;
   // Label the preference option with what it actually contains, so the control
@@ -191,6 +195,14 @@ export default function JobsBoard({ jobs, resumes, hasMaster, initialCountries }
       ) : null}
       {undoError ? <p className="banner err">{undoError}</p> : null}
       {rowError ? <p className="banner err">{rowError}</p> : null}
+      {/* Shown next to the green banner, like pdfError: a verified application
+          and an unverified one are both logged, and the difference has to be
+          visible at the moment it is decided as well as later in the tracker. */}
+      {verification ? (
+        <p className={`banner ${verification.confirmed ? "ok" : ""}`}>
+          {verificationLine(verification)}
+        </p>
+      ) : null}
 
       {applyFor ? (
         <ApplyModal
@@ -198,15 +210,17 @@ export default function JobsBoard({ jobs, resumes, hasMaster, initialCountries }
           jobTitle={applyFor.title}
           jobCompany={applyFor.company}
           jobUrl={applyFor.url}
+          jobAts={applyFor.ats}
           resumes={resumes}
           hasMaster={hasMaster}
           onClose={() => setApplyFor(null)}
-          onApplied={(applicationId, applyPdfError) => {
+          onApplied={(applicationId, applyPdfError, applyVerification) => {
             setApplyFor(null);
             setUndo({ jobId: applyFor.id, applicationId });
             setUndoError(null);
             setUndoBlocked(false);
             setPdfError(applyPdfError);
+            setVerification(applyVerification);
             router.refresh();
           }}
         />

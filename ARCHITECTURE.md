@@ -31,6 +31,13 @@ mutation is proxied to FastAPI, which writes through the Python stores.
 - `GET|PUT /data/profile` — applicant profile (typed autofill fields + fit-scoring summary)
 - `POST /data/jobs/{apply,dismiss,status,undo-apply}` — job status + application logging
 - `GET /data/jobs/resume-pdf` — compiled résumé PDF (content-versioned cache)
+- `POST /data/jobs/assisted-apply` — start the job-applier agent on a posting (greenhouse
+  /lever/ashby only); returns `{run_id}`. Records **no** application: the agent fills a
+  form and stops, so nothing is applied until the human says she pressed Submit.
+  `GET /data/jobs/assisted-apply/report?run_id=` returns that run's handoff as structured
+  data; `POST /data/jobs/assisted-apply/close` closes the window it left open.
+- `POST /data/jobs/confirm-submission` — re-read the still-open form and, on a positive
+  match only, stamp `applications.confirmed_at`. Never un-confirms or deletes anything.
 - `GET|PUT /data/resume/master` — master résumé; `GET /data/resumes/{job_id}/versions`
 - `POST /data/render`, `POST /data/resume/pdf` — markdown render + LaTeX→PDF (Tectonic)
 - `GET /stocks/desk` — latest persisted `stock_analysis` (no model call on page load).
@@ -82,6 +89,21 @@ column and the blob can diverge. (The former Next-side dual-writer is gone; Next
 No migration framework — `CREATE TABLE IF NOT EXISTS` from `schema.sql` plus additive
 `store_db.py:_migrate` guards; the drift-check guards the Prisma mirror.
 
+**Deployment ordering, when a change adds a column.** There is exactly one, and it is the
+opposite of what a Prisma-shaped instinct suggests: **the Python migration must reach the live
+DB before the regenerated Prisma client serves a read of the new column.** `_migrate` is the
+only thing that `ALTER TABLE`s an existing database, and it runs from `init_db()` — i.e. when a
+Python process starts (`server/`, `scripts/run.py`, any launchd agent), never from
+`npx prisma generate`, which only rewrites a TypeScript client. So `prisma generate` first,
+restart Next.js, and the applications page 500s with `no such column: confirmed_at` on every
+request until some Python process happens to run. It self-heals — `_migrate` is additive and
+idempotent and the jobscraper calls `init_db()` on its schedule — but "self-heals within a few
+hours" is a broken page in the meantime, and the fix is free: run any Python entry point
+(`.venv/bin/python -c "import store_db; store_db.init_db()"`) or just restart the FastAPI
+service *before* rebuilding the Next side. `confirmed_at` (Phase B) is the column this was
+learned on; it has already landed in production and Prisma has already been regenerated, so
+this paragraph is for the next one.
+
 ## Agent execution flow
 
 1. `POST /agents/{key}/run` → `server/runner.py:start_run` creates a `runs` row and
@@ -91,6 +113,21 @@ No migration framework — `CREATE TABLE IF NOT EXISTS` from `schema.sql` plus a
 3. On completion the run is marked `success`/`error` with the final `output_message`.
 4. Agents' **domain writes** (applications/jobs/resumes) happen inside graph nodes via the
    per-agent `store.py`, separate from run bookkeeping.
+
+**`job_applier` is the one exception to step 1–2**, and deliberately so. Its state carries a
+live Playwright context across two nodes, and Playwright's sync API is thread-affine (a
+greenlet switch), while `astream` runs sync nodes in the event loop's default executor — a
+*pool*. So assisted apply is driven by `server/applier_run.py` on the single dedicated thread
+owned by `agents/job_applier/session.py`, which also parks the finished run's browser window
+so the later confirmation read happens on the same thread. Run bookkeeping is byte-identical
+(`runs` row, `node_events`, the same events published to `runner.manager`), so `RunStream` and
+`/runs/{id}/events` cannot tell the difference. `server/runner.py` itself is untouched — but
+"untouched" was doing double duty here and one half of it was wrong: step 1 is not merely
+*bypassed* for this agent, it is **refused**. `POST /agents/job_applier/run` used to resolve
+the applier's spec like any other agent and hand it to the pooled `astream` driver (and, with
+a JSON body, seed its state — including the `form_url` a cookie-carrying browser would
+navigate to). It now returns 409 with a pointer to `POST /data/jobs/assisted-apply`, before a
+`runs` row exists. The only correct entry point is that one.
 
 The job scraper's pipeline is a linear chain: `fetch → filter → dedupe → backfill →
 freshness → rank → notify`. It also accepts a `backfill` input flag (set via

@@ -21,6 +21,35 @@ router = APIRouter()
 
 _THROTTLE_SECONDS = 60
 
+#: Agents this endpoint refuses, and where to go instead.
+#:
+#: `job_applier` holds a live Playwright context across two graph nodes, and
+#: Playwright's sync API is thread-affine at the greenlet level. The driver
+#: behind this endpoint (`runner.start_run` → `graph.astream`) runs sync nodes in
+#: the event loop's default executor — a POOL — so `fetch_form` opening the
+#: browser on one worker and `fill` typing into it from another is a
+#: `greenlet.error`, not a race. `agents/job_applier/session.py` documents the
+#: mechanism; `server/applier_run.py` is the driver that respects it.
+#:
+#: Two further reasons this is a refusal rather than a documented convention:
+#: nothing on this path registers the run in `session._SESSIONS`, so
+#: `/data/jobs/assisted-apply/close` could never close the window it left open;
+#: and a JSON body on this endpoint is passed straight through as the graph's
+#: initial state, which for this agent includes `form_url` — a URL handed to a
+#: browser carrying her live ATS cookies. `fetch_form.override_refusal` now
+#: bounds where that can point, and this refusal means the request does not get
+#: that far. (Unreachable from the UI either way: `job_applier` is not in
+#: `web-next/src/lib/agents.ts`'s `DASHBOARD_KEYS`.)
+_WRONG_ENTRY_POINT: dict[str, str] = {
+    "job_applier": (
+        "assisted apply cannot be started through the generic run endpoint: it "
+        "holds a live browser across two nodes and Playwright's sync API is "
+        "thread-affine, so the pooled graph driver behind this route cannot run "
+        "it, and a run started here is never registered as a closeable browser "
+        "session. Use POST /data/jobs/assisted-apply instead."
+    ),
+}
+
 
 def _sse(event: str, data: dict, event_id: int | None = None) -> str:
     lines = []
@@ -48,6 +77,12 @@ def _recent_active_run(agent_key: str) -> int | None:
 @router.post("/agents/{agent_key}/run")
 async def trigger_run(agent_key: str, request: Request, send: str = "0", force: str = "0"):
     do_send = send in ("1", "true", "on")
+
+    # Refused BEFORE the body is read and before any run row is created, so a
+    # rejected request leaves no trace in `runs` and its body is never looked at.
+    wrong = _WRONG_ENTRY_POINT.get(agent_key)
+    if wrong is not None:
+        return JSONResponse({"error": wrong}, status_code=409)
 
     # Optional JSON body: {"input": {...}} seeds the graph's initial state (e.g.
     # {"job_id": ...} for the per-job resume generator). Parsed defensively so

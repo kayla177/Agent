@@ -8,6 +8,28 @@ import StatusPill from "./StatusPill";
 // A generated résumé the application can be linked to (from the resumes table).
 export type ResumeOption = { job_id: string; company: string; role: string };
 
+// Verified vs optimistic. Every row here is written the moment the apply modal
+// is confirmed, whether or not a form was ever really sent; `confirmed_at` is
+// only stamped once an ATS confirmation page has been seen
+// (agents/job_applier/confirm.py). The two states are therefore "verified" and
+// "not verified" — NOT "submitted" and "not submitted". Saying "not submitted"
+// here would be the same false claim in the opposite direction: nothing has
+// checked most of these rows at all.
+function ConfirmedMark({ confirmedAt }: { confirmedAt?: string | null }) {
+  if (confirmedAt) {
+    return (
+      <span className="confirmed-mark" title={`Confirmation page seen ${confirmedAt}`}>
+        ✓ verified
+      </span>
+    );
+  }
+  return (
+    <span className="muted" title="Logged when you confirmed the apply modal; no ATS confirmation page has been checked">
+      unverified
+    </span>
+  );
+}
+
 export default function ApplicationRow({
   app,
   resumeOptions,
@@ -55,7 +77,10 @@ export default function ApplicationRow({
     <tr>
       <td>{app.url ? <a href={app.url} target="_blank" rel="noopener">{app.company}</a> : app.company}</td>
       <td>{app.role}</td>
-      <td><StatusPill status={app.status} auto={app.auto_detected === 1} /></td>
+      <td>
+        <StatusPill status={app.status} auto={app.auto_detected === 1} />{" "}
+        <ConfirmedMark confirmedAt={app.confirmed_at} />
+      </td>
       <td className="muted">{app.applied_date}</td>
       <td className="muted">{app.updated_date}</td>
       <td className="muted">{app.notes}</td>

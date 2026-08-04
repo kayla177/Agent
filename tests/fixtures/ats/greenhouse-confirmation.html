@@ -1,0 +1,49 @@
+<!DOCTYPE html>
+<!--
+  ============================ SYNTHETIC FIXTURE ============================
+  THIS FILE IS HAND-WRITTEN AND HAS NEVER BEEN COMPARED AGAINST A REAL
+  GREENHOUSE CONFIRMATION PAGE.
+
+  Every other fixture in this directory was captured from a live posting by
+  scripts/capture_ats_fixtures.py. This one could not be: reaching a
+  confirmation page requires actually submitting a job application, which THE
+  ONE RULE of Phase B forbids ("no code path may ever click a submit button" —
+  and no human is submitting a junk application to a real company to make a test
+  fixture either).
+
+  So the wording below is what Greenhouse is BELIEVED to say after a submit, not
+  what it is known to say. It is a placeholder that pins the detector's
+  behaviour on the shape of page it expects; it is not evidence that the
+  detector will fire on the real thing. The first real submission is what
+  validates the phrase list in agents/job_applier/confirm.py — until then a
+  missing stamp is unremarkable and a stamp is the claim under test.
+
+  The NEGATIVE evidence in tests/test_applier_confirm.py is the real kind: it
+  runs the detector over the three genuinely captured *-form.html apply pages
+  and requires it to refuse them.
+  ===========================================================================
+-->
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Job Application for Software Engineer at Cloudflare</title>
+</head>
+<body>
+  <div id="main">
+    <header class="board-header">
+      <a href="https://job-boards.greenhouse.io/cloudflare">Cloudflare</a>
+    </header>
+    <div class="application-confirmation">
+      <h1>Thank you for applying</h1>
+      <p>
+        Your application for <strong>Software Engineer</strong> has been
+        submitted. If your background is a match, a member of our recruiting
+        team will be in touch.
+      </p>
+      <a class="link" href="https://job-boards.greenhouse.io/cloudflare">
+        Browse more openings
+      </a>
+    </div>
+  </div>
+</body>
+</html>
