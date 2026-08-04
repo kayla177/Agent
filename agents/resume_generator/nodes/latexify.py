@@ -14,7 +14,7 @@ Either way it never sets `error`; the Markdown draft remains the primary output.
 
 from __future__ import annotations
 
-from agents.resume_generator.latex import CompileError, compile_tex
+from agents.resume_generator.latex import compile_tex
 from agents.resume_generator.state import ResumeState
 from shell.model_router import llm
 
@@ -57,14 +57,52 @@ def _prompt(job: dict, keywords: list[str], master_latex: str, research: str) ->
     return "\n".join(lines)
 
 
+_OPEN = "\\documentclass"
+_CLOSE = "\\end{document}"
+
+
 def _clean(out: str) -> str:
-    """Strip stray markdown fences a model might wrap around the source."""
+    """Reduce a model reply to just the LaTeX source it contains.
+
+    Models wrap source in two ways, and only one of them used to be handled.
+    Markdown fences were stripped; **prose was not**, and that is what made LaTeX
+    tailoring fail 100% of the time. Measured 2026-08-04 against
+    `ollama/llama3.1:8b`, the reply began:
+
+        'Here is the tailored LaTeX document:\\n\\n\\n\\documentclass[letterpaper...'
+
+    Those 39 characters meant the caller's `startswith(_OPEN)` was False, so a
+    perfectly valid document was discarded unread — it compiled to a 33,575-byte
+    PDF once the prefix was sliced off.
+
+    So rather than enumerating the ways a model might introduce itself, this takes
+    everything between the FIRST `\\documentclass` and the LAST `\\end{document}`.
+    Prose before, commentary after, and fences either side all fall away, and no
+    new phrasing can defeat it. Idempotent.
+    """
     out = (out or "").strip()
     if out.startswith("```"):
         out = out.split("\n", 1)[-1] if "\n" in out else out
         if out.endswith("```"):
             out = out[: out.rfind("```")]
+    start = out.find(_OPEN)
+    if start > 0:
+        out = out[start:]
+    end = out.rfind(_CLOSE)
+    if end != -1:
+        out = out[: end + len(_CLOSE)]
     return out.strip()
+
+
+def _is_complete_document(tex: str) -> bool:
+    """Both markers present — checked the SAME way, deliberately.
+
+    The shipped gate used `startswith` for the opening and `in` for the closing.
+    That asymmetry was the entire bug: a symmetric check would have accepted the
+    model's output by accident. `_clean` has already discarded anything outside the
+    two markers, so membership is the honest test.
+    """
+    return _OPEN in tex and _CLOSE in tex
 
 
 def latexify_node(state: ResumeState) -> ResumeState:
@@ -78,6 +116,17 @@ def latexify_node(state: ResumeState) -> ResumeState:
     job = state.get("job") or {}
     warnings = list(state.get("warnings", []))
 
+    def fall_back(reason: str) -> ResumeState:
+        warnings.append(
+            f"Couldn't tailor the LaTeX — {reason}. Used your master résumé "
+            "format untailored for the PDF."
+        )
+        return {"latex": master_latex, "warnings": warnings}
+
+    # Three distinct failures, three distinct messages. They used to share one that
+    # named only `type(exc).__name__`, so a parse failure was reported as
+    # "CompileError" — pointing the reader at LaTeX validity when the LaTeX was
+    # fine and had never been compiled. That is what kept this bug invisible.
     try:
         raw = llm(
             "local",
@@ -86,14 +135,22 @@ def latexify_node(state: ResumeState) -> ResumeState:
             temperature=0.2,
             max_tokens=_MAX_TOKENS,
         )
-        tailored = _clean(raw)
-        if not tailored.startswith("\\documentclass") or "\\end{document}" not in tailored:
-            raise CompileError("model did not return a full LaTeX document")
-        compile_tex(tailored)  # verify it actually builds
-        return {"latex": tailored}
-    except (CompileError, Exception) as exc:  # noqa: BLE001 — any failure -> safe fallback
-        warnings.append(
-            f"Couldn't tailor the LaTeX ({type(exc).__name__}); used your master "
-            "résumé format untailored for the PDF."
+    except Exception as exc:  # noqa: BLE001 — model unavailable / transport error
+        return fall_back(f"the model call failed ({type(exc).__name__}: {exc})")
+
+    tailored = _clean(raw)
+    if not _is_complete_document(tailored):
+        return fall_back(
+            f"the model did not return a complete LaTeX document "
+            f"(got {len(tailored)} chars, no {_OPEN}/{_CLOSE} pair)"
         )
-        return {"latex": master_latex, "warnings": warnings}
+
+    try:
+        compile_tex(tailored)  # verify it actually builds
+    except Exception as exc:  # noqa: BLE001 — bad LaTeX, missing engine, timeout
+        # Carry the engine's own complaint. Without it the next silent fallback is
+        # as undiagnosable as this one was.
+        detail = " ".join(str(exc).split())[:240]
+        return fall_back(f"the tailored source did not compile ({detail})")
+
+    return {"latex": tailored}
