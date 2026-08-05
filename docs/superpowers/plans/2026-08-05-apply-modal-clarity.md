@@ -37,7 +37,7 @@ Note on #3: the pre-run copy supplies one `"not submit"` and the untouched in-ru
 - `autofillUnavailableNote()`'s returned string is unchanged. Only its presentation changes.
 - The dashboard hero stays black. `.hero` (`globals.css:307`) hardcodes `#000` in its own `background` shorthand and never reads `--bg`, so **no edit is required** to achieve this. Do not "tidy" it into `var(--bg)`.
 - The in-run and post-run branches of `ApplyModal.tsx` (`RunStream`, `Handoff`, "I pressed Submit — log it & verify", "Close the browser window") are **out of scope**. Do not restructure them.
-- `.venv/bin/python -m pytest` **prints no summary line** (`addopts = "-q"`). Count with `--junitxml` and read the exit code. Baseline is **1925 passed** on this branch. (1944 is the count on `fix/resume-latex-preamble`, which carries 19 extra tests from the unmerged LaTeX fix and is NOT an ancestor of this branch.)
+- `.venv/bin/python -m pytest` **prints no summary line** (`addopts = "-q"`). Count with `--junitxml` and read the exit code. Baseline is **1944 passed** (verified at the branch point, after PR #22 merged into main as `3e3341c`).
 - `uv` is installed but this repo's Python is `.venv/bin/python`. Use the absolute venv path.
 - The `:3000` server runs `npm run start`, a **production build** — a restart alone changes nothing. Rebuild first.
 
@@ -165,7 +165,7 @@ python3 -c "import xml.etree.ElementTree as E;r=E.parse('/tmp/j.xml').getroot();
 cd web-next && npx tsc --noEmit && npx eslint src/components/jobs/ApplyModal.tsx
 ```
 
-Expected: exit 0, **1927 tests, 0 failures**, tsc and eslint clean.
+Expected: exit 0, **1946 tests, 0 failures**, tsc and eslint clean.
 
 - [ ] **Step 7: Commit**
 
@@ -505,7 +505,7 @@ cd /Users/kayla.li/.superset/Agent
 cd web-next && npx tsc --noEmit && npx eslint src
 ```
 
-Expected: exit 0, **1932 tests, 0 failures**, tsc and eslint clean.
+Expected: exit 0, **1951 tests, 0 failures**, tsc and eslint clean.
 
 - [ ] **Step 8: Commit**
 
@@ -1029,7 +1029,7 @@ and .modal-backdrop's scrim (a dimmer should be black)."
 
 ## Done when
 
-- `1933 passed, 0 failures` from `.venv/bin/python -m pytest tests/` (1925 baseline + 8 new guards: 2 in Task 1, 2 in Task 2, 3 in Task 3, 1 in Task 4).
+- `1952 passed, 0 failures` from `.venv/bin/python -m pytest tests/` (1944 baseline + 8 new guards: 2 in Task 1, 2 in Task 2, 3 in Task 3, 1 in Task 4).
 - `npm run check:contrast` green, and verified red when `--muted` is reverted.
 - `check:jobs` 14/14, `db:check` no drift, `tsc --noEmit` and `eslint` clean.
 - All ten THE ONE RULE assertions still passing.
