@@ -271,7 +271,7 @@ details.panel > summary + * { margin-top: .9rem; }
 .version-head { display: flex; align-items: center; gap: .6rem; }
 .version-when { color: var(--muted); font-size: .82rem; }
 .version-item .restore { margin-left: auto; background: none; border: 1px solid var(--border); color: var(--text); border-radius: 8px; padding: .25rem .6rem; cursor: pointer; font: inherit; }
-.version-md { width: 100%; margin-top: .5rem; background: var(--bg); border: 1px solid var(--border-soft); color: var(--muted); border-radius: 8px; padding: .5rem .6rem; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: .8rem; }
+.version-md { width: 100%; margin-top: .5rem; background: var(--bg); border: 1px solid var(--border-soft); color: var(--muted); border-radius: 8px; padding: .5rem .6rem; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: .8rem; line-height: normal; }
 
 /* "résumé used" link shown on each tracker application row */
 .resume-used { color: var(--accent); font-size: .85rem; white-space: nowrap; }
@@ -510,7 +510,6 @@ table.mini th { color: var(--muted); font-weight: 400; font-size: .72rem; letter
   letter-spacing: normal; text-transform: none; color: var(--text);
 }
 .apply-modal .apply-subhead { display: flex; align-items: center; gap: .5rem; margin: 0 0 .25rem; }
-.apply-modal label { display: block; margin: 1rem 0 0.5rem; }
 .apply-field-label {
   display: block; margin: 1rem 0 .35rem; font-size: .72rem; letter-spacing: .9px;
   text-transform: uppercase; color: var(--muted);
@@ -520,7 +519,10 @@ table.mini th { color: var(--muted); font-weight: 400; font-size: .72rem; letter
 .modal-actions .primary { background: #e07a4a; border-color: #e07a4a; }
 .muted.small { font-size: 0.8rem; margin-top: 0.75rem; }
 .undo-banner { display: flex; gap: 0.5rem; align-items: center; }
-button.link { background: none; border: none; color: #e07a4a; cursor: pointer; text-decoration: underline; padding: 0; }
+/* #e07a4a (Mars accent) was 6.07:1 on the old modal bg #14161c; on the charcoal
+   modal bg #252a33 it fell to 4.84:1, below the 5.0 floor. #e88a5e clears every
+   surface it can appear on: #252a33=5.64, #22262f=5.94, #1c2027=6.40, #14171d=7.03. */
+button.link { background: none; border: none; color: #e88a5e; cursor: pointer; text-decoration: underline; padding: 0; }
 .jobs-header-actions { display: flex; gap: 0.5rem; align-items: center; }
 
 /* Assisted apply: the agent fills the form, the human submits it.
@@ -536,7 +538,14 @@ button.link { background: none; border: none; color: #e07a4a; cursor: pointer; t
   padding: .6rem .7rem; border: 1px solid var(--border-soft); border-radius: 10px;
   background: var(--panel-2);
 }
-.apply-path.on { border-color: var(--accent); background: color-mix(in srgb, var(--accent) 10%, transparent); }
+/* Mixed into --panel-2, NOT transparent: color-mix(…, transparent) is itself
+   translucent, so it replaced .apply-path's opaque panel rather than layering on
+   it, and ended up compositing over the modal's #252a33 instead — where --muted
+   fell as low as 4.56:1 on neptune. Mixing into the panel colour keeps the result
+   OPAQUE so it composites predictably. Verified at 6% across all five planets:
+   worst case is saturn at 5.04:1 (see check:contrast); 7% drops saturn to 4.96,
+   below the 5.0 floor. */
+.apply-path.on { border-color: var(--accent); background: color-mix(in srgb, var(--accent) 6%, var(--panel-2)); }
 .apply-path input { margin: .25rem 0 0; accent-color: var(--accent); flex: none; }
 .apply-path strong { display: block; margin-bottom: .15rem; }
 .apply-path .muted.small { display: block; margin-top: 0; }

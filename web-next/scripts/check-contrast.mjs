@@ -31,6 +31,16 @@ const TOKEN = {
   "--text": "#eef1f6",
 };
 const MODAL_BG = "#252a33";
+const MODAL_BORDER = "#3b4250";
+// The selected apply-path card: color-mix(in srgb, var(--accent) 6%, var(--panel-2))
+// composited for the worst of the five planets (saturn — its pale accent lightens
+// --panel-2 the least in luminance terms of any of the five, of the palette this
+// theme ships). Hardcoded because color-mix output cannot be computed from CSS
+// source text the way the other tokens above can; verified by hand against
+// scripts/check-contrast.mjs's own luminance math before being pasted here.
+const SELECTED_CARD_SATURN = "#2d3036";
+// button.link's colour, verified against every surface it can render on.
+const LINK_COLOR = "#e88a5e";
 
 function luminance(hex) {
   const h = hex.replace("#", "");
@@ -71,6 +81,12 @@ for (const [token, value] of Object.entries(TOKEN)) {
 check(`.modal background is ${MODAL_BG}`, () => {
   assert.ok(CSS.includes(MODAL_BG), `globals.css does not mention ${MODAL_BG}`);
 });
+check(`.modal border is ${MODAL_BORDER}`, () => {
+  assert.ok(CSS.includes(MODAL_BORDER), `globals.css does not mention ${MODAL_BORDER}`);
+});
+check(`button.link is ${LINK_COLOR}`, () => {
+  assert.ok(CSS.includes(LINK_COLOR), `globals.css does not mention ${LINK_COLOR}`);
+});
 
 // 2. The body honours the token instead of hardcoding a colour. --bg was dead
 //    weight before this: body set `background-color: #000` directly, so changing
@@ -89,6 +105,11 @@ const PAIRS = [
   ["--muted in modal", TOKEN["--muted"], MODAL_BG],
   ["--text on page", TOKEN["--text"], TOKEN["--bg"]],
   ["--text in modal", TOKEN["--text"], MODAL_BG],
+  // .apply-path.on's tint is translucent (color-mix(…, var(--panel-2))), so it
+  // composites over --panel-2, not over the modal background — verify the
+  // composited surface itself clears the floor, worst planet included.
+  ["--muted on selected apply-path (saturn, worst planet)", TOKEN["--muted"], SELECTED_CARD_SATURN],
+  ["button.link on modal bg", LINK_COLOR, MODAL_BG],
 ];
 for (const [name, fg, bg] of PAIRS) {
   check(`${name} >= ${FLOOR}:1`, () => {

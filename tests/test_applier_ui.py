@@ -1255,11 +1255,20 @@ def test_form_controls_have_a_base_style_so_none_can_render_unstyled():
     base = css.index("/* BASE FORM CONTROLS")
     assert base < css.index(".form-grid input"), "base rule must precede local overrides"
     assert base < css.index(".settings-form input")
-    block = css[base : css.index("}", base)]
+    # Slice from AFTER the comment, not from it: the comment itself mentions
+    # `:where(` three times while explaining why it is required, so a slice that
+    # started at the comment made the assertion below pass on prose alone. A
+    # mutant that replaced the real selector with the chained `:not()` form this
+    # comment warns against — the exact (0,4,1) specificity regression this test
+    # exists to catch — still passed when the slice started at the comment.
+    block = css[css.index("*/", base) : css.index("}", base)]
     for prop in ("background:", "border:", "color:", "padding:"):
         assert prop in block, f"a control with no {prop} is invisible on a dark panel"
     assert ":where(" in block, "zero-specificity guard: :not() alone would outrank the per-site rules"
-    assert 'input[type="text"]' not in block, "type-scoped clauses match nothing; React omits an unspecified type"
+    for variant in ("text", "date", "number"):
+        assert f'input[type="{variant}"]' not in block, (
+            f"type-scoped clause for {variant}; React omits an unspecified type attribute"
+        )
 
 
 def test_the_resume_picker_is_labelled_as_a_control():

@@ -365,8 +365,8 @@ export default function ApplyModal({
 
             {canAutofill ? (
               <>
-                <span className="apply-field-label">How do you want to apply?</span>
-                <div className="apply-paths" role="radiogroup" aria-label="How to apply">
+                <span className="apply-field-label" id="apply-path-label">How do you want to apply?</span>
+                <div className="apply-paths" role="radiogroup" aria-labelledby="apply-path-label">
                   <label className={`apply-path ${path === "autofill" ? "on" : ""}`}>
                     <input
                       type="radio"
@@ -415,6 +415,18 @@ export default function ApplyModal({
             ) : null}
 
             {error ? <p className="banner err">{error}</p> : null}
+
+            {/* On a board without autofill this sentence otherwise lives nowhere:
+                it is normally part of the "I'll fill it in myself" radio card,
+                which never renders here because the radiogroup itself never
+                renders. Same wording as that card — one phrasing, not two — and
+                placed above its control, which is this whole feature's rule. */}
+            {!canAutofill ? (
+              <p className="muted small">
+                Opens the posting and your résumé PDF in new tabs, and logs the
+                application. You can undo it.
+              </p>
+            ) : null}
 
             <div className="modal-actions">
               <button onClick={dismiss} disabled={busy}>Cancel</button>
