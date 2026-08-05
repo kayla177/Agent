@@ -1121,6 +1121,27 @@ def test_the_modal_renders_the_structured_report_not_the_rendered_text():
     assert "dangerouslySetInnerHTML" not in MODAL_SOURCE
 
 
+def test_the_dialog_title_is_not_styled_like_a_decorative_section_label():
+    """globals.css defines a global `h2` for section labels — lowercase, muted,
+    5px tracking. That is right for the word "jobs" and wrong for
+    "Apply — U.S. Public Policy and AI Innovation Intern (Fall 2026)".
+    `.apply-modal h2` must reset all three, or the leak is invisible in review
+    because the rule it inherits from lives 400 lines away."""
+    css = (WEB / "app" / "globals.css").read_text()
+    start = css.index(".apply-modal h2")
+    block = css[start : css.index("}", start)]
+    assert "text-transform: none" in block, "the job title must not be lowercased"
+    assert "letter-spacing: normal" in block, "5px tracking belongs on section labels"
+    assert "color: var(--text)" in block, "a dialog title is not muted secondary text"
+
+
+def test_the_modal_shows_which_board_the_posting_is_on():
+    """The board decides whether autofill is offered at all. Showing it means the
+    absence of the autofill option is explained by something visible."""
+    assert "job-badge src" in MODAL_SOURCE, "reuse the board pill the list already uses"
+    assert "{jobAts}" in MODAL_SOURCE
+
+
 def test_the_modal_shows_the_bands_in_the_reports_own_order():
     assert "HANDOFF_GROUPS.map" in MODAL_SOURCE
     # `done` is collapsed rather than dropped: it is spot-check material, and

@@ -313,7 +313,10 @@ export default function ApplyModal({
     <div className="modal-backdrop" onClick={dismiss}>
       <div className="modal apply-modal" onClick={(e) => e.stopPropagation()}>
         <h2>Apply — {jobTitle}</h2>
-        <p className="muted">{jobCompany}</p>
+        <p className="muted apply-subhead">
+          {jobCompany}
+          <span className="job-badge src">{jobAts}</span>
+        </p>
 
         {/* `runId === null` rather than a `started` flag so TypeScript narrows it
             to a number in the branch that hands it to RunStream. */}
