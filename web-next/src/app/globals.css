@@ -103,6 +103,19 @@ h2 {
 
 .log-form { margin: .5rem 0 1rem; }
 .form-grid { display: grid; grid-template-columns: repeat(5, 1fr); gap: .6rem; margin-bottom: .75rem; }
+/* BASE FORM CONTROLS — the floor. Every control gets a visible box even when
+   nobody wrote a rule for its call site; the apply modal's <select> rendered at
+   the user-agent default (no border, no background) for exactly that reason.
+   This MUST stay above the per-site rules below: `select` is a type selector
+   (0,0,1) and loses to `.form-grid select` (0,1,1) on specificity, but
+   `input[type="text"]` is (0,1,1) and TIES with `.settings-form input`, where
+   source order is what decides. */
+select,
+input[type="text"], input[type="date"], input[type="number"],
+textarea {
+  background: var(--panel); border: 1px solid var(--border); color: var(--text);
+  border-radius: 10px; padding: .5rem .6rem; font: inherit;
+}
 .form-grid input, .form-grid select, table.apps select {
   background: var(--panel); border: 1px solid var(--border); color: var(--text);
   border-radius: 10px; padding: .5rem .6rem; font: inherit;
@@ -487,6 +500,10 @@ table.mini th { color: var(--muted); font-weight: 400; font-size: .72rem; letter
 }
 .apply-modal .apply-subhead { display: flex; align-items: center; gap: .5rem; margin: 0 0 .25rem; }
 .apply-modal label { display: block; margin: 1rem 0 0.5rem; }
+.apply-field-label {
+  display: block; margin: 1rem 0 .35rem; font-size: .72rem; letter-spacing: .9px;
+  text-transform: uppercase; color: var(--muted);
+}
 .apply-modal select { width: 100%; }
 .modal-actions { display: flex; gap: 0.5rem; justify-content: flex-end; margin-top: 1.25rem; }
 .modal-actions .primary { background: #e07a4a; border-color: #e07a4a; }

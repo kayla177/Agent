@@ -1222,3 +1222,24 @@ def test_the_run_stream_still_shows_its_output_for_every_other_caller():
         if "<RunStream" not in text or caller == MODAL:
             continue
         assert "showOutput" not in text, f"{caller.name} should keep the default"
+
+
+def test_form_controls_have_a_base_style_so_none_can_render_unstyled():
+    """The apply modal's <select> looked like plain text because the stylesheet had
+    NO base rule for form controls — five call sites each styled their own, and
+    this one was missed. A per-site pattern has no floor: every new control is one
+    omission away from invisible. The base rule must come BEFORE the local rules,
+    because `input[type="text"]` (0,1,1) TIES with `.settings-form input` (0,1,1)
+    and source order breaks a tie."""
+    css = (WEB / "app" / "globals.css").read_text()
+    base = css.index("/* BASE FORM CONTROLS")
+    assert base < css.index(".form-grid input"), "base rule must precede local overrides"
+    assert base < css.index(".settings-form input")
+    block = css[base : css.index("}", base)]
+    for prop in ("background:", "border:", "color:", "padding:"):
+        assert prop in block, f"a control with no {prop} is invisible on a dark panel"
+
+
+def test_the_resume_picker_is_labelled_as_a_control():
+    assert "apply-field-label" in MODAL_SOURCE
+    assert "Résumé to use" in MODAL_SOURCE

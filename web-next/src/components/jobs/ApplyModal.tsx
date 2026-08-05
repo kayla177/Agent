@@ -322,24 +322,27 @@ export default function ApplyModal({
             to a number in the branch that hands it to RunStream. */}
         {runId === null ? (
           <>
-            <label>
-              Résumé to use
-              <select value={choice} onChange={(e) => setChoice(e.target.value)} disabled={busy}>
-                <option value="" disabled={!hasMaster}>
-                  {hasMaster ? "master résumé" : "master résumé (not set)"}
-                </option>
-                {tailored ? (
-                  <option value={tailored.job_id}>tailored for this job ★</option>
-                ) : null}
-                {resumes
-                  .filter((r) => r.job_id !== jobId)
-                  .map((r) => (
-                    <option key={r.job_id} value={r.job_id}>
-                      reuse: {r.role || "(untitled)"}{r.company ? ` @ ${r.company}` : ""}
-                    </option>
-                  ))}
-              </select>
-            </label>
+            <label className="apply-field-label" htmlFor="apply-resume">Résumé to use</label>
+            <select
+              id="apply-resume"
+              value={choice}
+              onChange={(e) => setChoice(e.target.value)}
+              disabled={busy}
+            >
+              <option value="" disabled={!hasMaster}>
+                {hasMaster ? "master résumé" : "master résumé (not set)"}
+              </option>
+              {tailored ? (
+                <option value={tailored.job_id}>tailored for this job ★</option>
+              ) : null}
+              {resumes
+                .filter((r) => r.job_id !== jobId)
+                .map((r) => (
+                  <option key={r.job_id} value={r.job_id}>
+                    reuse: {r.role || "(untitled)"}{r.company ? ` @ ${r.company}` : ""}
+                  </option>
+                ))}
+            </select>
 
             {!tailored ? (
               <p className="muted">
