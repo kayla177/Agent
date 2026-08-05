@@ -1,13 +1,16 @@
 @import "tailwindcss";
 
 :root {
-  --bg: #000000;
-  --panel: rgba(255, 255, 255, 0.04);
-  --panel-2: rgba(255, 255, 255, 0.06);
+  --bg: #14171d;
+  /* Opaque, not translucent white. rgba(255,255,255,.04) over charcoal is muddier
+     than over black, and nested panels compound it unpredictably. */
+  --panel: #1c2027;
+  --panel-2: #22262f;
   --border: rgba(255, 255, 255, 0.12);
   --border-soft: rgba(255, 255, 255, 0.08);
   --text: #eef1f6;
-  --muted: #8b93a6;
+  /* #8b93a6 measured 4.68:1 inside the modal on charcoal. See check:contrast. */
+  --muted: #98a0b2;
 
   --accent: #4a90ff;
   --accent-soft: rgba(74, 144, 255, 0.9);
@@ -35,7 +38,7 @@ body {
   min-height: 100vh;
   color: var(--text);
   font: 15px/1.6 var(--sans);
-  background-color: #000;
+  background-color: var(--bg);
   background-image:
     radial-gradient(1px 1px at 20% 30%, rgba(255,255,255,.7), transparent),
     radial-gradient(1px 1px at 75% 15%, rgba(255,255,255,.5), transparent),
@@ -496,7 +499,7 @@ table.mini th { color: var(--muted); font-weight: 400; font-size: .72rem; letter
   display: flex; align-items: center; justify-content: center; z-index: 50;
 }
 .modal {
-  background: #14161c; border: 1px solid #2a2e39; border-radius: 10px;
+  background: #252a33; border: 1px solid #3b4250; border-radius: 10px;
   padding: 1.25rem 1.5rem; min-width: 420px; max-width: 560px;
 }
 /* A dialog title is a sentence, not a section label. The global `h2` (see the
