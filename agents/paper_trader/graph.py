@@ -14,10 +14,11 @@ from __future__ import annotations
 
 from langgraph.graph import END, START, StateGraph
 
-# Reused signal nodes from the stock-digest agent.
-from agents.stock_digest.nodes.market_data import market_data_node
+# Technical node is reused from stock-digest; market_data is trader-specific
+# (it fetches intraday bars per config.TRADER_INTERVAL).
 from agents.stock_digest.nodes.technical import technical_node
 
+from agents.paper_trader.nodes.market_data import market_data_node
 from agents.paper_trader.nodes.decision import decision_node
 from agents.paper_trader.nodes.deliver import deliver_node
 from agents.paper_trader.nodes.execute import execute_node

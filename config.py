@@ -141,6 +141,11 @@ _apply_prefs()
 # --------------------------------------------------------------------------
 DISCORD_BOT_TOKEN = os.getenv("DISCORD_BOT_TOKEN", "")
 DISCORD_CHANNEL_ID = os.getenv("DISCORD_CHANNEL_ID", "")
+# Interactive stock bot: restrict @mention replies to this channel (blank = any).
+# DISCORD_GUILD_ID makes slash commands appear instantly in that server (else
+# global sync can take up to ~1h).
+DISCORD_STOCK_CHANNEL_ID = os.getenv("DISCORD_STOCK_CHANNEL_ID", "")
+DISCORD_GUILD_ID = os.getenv("DISCORD_GUILD_ID", "")
 GOOGLE_MAPS_API_KEY = os.getenv("GOOGLE_MAPS_API_KEY", "")
 GOOGLE_OAUTH_CLIENT_FILE = PROJECT_ROOT / os.getenv(
     "GOOGLE_OAUTH_CLIENT_FILE", "google_oauth_client.json"
@@ -174,3 +179,7 @@ TRADER_DRYRUN_CASH = 100.0     # assumed cash when no Alpaca keys (dry-run sizin
 # Total capital the agent may deploy, regardless of the broker's balance (Alpaca
 # paper funds every account with a fake $100k). 0 = use the real account balance.
 TRADER_BUDGET = 100.0
+# Bar interval the trader analyzes. "15min" reacts to intraday moves (for the
+# every-15-min schedule); "1day" is the calmer daily-RSI strategy. The stock
+# DIGEST always stays on daily bars regardless of this.
+TRADER_INTERVAL = "15min"

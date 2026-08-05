@@ -16,6 +16,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+from agents.paper_trader import broker
 from agents.paper_trader.graph import build_paper_trader_graph
 
 
@@ -23,6 +24,12 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Run the paper trader.")
     parser.add_argument("--send", action="store_true", help="place paper orders + deliver")
     args = parser.parse_args()
+
+    # On the scheduled (--send) path, skip entirely when the market is closed so
+    # the every-15-min job doesn't burn data-API calls off-hours. Preview always runs.
+    if args.send and broker.is_configured() and not broker.market_is_open():
+        print("Market closed — skipping scheduled trader run.")
+        return
 
     graph = build_paper_trader_graph(send=args.send)
     final = graph.invoke({})

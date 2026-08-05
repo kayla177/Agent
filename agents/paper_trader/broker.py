@@ -37,6 +37,24 @@ def _get(path: str):
     return resp.json()
 
 
+def get_clock() -> dict:
+    """Return {is_open, next_open, next_close} from Alpaca's market clock."""
+    c = _get("/v2/clock")
+    return {
+        "is_open": bool(c.get("is_open")),
+        "next_open": c.get("next_open"),
+        "next_close": c.get("next_close"),
+    }
+
+
+def market_is_open() -> bool:
+    """True if the US market is currently open (False if unknown/unconfigured)."""
+    try:
+        return get_clock()["is_open"]
+    except Exception:
+        return False
+
+
 def get_account() -> dict:
     """Return {cash, portfolio_value, buying_power} as floats."""
     a = _get("/v2/account")

@@ -19,6 +19,8 @@ def execute_node(state: TraderState) -> TraderState:
         return {"executed": [{"halted": True}]}
     if not broker.is_configured():
         return {"executed": []}  # no keys — synthesize reports dry-run
+    if not broker.market_is_open():
+        return {"executed": [{"market_closed": True}]}  # don't queue orders off-hours
 
     executed: list[dict] = []
     for d in trades:

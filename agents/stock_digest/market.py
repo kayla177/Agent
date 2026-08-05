@@ -20,11 +20,12 @@ _TD_URL = "https://api.twelvedata.com/time_series"
 _OUTPUTSIZE = 260  # ~1 trading year, enough for 52wk high + SMA50/MACD
 
 
-def _fetch_twelvedata(symbol: str) -> dict:
-    """Fetch daily closes from Twelve Data. Raises on any non-ok response."""
+def _fetch_twelvedata(symbol: str, interval: str = "1day") -> dict:
+    """Fetch closes from Twelve Data at `interval` (e.g. 1day, 15min). Raises on
+    any non-ok response."""
     params = {
         "symbol": symbol,
-        "interval": "1day",
+        "interval": interval,
         "outputsize": str(_OUTPUTSIZE),
         "apikey": config.TWELVE_DATA_API_KEY,
     }
@@ -43,11 +44,11 @@ def _fetch_twelvedata(symbol: str) -> dict:
     return {"price": price, "prev": prev, "currency": currency, "closes": closes}
 
 
-def _row(symbol: str) -> dict:
+def _row(symbol: str, interval: str = "1day") -> dict:
     """Build one market row, preferring Twelve Data, falling back to CNBC."""
     if config.TWELVE_DATA_API_KEY:
         try:
-            d = _fetch_twelvedata(symbol)
+            d = _fetch_twelvedata(symbol, interval)
             pct = ((d["price"] - d["prev"]) / d["prev"] * 100.0) if d["prev"] else 0.0
             return {
                 "symbol": symbol, "price": d["price"], "prev": d["prev"],
@@ -70,12 +71,12 @@ def _row(symbol: str) -> dict:
         }
 
 
-def fetch_market(symbols: list[str]) -> tuple[list[dict], list[str]]:
-    """Return (rows, warnings) for every watchlist symbol."""
+def fetch_market(symbols: list[str], interval: str = "1day") -> tuple[list[dict], list[str]]:
+    """Return (rows, warnings) for every symbol at the given bar `interval`."""
     rows: list[dict] = []
     warnings: list[str] = []
     for sym in symbols:
-        row = _row(sym)
+        row = _row(sym, interval)
         rows.append(row)
         if row["error"]:
             warnings.append(f"⚠️ {sym}: quote unavailable ({row['error']})")

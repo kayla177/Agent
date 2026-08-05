@@ -49,6 +49,8 @@ def synthesize(state: TraderState) -> str:
         parts.append("**Status** — preview (dry-run): no orders placed. Use *Run & send* to trade paper.")
     elif executed and executed[0].get("halted"):
         parts.append("**Status** — ⛔ trading halted by kill switch (data/TRADING_HALTED).")
+    elif executed and executed[0].get("market_closed"):
+        parts.append("**Status** — 🌙 market closed; decisions shown above, no orders placed.")
     elif not executed and not trades:
         parts.append("**Status** — nothing to execute.")
     elif not executed:

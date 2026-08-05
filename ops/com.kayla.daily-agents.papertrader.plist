@@ -1,0 +1,38 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.kayla.daily-agents.papertrader</string>
+
+    <!-- Runs: uv run python scripts/run_paper_trader.py --send
+         every 15 minutes. The script self-skips when the market is closed
+         (Alpaca clock guard), so it only trades during market hours. PAPER
+         money only. Create data/TRADING_HALTED to hard-stop all order placement. -->
+    <key>ProgramArguments</key>
+    <array>
+        <string>/Users/kayla.li/.local/bin/uv</string>
+        <string>run</string>
+        <string>python</string>
+        <string>scripts/run_paper_trader.py</string>
+        <string>--send</string>
+    </array>
+
+    <!-- IMPORTANT: point this at the checkout that has the paper_trader code +
+         your .env (Alpaca keys). It's the worktree today; update it if you
+         merge feature/paper-trader into your main checkout. -->
+    <key>WorkingDirectory</key>
+    <string>/Users/kayla.li/.superset/Agent-paper-trader</string>
+
+    <!-- Every 15 minutes, around the clock; the market-open guard makes it a
+         no-op outside trading hours. -->
+    <key>StartInterval</key>
+    <integer>900</integer>
+
+    <key>StandardOutPath</key>
+    <string>/Users/kayla.li/.superset/Agent-paper-trader/trader.log</string>
+    <key>StandardErrorPath</key>
+    <string>/Users/kayla.li/.superset/Agent-paper-trader/trader.error.log</string>
+</dict>
+</plist>

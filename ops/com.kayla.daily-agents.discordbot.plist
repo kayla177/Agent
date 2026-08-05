@@ -1,0 +1,39 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.kayla.daily-agents.discordbot</string>
+
+    <!-- Always-on interactive stock bot. KeepAlive restarts it if it exits. -->
+    <key>ProgramArguments</key>
+    <array>
+        <string>/Users/kayla.li/.local/bin/uv</string>
+        <string>run</string>
+        <string>python</string>
+        <string>scripts/run_discord_bot.py</string>
+    </array>
+
+    <!-- Point at the checkout that has the bot code + your .env. -->
+    <key>WorkingDirectory</key>
+    <string>/Users/kayla.li/.superset/Agent-paper-trader</string>
+
+    <key>RunAtLoad</key>
+    <true/>
+    <key>KeepAlive</key>
+    <true/>
+
+    <!-- Unbuffered so log lines (login, syncs) appear promptly. -->
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PYTHONUNBUFFERED</key>
+        <string>1</string>
+    </dict>
+
+    <key>StandardOutPath</key>
+    <string>/Users/kayla.li/.superset/Agent-paper-trader/discordbot.log</string>
+    <key>StandardErrorPath</key>
+    <string>/Users/kayla.li/.superset/Agent-paper-trader/discordbot.error.log</string>
+</dict>
+</plist>
