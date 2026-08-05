@@ -312,6 +312,11 @@ export default function ApplyModal({
   }
 
   const canAutofill = supportsAutofill(jobAts);
+  // The effective action, not merely the selected radio. On a board without
+  // autofill the radiogroup never renders, so `path` keeps its "autofill"
+  // default while the button actually calls `confirm` — keying the résumé guard
+  // off `path` alone therefore dropped it entirely on those boards.
+  const autofillSelected = path === "autofill" && canAutofill;
 
   return (
     <div className="modal-backdrop" onClick={dismiss}>
@@ -417,12 +422,12 @@ export default function ApplyModal({
               <button onClick={dismiss} disabled={busy}>Cancel</button>
               <button
                 className="primary"
-                onClick={path === "autofill" && canAutofill ? startAutofill : confirm}
-                disabled={busy || (path === "manual" && !hasMaster && !choice)}
+                onClick={autofillSelected ? startAutofill : confirm}
+                disabled={busy || (!autofillSelected && !hasMaster && !choice)}
               >
                 {busy
-                  ? path === "autofill" && canAutofill ? "Starting…" : "Recording…"
-                  : path === "autofill" && canAutofill
+                  ? autofillSelected ? "Starting…" : "Recording…"
+                  : autofillSelected
                     ? "Open the form & autofill it"
                     : "Download résumé, open posting & log it"}
               </button>

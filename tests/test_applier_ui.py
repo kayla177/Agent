@@ -1278,3 +1278,16 @@ def test_the_guarantee_still_precedes_the_button_after_the_restructure():
         "Open the form & autofill it"
     )
     assert MODAL_SOURCE.count("not submit") >= 2
+
+
+def test_the_resume_guard_survives_on_a_board_without_autofill():
+    """On a board the applier cannot read, the radiogroup never renders, so `path`
+    keeps its "autofill" default while the footer button actually calls `confirm`.
+    Keying the résumé guard off `path === "manual"` therefore dropped it entirely
+    there, letting a user with no résumé at all log an application and open a PDF
+    that does not exist. The guard must key off the EFFECTIVE action."""
+    assert "const autofillSelected = path === \"autofill\" && canAutofill" in MODAL_SOURCE
+    assert '!autofillSelected && !hasMaster && !choice' in MODAL_SOURCE
+    assert 'path === "manual" && !hasMaster' not in MODAL_SOURCE, (
+        "this is the dropped-guard expression; it is never true on an unsupported board"
+    )
