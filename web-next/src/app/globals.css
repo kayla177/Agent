@@ -106,13 +106,21 @@ h2 {
 /* BASE FORM CONTROLS — the floor. Every control gets a visible box even when
    nobody wrote a rule for its call site; the apply modal's <select> rendered at
    the user-agent default (no border, no background) for exactly that reason.
-   This MUST stay above the per-site rules below: `select` is a type selector
-   (0,0,1) and loses to `.form-grid select` (0,1,1) on specificity, but
-   `input[type="text"]` is (0,1,1) and TIES with `.settings-form input`, where
-   source order is what decides. */
-select,
-input[type="text"], input[type="date"], input[type="number"],
-textarea {
+   Most <input>s here carry no `type` attribute at all (React omits it from the
+   DOM when unspecified), so a type-scoped attribute clause (e.g. text/date/
+   number) matches nothing — this takes every <input> EXCEPT checkbox/radio
+   (native toggles, not text boxes), file (native picker button) and range
+   (not a bordered box). The `:where(...)` around the exclusions is required,
+   not stylistic: `:where()` always contributes ZERO specificity, so
+   `input:where(:not(...))` stays a
+   pure type selector at (0,0,1) — the same weight as bare `input` — and keeps
+   LOSING to `.form-grid input` / `.settings-form input` (0,1,1) regardless of
+   source order. A plain chained `:not()` would instead add (0,4,1) worth of
+   specificity and START WINNING over those per-site rules, silently
+   restyling settings/tracker/résumé. `select`/`textarea` are also plain type
+   selectors and lose the same way. */
+select, textarea,
+input:where(:not([type="checkbox"], [type="radio"], [type="file"], [type="range"])) {
   background: var(--panel); border: 1px solid var(--border); color: var(--text);
   border-radius: 10px; padding: .5rem .6rem; font: inherit;
 }

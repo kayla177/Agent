@@ -1228,9 +1228,16 @@ def test_form_controls_have_a_base_style_so_none_can_render_unstyled():
     """The apply modal's <select> looked like plain text because the stylesheet had
     NO base rule for form controls — five call sites each styled their own, and
     this one was missed. A per-site pattern has no floor: every new control is one
-    omission away from invisible. The base rule must come BEFORE the local rules,
-    because `input[type="text"]` (0,1,1) TIES with `.settings-form input` (0,1,1)
-    and source order breaks a tie."""
+    omission away from invisible. This test only checks the four declarations
+    this rule promises (background/border/color/padding) and that the rule's
+    block appears before the two local-override blocks in source order — it
+    cannot verify the selector actually matches any real element in the DOM.
+    An earlier version of this rule listed `input[type="text"]` etc., which
+    matched nothing: most <input>s here carry no `type` attribute at all, so
+    React never puts that attribute in the DOM for React to select on. The
+    selector must also stay a plain type selector — via `:where()`, which adds
+    zero specificity — so it keeps losing to `.form-grid input` /
+    `.settings-form input` (0,1,1) instead of starting to win over them."""
     css = (WEB / "app" / "globals.css").read_text()
     base = css.index("/* BASE FORM CONTROLS")
     assert base < css.index(".form-grid input"), "base rule must precede local overrides"
@@ -1238,6 +1245,8 @@ def test_form_controls_have_a_base_style_so_none_can_render_unstyled():
     block = css[base : css.index("}", base)]
     for prop in ("background:", "border:", "color:", "padding:"):
         assert prop in block, f"a control with no {prop} is invisible on a dark panel"
+    assert ":where(" in block, "zero-specificity guard: :not() alone would outrank the per-site rules"
+    assert 'input[type="text"]' not in block, "type-scoped clauses match nothing; React omits an unspecified type"
 
 
 def test_the_resume_picker_is_labelled_as_a_control():
