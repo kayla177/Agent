@@ -527,9 +527,19 @@ button.link { background: none; border: none; color: #e07a4a; cursor: pointer; t
    at all and rendered as unstyled body text. */
 .banner { background: var(--panel-2); border: 1px solid var(--border-soft); padding: .5rem .75rem; border-radius: 10px; margin-bottom: .5rem; }
 .apply-modal { max-width: 640px; }
-.apply-autofill { margin-top: 1rem; padding: .75rem; border: 1px solid var(--border-soft); border-radius: 10px; background: var(--panel-2); }
-.apply-autofill strong { display: block; margin-bottom: .25rem; }
-.apply-autofill .muted.small { margin-top: .25rem; }
+.apply-paths { display: flex; flex-direction: column; gap: .5rem; }
+.apply-path {
+  display: flex; gap: .6rem; align-items: flex-start; cursor: pointer;
+  padding: .6rem .7rem; border: 1px solid var(--border-soft); border-radius: 10px;
+  background: var(--panel-2);
+}
+.apply-path.on { border-color: var(--accent); background: rgba(74, 144, 255, .09); }
+.apply-path input { margin: .25rem 0 0; accent-color: var(--accent); flex: none; }
+.apply-path strong { display: block; margin-bottom: .15rem; }
+.apply-path .muted.small { display: block; margin-top: 0; }
+/* The guarantee. Green because it is reassurance, not a warning — and never
+   colour ALONE: the sentence says it in words too. */
+.apply-never { display: block; margin-top: .35rem; font-size: .8rem; color: var(--green); }
 .handoff { margin-top: .75rem; max-height: 45vh; overflow-y: auto; }
 .handoff-headline { font-weight: 600; }
 .handoff-band { margin-top: .9rem; }

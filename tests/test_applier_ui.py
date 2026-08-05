@@ -1252,3 +1252,29 @@ def test_form_controls_have_a_base_style_so_none_can_render_unstyled():
 def test_the_resume_picker_is_labelled_as_a_control():
     assert "apply-field-label" in MODAL_SOURCE
     assert "Résumé to use" in MODAL_SOURCE
+
+
+def test_exactly_one_primary_button_in_the_pre_run_branch():
+    """Two `primary` buttons is no hierarchy. The pre-run branch ends where the
+    in-run branch begins, at the banner that repeats the guarantee."""
+    pre = MODAL_SOURCE[: MODAL_SOURCE.index("The agent is filling this form")]
+    assert pre.count('className="primary"') == 1, "one action, one primary"
+
+
+def test_the_path_choice_is_a_radiogroup_and_not_a_form():
+    assert 'role="radiogroup"' in MODAL_SOURCE
+    assert 'type="radio"' in MODAL_SOURCE
+    # THE ONE RULE: a <form> would make Enter submit. Re-asserted HERE because
+    # this task is the one that introduces inputs.
+    assert "<form" not in MODAL_SOURCE
+    assert 'type="submit"' not in MODAL_SOURCE
+
+
+def test_the_guarantee_still_precedes_the_button_after_the_restructure():
+    """Duplicates the existing ordering assertion on purpose. Layout C satisfies it
+    BY CONSTRUCTION -- the radio descriptions sit above the footer -- and this test
+    is what makes a future revision that moves the action upward fail loudly."""
+    assert MODAL_SOURCE.index("It does not submit it") < MODAL_SOURCE.index(
+        "Open the form & autofill it"
+    )
+    assert MODAL_SOURCE.count("not submit") >= 2
