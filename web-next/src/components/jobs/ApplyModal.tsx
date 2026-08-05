@@ -412,9 +412,7 @@ export default function ApplyModal({
                   </label>
                 </div>
               </>
-            ) : (
-              <p className="muted small">{autofillUnavailableNote(jobAts)}</p>
-            )}
+            ) : null}
 
             {error ? <p className="banner err">{error}</p> : null}
 
@@ -432,6 +430,13 @@ export default function ApplyModal({
                     : "Download résumé, open posting & log it"}
               </button>
             </div>
+
+            {!canAutofill ? (
+              <div className="apply-unavailable">
+                <strong>Autofill isn&rsquo;t available for this posting</strong>
+                <span className="muted small">{autofillUnavailableNote(jobAts)}</span>
+              </div>
+            ) : null}
           </>
         ) : (
           <>

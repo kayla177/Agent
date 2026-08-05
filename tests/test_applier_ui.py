@@ -1011,6 +1011,19 @@ def test_the_boards_the_ui_offers_autofill_for_are_the_ones_the_agent_supports()
     assert _ts_string_array(JOBS_LIB_SOURCE, "AUTOFILL_ATS") == list(SUPPORTED_ATS)
 
 
+def test_an_unsupported_board_gets_an_explained_limit_not_a_dead_button():
+    """No disabled autofill control: a dead button invites a click and answers
+    nothing. The limit is explained instead, and the note keeps the wording
+    `autofillUnavailableNote` is pinned to (see the ${board} / "fill it in
+    yourself" test)."""
+    assert "apply-unavailable" in MODAL_SOURCE
+    assert "Autofill isn&rsquo;t available for this posting" in MODAL_SOURCE
+    assert "autofillUnavailableNote(jobAts)" in MODAL_SOURCE
+    # The note sits BELOW the action it qualifies.
+    assert MODAL_SOURCE.index("modal-actions") < MODAL_SOURCE.index("apply-unavailable")
+    assert "disabled autofill" not in MODAL_SOURCE
+
+
 def test_the_ui_bands_match_the_report_bands():
     assert _ts_string_array(JOBS_LIB_SOURCE, "HANDOFF_GROUPS") == list(handoff_mod.GROUPS)
 

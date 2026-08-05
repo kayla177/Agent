@@ -540,6 +540,12 @@ button.link { background: none; border: none; color: #e07a4a; cursor: pointer; t
 /* The guarantee. Green because it is reassurance, not a warning — and never
    colour ALONE: the sentence says it in words too. */
 .apply-never { display: block; margin-top: .35rem; font-size: .8rem; color: var(--green); }
+.apply-unavailable {
+  margin-top: .75rem; padding: .6rem .75rem; border-radius: 10px;
+  border: 1px dashed var(--border); background: var(--panel);
+}
+.apply-unavailable strong { display: block; margin-bottom: .15rem; }
+.apply-unavailable .muted.small { display: block; margin-top: 0; }
 .handoff { margin-top: .75rem; max-height: 45vh; overflow-y: auto; }
 .handoff-headline { font-weight: 600; }
 .handoff-band { margin-top: .9rem; }
