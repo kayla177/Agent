@@ -9,6 +9,7 @@
     "lint": "eslint",
     "db:check": "node scripts/check-schema-drift.mjs",
     "check:jobs": "node --experimental-strip-types --no-warnings scripts/check-jobs-filters.mjs",
+    "check:contrast": "node scripts/check-contrast.mjs",
     "postinstall": "prisma generate"
   },
   "dependencies": {
