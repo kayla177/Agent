@@ -1304,3 +1304,18 @@ def test_the_resume_guard_survives_on_a_board_without_autofill():
     assert 'path === "manual" && !hasMaster' not in MODAL_SOURCE, (
         "this is the dropped-guard expression; it is never true on an unsupported board"
     )
+
+
+def test_the_selected_apply_path_tints_itself_from_the_active_planet_accent():
+    """`--accent` is themed per page (globals.css body[data-planet=…]); the jobs tab is
+    mars/orange. A hardcoded rgba(74,144,255,…) tint under a `var(--accent)` border gave
+    the selected radio card an orange border over Earth's blue wash — wrong on four of
+    the five planets. Found by looking at the rendered modal, which is the only way a
+    themed-token mismatch shows up."""
+    css = (WEB / "app" / "globals.css").read_text()
+    start = css.index(".apply-path.on")
+    block = css[start : css.index("}", start)]
+    assert "74, 144, 255" not in block and "74,144,255" not in block, (
+        "Earth's blue hardcoded into a themed rule"
+    )
+    assert "var(--accent)" in block, "the tint must derive from the active planet's accent"

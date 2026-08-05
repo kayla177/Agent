@@ -533,7 +533,7 @@ button.link { background: none; border: none; color: #e07a4a; cursor: pointer; t
   padding: .6rem .7rem; border: 1px solid var(--border-soft); border-radius: 10px;
   background: var(--panel-2);
 }
-.apply-path.on { border-color: var(--accent); background: rgba(74, 144, 255, .09); }
+.apply-path.on { border-color: var(--accent); background: color-mix(in srgb, var(--accent) 10%, transparent); }
 .apply-path input { margin: .25rem 0 0; accent-color: var(--accent); flex: none; }
 .apply-path strong { display: block; margin-bottom: .15rem; }
 .apply-path .muted.small { display: block; margin-top: 0; }
