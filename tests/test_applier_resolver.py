@@ -1681,3 +1681,89 @@ def test_the_enumerated_status_tests_cover_every_value_the_enum_offers():
     from profile_store import WORK_AUTH
 
     assert set(_ALL_STATUSES) == set(WORK_AUTH)
+
+
+# ------------------------------------------------------- Kayla's 2026-08-05 rulings
+# From the handoff of the first real assisted-apply run (Cloudflare, greenhouse).
+# Recorded in docs/superpowers/specs/2026-08-05-applier-answer-rulings.md.
+
+RESIDENT = {**FAKE, "location": "Waterloo, ON, Canada", "grad_date": "2028-04"}
+
+
+def test_a_bare_country_field_is_answered_from_the_location():
+    """Reported as "Country — not derivable from a typed profile field". It is
+    derivable: the country is the last segment of `location`. The label is a bare
+    "Country", which `location`'s own pattern does not match."""
+    ans = resolve([q("Country")], RESIDENT)[0]
+    assert ans.source == "profile"
+    assert ans.value == "Canada"
+
+
+def test_a_country_dropdown_gets_the_option_not_the_raw_string():
+    ans = resolve([sel("Country", ["United States", "Canada", "Other"])], RESIDENT)[0]
+    assert ans.value == "Canada" and ans.source == "profile"
+
+
+def test_country_is_blank_when_the_location_has_no_country_in_it():
+    ans = resolve([q("Country")], {**FAKE, "location": "Waterloo"})[0]
+    assert (ans.source, ans.value) == ("blank", "")
+
+
+def test_how_did_you_hear_picks_the_company_website_option():
+    """Ruling: the scraper fetches from official ATS boards, so "company
+    website" is true by construction — not a guess about her behaviour."""
+    ans = resolve([sel("How did you hear about this job?",
+                       ["LinkedIn", "Company website", "Referral", "Other"])], RESIDENT)[0]
+    assert ans.source == "profile"
+    assert ans.value == "Company website"
+
+
+def test_how_did_you_hear_stays_blank_when_no_option_says_website():
+    """Default-deny: no matching option, no answer. It must not fall back to
+    "Other", which is a different claim."""
+    ans = resolve([sel("How did you hear about this job?",
+                       ["LinkedIn", "Referral", "Career fair", "Other"])], RESIDENT)[0]
+    assert (ans.source, ans.value) == ("blank", "")
+
+
+def test_how_did_you_hear_is_never_free_texted():
+    """A text version must not be handed to the drafting model, which would
+    invent a plausible-sounding origin story."""
+    ans = resolve([q("How did you hear about this job?", kind="textarea")], RESIDENT)[0]
+    assert ans.source == "blank"
+
+
+def test_currently_enrolled_and_returning_is_answered_from_a_future_grad_date():
+    """Reported as blank because it classified as `school` and a yes/no question
+    is not a prompt for the school's NAME. It is answerable: a student whose
+    graduation is still ahead of her is enrolled and returning."""
+    ans = resolve([sel("Are you currently enrolled in a university or program and "
+                       "will return to the program upon completion of internship?",
+                       ["Yes", "No"])],
+                  RESIDENT)[0]
+    assert ans.source == "profile"
+    assert ans.value == "Yes"
+
+
+def test_currently_enrolled_stops_saying_yes_once_the_grad_date_has_passed():
+    """Keyed on the date rather than hardcoded, so it stops answering by itself
+    instead of quietly lying after she graduates."""
+    ans = resolve([sel("Are you currently enrolled in a university or program and "
+                       "will return to the program upon completion of internship?",
+                       ["Yes", "No"])],
+                  {**RESIDENT, "grad_date": "2019-04"})[0]
+    assert (ans.source, ans.value) == ("blank", "")
+
+
+def test_currently_enrolled_needs_a_school_as_well_as_a_date():
+    ans = resolve([sel("Are you currently enrolled in a university or program and "
+                       "will return to the program upon completion of internship?",
+                       ["Yes", "No"])],
+                  {**RESIDENT, "school": ""})[0]
+    assert (ans.source, ans.value) == ("blank", "")
+
+
+def test_asking_which_school_still_asks_for_the_name_not_a_yes_no():
+    """The enrollment rule must not swallow the plain school question."""
+    ans = resolve([q("School")], RESIDENT)[0]
+    assert ans.source == "profile" and ans.value == "University of Waterloo"
