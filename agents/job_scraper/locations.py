@@ -222,13 +222,17 @@ def _classify_segment(seg: str) -> str:
     return "UNKNOWN"
 
 
-def country_of(location: str) -> str:
-    """Classify a free-form location as US | CA | OTHER | UNKNOWN.
+#: Only ever applied to a TITLE, never to a location. See `country_of`.
+_TITLE_US_RE = re.compile(r"\bU\.S\.(?:A\.?)?(?=\s|$|[,\-–—:])", re.IGNORECASE)
+
+
+def _classify_text(text: str) -> str:
+    """US | CA | OTHER | UNKNOWN for one free-form string.
 
     North America wins over foreign: a posting listing both a US site and a
     foreign site is a real US job, so any US/CA segment decides the result.
     """
-    text = (location or "").strip()
+    text = (text or "").strip()
     if not text:
         return "UNKNOWN"
     results = [_classify_segment(seg) for seg in _SEGMENT_SPLIT.split(text)]
@@ -239,3 +243,37 @@ def country_of(location: str) -> str:
     if "OTHER" in results:
         return "OTHER"
     return "UNKNOWN"
+
+
+def country_of(location: str, title: str = "") -> str:
+    """Classify a posting as US | CA | OTHER | UNKNOWN.
+
+    `location` decides it whenever it can. `title` is consulted ONLY when the
+    location classifies as UNKNOWN, and it exists because some boards publish a
+    WORK ARRANGEMENT where a place is expected: Cloudflare's Greenhouse postings
+    carry "In-Office", "Hybrid; In-Office" or "Remote" as their location, so
+    there is no geography there to read, while the title says "U.S. Public Policy
+    and AI Innovation Intern" or "... - Austin, TX".
+
+    That gap is not cosmetic. `country` is what `default_country_of` hands the
+    applier's eligibility rules, so an UNKNOWN posting makes every sponsorship
+    and work-authorization question unanswerable — which is exactly how Kayla's
+    first real assisted-apply run came back with "this question does not name a
+    single country" on a job whose title begins "U.S.".
+
+    The fallback may only ADD information, never overturn it: this module's rule
+    is that a false MISS is safe and a false HIT is not, and a title is weaker
+    evidence than a location field. So a location that classifies at all wins,
+    including when it says OTHER.
+    """
+    from_location = _classify_text(location)
+    if from_location != "UNKNOWN":
+        return from_location
+    # Title-only signal. "U.S." WITH periods is unambiguous in a job title —
+    # the pronoun is never written that way — whereas the bare token "us" is the
+    # pronoun far more often than the country, which is why `_classify_segment`
+    # rightly refuses it. Kept here rather than widened into the location
+    # classifier so the stricter rule that guards every OTHER caller is untouched.
+    if _TITLE_US_RE.search(title or ""):
+        return "US"
+    return _classify_text(title)

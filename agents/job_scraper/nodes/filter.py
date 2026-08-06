@@ -22,5 +22,5 @@ def filter_node(state: JobScraperState) -> JobScraperState:
         # Early-career AND a software/ML/CS/AI field AND not senior/advanced-degree.
         if not is_target_role(title) or not is_tech_role(title) or is_excluded(title):
             continue
-        kept.append({**p, "country": country_of(p.get("location", ""))})
+        kept.append({**p, "country": country_of(p.get("location", ""), p.get("title", ""))})
     return {"filtered": kept}

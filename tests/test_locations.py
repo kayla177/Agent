@@ -151,3 +151,39 @@ def test_bare_country_code_prefix_is_not_delaware(loc):
     (which has no way to tell "DE-" the Delaware prefix from "DE-" the
     German ISO country-code prefix) is ever tried."""
     assert country_of(loc) == "OTHER"
+
+
+# ------------------------------------------------- title fallback (2026-08-05)
+
+def test_a_work_arrangement_in_the_location_field_still_classifies_from_the_title():
+    """Kayla's first real assisted-apply run blanked the sponsorship question
+    with "this question does not name a single country". The cause was not the
+    resolver: the posting's own country was UNKNOWN.
+
+    Cloudflare publishes a WORK ARRANGEMENT in Greenhouse's location field --
+    "In-Office", "Hybrid; In-Office", "Remote" -- so there is no geography in it
+    to classify, and `country_of` correctly says UNKNOWN. The geography is in the
+    title: "U.S. Public Policy and AI Innovation Intern (Fall 2026)".
+    """
+    assert country_of("In-Office") == "UNKNOWN"
+    assert country_of("In-Office", title="U.S. Public Policy and AI Innovation Intern") == "US"
+    assert country_of("In-Office", title="Software Engineer Intern (Fall 2026) - Austin, TX") == "US"
+
+
+def test_the_location_always_wins_when_it_classifies_at_all():
+    """The fallback fires ONLY on UNKNOWN. The module's rule is that a false MISS
+    is safe and a false HIT is not, so the title may only add information where
+    there was none -- it may never overturn a location that classified."""
+    assert country_of("Toronto, ON", title="US Policy Intern") == "CA"
+    assert country_of("Austin, TX", title="Canada Marketing Intern") == "US"
+    assert country_of("Bangalore, India", title="US Policy Intern") == "OTHER"
+
+
+def test_a_title_with_no_geography_leaves_it_unknown():
+    assert country_of("Remote", title="Software Engineer Intern") == "UNKNOWN"
+    assert country_of("", title="") == "UNKNOWN"
+
+
+def test_the_title_fallback_is_optional_so_existing_callers_are_unchanged():
+    assert country_of("Austin, TX") == "US"
+    assert country_of("In-Office") == "UNKNOWN"

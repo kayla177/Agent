@@ -101,7 +101,7 @@ def backfill_node(state: JobScraperState) -> JobScraperState:
     # Deterministic, free: fill country for every selected row.
     for rec in selected:
         if _needs_country(rec):
-            rec["country"] = country_of(rec.get("location", ""))
+            rec["country"] = country_of(rec.get("location", ""), rec.get("title", ""))
         rec["_rescored"] = True
 
     # Expensive: LLM refinement, only when this run opted in. The launchd runs
