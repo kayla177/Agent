@@ -239,10 +239,16 @@ def test_citizenship_in_a_textarea_is_not_routed_to_the_drafting_node():
 
 def test_a_yes_no_question_does_not_get_a_profile_value_pasted_into_it():
     """Every character would come from the profile and the answer would still
-    be wrong: 'Do you currently live in Milwaukee?' is not asking for a city."""
+    be wrong: 'Do you currently live in Milwaukee?' is not asking for a city.
+
+    The KIND changed from `location` to `residence` on 2026-08-05 when the
+    residence/willingness split landed; this label is a residence claim, so the
+    new name is the more accurate one. What this test is actually about — that
+    no profile value is pasted into a yes/no — is unchanged.
+    """
     prof = {**FAKE, "location": "Toronto, ON"}
     ans = resolve([q("Do you currently live in Milwaukee?")], prof)[0]
-    assert ans.kind == "location"
+    assert ans.kind == "residence"
     assert ans.source == "blank" and ans.value == ""
 
 
@@ -280,10 +286,19 @@ def test_graduation_date_wins_over_school_and_degree():
     assert classify(q("Expected graduation date (degree program)")) == "grad_date"
 
 
-def test_relocation_wins_over_location():
+def test_a_label_carrying_both_residence_and_willingness_is_read_as_residence():
+    """Was `test_relocation_wins_over_location`, asserting `relocation`.
+
+    Since 2026-08-05 `relocation` is ANSWERABLE (Yes, on US/Canada postings), so
+    a label that also asks where she currently lives must not reach it — the
+    residence half is the half that can be answered wrongly. Still blank either
+    way; what changed is that being blank is now load-bearing rather than
+    incidental.
+    """
     label = "Do you currently live or are you willing to relocate to the job's location?"
-    assert classify(q(label)) == "relocation"
-    assert resolve([q(label)], {**FAKE, "location": "Toronto, ON"})[0].source == "blank"
+    assert classify(q(label)) == "residence"
+    ans = resolve([q(label)], {**FAKE, "location": "Toronto, ON"}, default_country="us")[0]
+    assert ans.source == "blank" and ans.value == ""
 
 
 def test_linkedin_wins_over_the_generic_website_rule():
@@ -1767,3 +1782,56 @@ def test_asking_which_school_still_asks_for_the_name_not_a_yes_no():
     """The enrollment rule must not swallow the plain school question."""
     ans = resolve([q("School")], RESIDENT)[0]
     assert ans.source == "profile" and ans.value == "University of Waterloo"
+
+
+def test_a_willingness_to_relocate_is_answered_yes():
+    """Kayla's ruling: she is willing to work anywhere in the US or Canada, and
+    the scraper only surfaces US/Canada postings. A WILLINGNESS is a preference
+    she has stated — not a claim about where she is."""
+    ans = resolve([sel("Are you willing to relocate to Austin, TX?", ["Yes", "No"])],
+                  RESIDENT, default_country="us")[0]
+    assert ans.source == "profile" and ans.value == "Yes"
+
+
+def test_a_willingness_question_is_blank_when_the_posting_is_not_us_or_canada():
+    """The ruling is scoped to the US and Canada. A posting elsewhere gets no
+    answer, rather than a willingness she never expressed."""
+    ans = resolve([sel("Are you willing to relocate to Berlin?", ["Yes", "No"])],
+                  RESIDENT, default_country="")[0]
+    assert (ans.source, ans.value) == ("blank", "")
+
+
+def test_a_current_residence_question_is_never_answered_yes():
+    """The question Kayla first asked me to answer Yes, and the reason I declined.
+
+    "Are you currently residing in the greater Washington D.C. Area or have
+    confirmed plans to be in Washington D.C. …" asks where she physically is or
+    will be. She lives in Waterloo. Answering Yes because Canada is inside her
+    target set would be a false statement on a real application — the same defect
+    class as the four wrong values Phase B found by reading the agent's output.
+    """
+    ans = resolve([sel("Are you currently residing in the greater Washington D.C. "
+                       "Area or have confirmed plans to be in Washington D.C. for "
+                       "the duration of this internship?", ["Yes", "No"])],
+                  RESIDENT, default_country="us")[0]
+    assert (ans.source, ans.value) == ("blank", "")
+    assert "where you" in ans.note or "reside" in ans.note.lower()
+
+
+def test_the_residence_note_explains_itself_rather_than_saying_not_derivable():
+    """It came back as the generic "not derivable from a typed profile field",
+    which reads as a gap in the resolver. The truth is more specific and more
+    useful: the profile HAS a location, and it is not the one being asked about."""
+    ans = resolve([sel("Do you currently live in the San Francisco Bay Area?",
+                       ["Yes", "No"])], RESIDENT, default_country="us")[0]
+    assert ans.source == "blank"
+    assert "not derivable from a typed profile field" not in ans.note
+    assert "Waterloo, ON, Canada" in ans.note
+
+
+def test_a_residence_question_beats_the_willingness_rule():
+    """A label carrying BOTH ("are you located there, or willing to relocate")
+    is a residence claim first — the safe reading."""
+    ans = resolve([sel("Are you currently located in Austin, or willing to relocate there?",
+                       ["Yes", "No"])], RESIDENT, default_country="us")[0]
+    assert (ans.source, ans.value) == ("blank", "")
