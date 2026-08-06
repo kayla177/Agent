@@ -49,6 +49,10 @@ export default function ApplyModal({
   // "" means the master résumé.
   const tailored = resumes.find((r) => r.job_id === jobId) ?? null;
   const [choice, setChoice] = useState<string>(tailored ? tailored.job_id : "");
+  // Which of the two equal paths is selected. Kayla's ruling: these are equal
+  // choices, not a primary with a fallback — she uses both depending on the
+  // posting. Defaults to autofill where the board supports it.
+  const [path, setPath] = useState<"autofill" | "manual">("autofill");
   const [busy, setBusy] = useState(false);
   const [genPhase, setGenPhase] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -308,35 +312,46 @@ export default function ApplyModal({
   }
 
   const canAutofill = supportsAutofill(jobAts);
+  // The effective action, not merely the selected radio. On a board without
+  // autofill the radiogroup never renders, so `path` keeps its "autofill"
+  // default while the button actually calls `confirm` — keying the résumé guard
+  // off `path` alone therefore dropped it entirely on those boards.
+  const autofillSelected = path === "autofill" && canAutofill;
 
   return (
     <div className="modal-backdrop" onClick={dismiss}>
       <div className="modal apply-modal" onClick={(e) => e.stopPropagation()}>
         <h2>Apply — {jobTitle}</h2>
-        <p className="muted">{jobCompany}</p>
+        <p className="muted apply-subhead">
+          {jobCompany}
+          <span className="job-badge src">{jobAts}</span>
+        </p>
 
         {/* `runId === null` rather than a `started` flag so TypeScript narrows it
             to a number in the branch that hands it to RunStream. */}
         {runId === null ? (
           <>
-            <label>
-              Résumé to use
-              <select value={choice} onChange={(e) => setChoice(e.target.value)} disabled={busy}>
-                <option value="" disabled={!hasMaster}>
-                  {hasMaster ? "master résumé" : "master résumé (not set)"}
-                </option>
-                {tailored ? (
-                  <option value={tailored.job_id}>tailored for this job ★</option>
-                ) : null}
-                {resumes
-                  .filter((r) => r.job_id !== jobId)
-                  .map((r) => (
-                    <option key={r.job_id} value={r.job_id}>
-                      reuse: {r.role || "(untitled)"}{r.company ? ` @ ${r.company}` : ""}
-                    </option>
-                  ))}
-              </select>
-            </label>
+            <label className="apply-field-label" htmlFor="apply-resume">Résumé to use</label>
+            <select
+              id="apply-resume"
+              value={choice}
+              onChange={(e) => setChoice(e.target.value)}
+              disabled={busy}
+            >
+              <option value="" disabled={!hasMaster}>
+                {hasMaster ? "master résumé" : "master résumé (not set)"}
+              </option>
+              {tailored ? (
+                <option value={tailored.job_id}>tailored for this job ★</option>
+              ) : null}
+              {resumes
+                .filter((r) => r.job_id !== jobId)
+                .map((r) => (
+                  <option key={r.job_id} value={r.job_id}>
+                    reuse: {r.role || "(untitled)"}{r.company ? ` @ ${r.company}` : ""}
+                  </option>
+                ))}
+            </select>
 
             {!tailored ? (
               <p className="muted">
@@ -349,40 +364,91 @@ export default function ApplyModal({
             ) : null}
 
             {canAutofill ? (
-              <div className="apply-autofill">
-                <strong>Autofill for me</strong>
-                {/* Said BEFORE anything starts, not only in the report
-                    afterwards. This sentence is the whole contract of the
-                    feature, and a user who only learns it after a browser
-                    window has appeared on her screen has already been
-                    surprised by it. */}
-                <p className="muted small">
-                  Opens this {jobAts} form in a browser window on your screen and fills
-                  what it can from your profile, attaching the résumé above last.{" "}
-                  <strong>It fills the form. It does not submit it — and it never will.</strong>{" "}
-                  Nothing is sent until you read every field yourself and press Submit
-                  in that window. Work-authorization and self-identification questions
-                  are always left for you.
-                </p>
-                <button className="primary" onClick={startAutofill} disabled={busy}>
-                  {busy ? "Starting…" : "Open the form & autofill it"}
-                </button>
-              </div>
-            ) : (
-              <p className="muted small">{autofillUnavailableNote(jobAts)}</p>
-            )}
+              <>
+                <span className="apply-field-label" id="apply-path-label">How do you want to apply?</span>
+                <div className="apply-paths" role="radiogroup" aria-labelledby="apply-path-label">
+                  <label className={`apply-path ${path === "autofill" ? "on" : ""}`}>
+                    <input
+                      type="radio"
+                      name="apply-path"
+                      checked={path === "autofill"}
+                      onChange={() => setPath("autofill")}
+                      disabled={busy}
+                    />
+                    <span>
+                      <strong>Let the agent fill the form</strong>
+                      {/* Said BEFORE anything starts, not only in the report
+                          afterwards. A user who learns this after a browser
+                          window has appeared has already been surprised by it —
+                          which is why a test pins this sentence ABOVE the
+                          button that starts the run. */}
+                      <span className="muted small">
+                        Opens this {jobAts} form in a browser window on your screen and fills
+                        what it can from your profile, attaching the résumé above last.
+                      </span>
+                      <span className="apply-never">
+                        It fills the form. It does not submit it — and it never will.
+                        Nothing is sent until you read every field yourself and press Submit
+                        in that window. Work-authorization and self-identification questions
+                        are always left for you.
+                      </span>
+                    </span>
+                  </label>
+                  <label className={`apply-path ${path === "manual" ? "on" : ""}`}>
+                    <input
+                      type="radio"
+                      name="apply-path"
+                      checked={path === "manual"}
+                      onChange={() => setPath("manual")}
+                      disabled={busy}
+                    />
+                    <span>
+                      <strong>I&rsquo;ll fill it in myself</strong>
+                      <span className="muted small">
+                        Opens the posting and your résumé PDF in new tabs, and logs the
+                        application. You can undo it.
+                      </span>
+                    </span>
+                  </label>
+                </div>
+              </>
+            ) : null}
 
             {error ? <p className="banner err">{error}</p> : null}
 
+            {/* On a board without autofill this sentence otherwise lives nowhere:
+                it is normally part of the "I'll fill it in myself" radio card,
+                which never renders here because the radiogroup itself never
+                renders. Same wording as that card — one phrasing, not two — and
+                placed above its control, which is this whole feature's rule. */}
+            {!canAutofill ? (
+              <p className="muted small">
+                Opens the posting and your résumé PDF in new tabs, and logs the
+                application. You can undo it.
+              </p>
+            ) : null}
+
             <div className="modal-actions">
               <button onClick={dismiss} disabled={busy}>Cancel</button>
-              <button className="primary" onClick={confirm} disabled={busy || (!hasMaster && !choice)}>
-                {busy ? "Recording…" : "Download résumé, open posting & log it"}
+              <button
+                className="primary"
+                onClick={autofillSelected ? startAutofill : confirm}
+                disabled={busy || (!autofillSelected && !hasMaster && !choice)}
+              >
+                {busy
+                  ? autofillSelected ? "Starting…" : "Recording…"
+                  : autofillSelected
+                    ? "Open the form & autofill it"
+                    : "Download résumé, open posting & log it"}
               </button>
             </div>
-            <p className="muted small">
-              Opens the posting and your résumé PDF in new tabs, and logs the application. You can undo it.
-            </p>
+
+            {!canAutofill ? (
+              <div className="apply-unavailable">
+                <strong>Autofill isn&rsquo;t available for this posting</strong>
+                <span className="muted small">{autofillUnavailableNote(jobAts)}</span>
+              </div>
+            ) : null}
           </>
         ) : (
           <>

@@ -37,7 +37,7 @@ Note on #3: the pre-run copy supplies one `"not submit"` and the untouched in-ru
 - `autofillUnavailableNote()`'s returned string is unchanged. Only its presentation changes.
 - The dashboard hero stays black. `.hero` (`globals.css:307`) hardcodes `#000` in its own `background` shorthand and never reads `--bg`, so **no edit is required** to achieve this. Do not "tidy" it into `var(--bg)`.
 - The in-run and post-run branches of `ApplyModal.tsx` (`RunStream`, `Handoff`, "I pressed Submit — log it & verify", "Close the browser window") are **out of scope**. Do not restructure them.
-- `.venv/bin/python -m pytest` **prints no summary line** (`addopts = "-q"`). Count with `--junitxml` and read the exit code. Baseline is **1944 passed**.
+- `.venv/bin/python -m pytest` **prints no summary line** (`addopts = "-q"`). Count with `--junitxml` and read the exit code. Baseline is **1944 passed** (verified at the branch point, after PR #22 merged into main as `3e3341c`).
 - `uv` is installed but this repo's Python is `.venv/bin/python`. Use the absolute venv path.
 - The `:3000` server runs `npm run start`, a **production build** — a restart alone changes nothing. Rebuild first.
 
@@ -941,7 +941,7 @@ Expected hits and their verdicts — the `.tsx` grep returns nothing:
 | :474 | `.modal-backdrop` `rgba(0,0,0,.6)` | **LEAVE.** A dimming scrim should be black. |
 | :39-46 | `body` starfield dots | Step 2 |
 | :59 | `.topbar` `rgba(0,0,0,.55)` | Step 3 |
-| :363 | `.pill-nav a.on` `rgba(0,0,0,.9)` | Step 4 |
+| :363 | `.pill-nav a.on` `rgba(0,0,0,.9)` | **LEAVE.** `.pill-nav` is nested INSIDE `.hero` (`HubShell.tsx:35-46`), which stays black — so this pill is never over the charcoal page. See the correction note below. |
 
 - [ ] **Step 2: Rescue the starfield**
 
@@ -966,15 +966,25 @@ The six star dots are `rgba(255,255,255,.4)`–`.7` and the nebula is `rgba(30,6
   background: rgba(20, 23, 29, 0.72);
 ```
 
-- [ ] **Step 4: Fix the active nav pill**
+- [ ] **Step 4: Do NOT touch the active nav pill — verify why, and move on**
 
-Replace :363:
+**This step was wrong in the original plan and is now a verification step instead.** The plan claimed
+`.pill-nav a.on`'s `rgba(0,0,0,.9)` "now looks like a hole" on charcoal. It does not: `.pill-nav` is
+rendered **inside** `.hero` (`web-next/src/components/hub/HubShell.tsx:35-46`), and the hero keeps its
+own hardcoded `#000`. The pill therefore sits on black exactly as before, and lightening it to `.55`
+would be a gratuitous change to a page region the theme move never touched.
 
-```css
-.pill-nav a.on { background: rgba(0,0,0,.55); color: #fff; text-decoration-color: rgba(255,255,255,.5); }
+Confirm the nesting yourself before moving on:
+
+```bash
+cd /Users/kayla.li/.superset/Agent
+sed -n '33,50p' web-next/src/components/hub/HubShell.tsx   # .pill-nav inside .hero
+grep -n "topbar" web-next/src/app/layout.tsx               # .topbar is a sibling of <main>, NOT in .hero
 ```
 
-`.9` black on charcoal is a near-black lozenge that now looks like a hole; `.55` keeps the "pressed" read without punching through.
+Expected: `<nav className="pill-nav">` appears inside `<div className="hero" …>`, while `<TopNav />`
+(which renders `<header className="topbar">`) is a direct child of `<body>`. That contrast is exactly
+why Step 3 is needed and Step 4 is not.
 
 - [ ] **Step 5: Re-run every gate**
 

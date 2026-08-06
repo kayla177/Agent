@@ -1011,6 +1011,19 @@ def test_the_boards_the_ui_offers_autofill_for_are_the_ones_the_agent_supports()
     assert _ts_string_array(JOBS_LIB_SOURCE, "AUTOFILL_ATS") == list(SUPPORTED_ATS)
 
 
+def test_an_unsupported_board_gets_an_explained_limit_not_a_dead_button():
+    """No disabled autofill control: a dead button invites a click and answers
+    nothing. The limit is explained instead, and the note keeps the wording
+    `autofillUnavailableNote` is pinned to (see the ${board} / "fill it in
+    yourself" test)."""
+    assert "apply-unavailable" in MODAL_SOURCE
+    assert "Autofill isn&rsquo;t available for this posting" in MODAL_SOURCE
+    assert "autofillUnavailableNote(jobAts)" in MODAL_SOURCE
+    # The note sits BELOW the action it qualifies.
+    assert MODAL_SOURCE.index("modal-actions") < MODAL_SOURCE.index("apply-unavailable")
+    assert "disabled autofill" not in MODAL_SOURCE
+
+
 def test_the_ui_bands_match_the_report_bands():
     assert _ts_string_array(JOBS_LIB_SOURCE, "HANDOFF_GROUPS") == list(handoff_mod.GROUPS)
 
@@ -1121,6 +1134,27 @@ def test_the_modal_renders_the_structured_report_not_the_rendered_text():
     assert "dangerouslySetInnerHTML" not in MODAL_SOURCE
 
 
+def test_the_dialog_title_is_not_styled_like_a_decorative_section_label():
+    """globals.css defines a global `h2` for section labels — lowercase, muted,
+    5px tracking. That is right for the word "jobs" and wrong for
+    "Apply — U.S. Public Policy and AI Innovation Intern (Fall 2026)".
+    `.apply-modal h2` must reset all three, or the leak is invisible in review
+    because the rule it inherits from lives 400 lines away."""
+    css = (WEB / "app" / "globals.css").read_text()
+    start = css.index(".apply-modal h2")
+    block = css[start : css.index("}", start)]
+    assert "text-transform: none" in block, "the job title must not be lowercased"
+    assert "letter-spacing: normal" in block, "5px tracking belongs on section labels"
+    assert "color: var(--text)" in block, "a dialog title is not muted secondary text"
+
+
+def test_the_modal_shows_which_board_the_posting_is_on():
+    """The board decides whether autofill is offered at all. Showing it means the
+    absence of the autofill option is explained by something visible."""
+    assert "job-badge src" in MODAL_SOURCE, "reuse the board pill the list already uses"
+    assert "{jobAts}" in MODAL_SOURCE
+
+
 def test_the_modal_shows_the_bands_in_the_reports_own_order():
     assert "HANDOFF_GROUPS.map" in MODAL_SOURCE
     # `done` is collapsed rather than dropped: it is spot-check material, and
@@ -1201,3 +1235,96 @@ def test_the_run_stream_still_shows_its_output_for_every_other_caller():
         if "<RunStream" not in text or caller == MODAL:
             continue
         assert "showOutput" not in text, f"{caller.name} should keep the default"
+
+
+def test_form_controls_have_a_base_style_so_none_can_render_unstyled():
+    """The apply modal's <select> looked like plain text because the stylesheet had
+    NO base rule for form controls — five call sites each styled their own, and
+    this one was missed. A per-site pattern has no floor: every new control is one
+    omission away from invisible. This test only checks the four declarations
+    this rule promises (background/border/color/padding) and that the rule's
+    block appears before the two local-override blocks in source order — it
+    cannot verify the selector actually matches any real element in the DOM.
+    An earlier version of this rule listed `input[type="text"]` etc., which
+    matched nothing: most <input>s here carry no `type` attribute at all, so
+    React never puts that attribute in the DOM for React to select on. The
+    selector must also stay a plain type selector — via `:where()`, which adds
+    zero specificity — so it keeps losing to `.form-grid input` /
+    `.settings-form input` (0,1,1) instead of starting to win over them."""
+    css = (WEB / "app" / "globals.css").read_text()
+    base = css.index("/* BASE FORM CONTROLS")
+    assert base < css.index(".form-grid input"), "base rule must precede local overrides"
+    assert base < css.index(".settings-form input")
+    # Slice from AFTER the comment, not from it: the comment itself mentions
+    # `:where(` three times while explaining why it is required, so a slice that
+    # started at the comment made the assertion below pass on prose alone. A
+    # mutant that replaced the real selector with the chained `:not()` form this
+    # comment warns against — the exact (0,4,1) specificity regression this test
+    # exists to catch — still passed when the slice started at the comment.
+    block = css[css.index("*/", base) : css.index("}", base)]
+    for prop in ("background:", "border:", "color:", "padding:"):
+        assert prop in block, f"a control with no {prop} is invisible on a dark panel"
+    assert ":where(" in block, "zero-specificity guard: :not() alone would outrank the per-site rules"
+    for variant in ("text", "date", "number"):
+        assert f'input[type="{variant}"]' not in block, (
+            f"type-scoped clause for {variant}; React omits an unspecified type attribute"
+        )
+
+
+def test_the_resume_picker_is_labelled_as_a_control():
+    assert "apply-field-label" in MODAL_SOURCE
+    assert "Résumé to use" in MODAL_SOURCE
+
+
+def test_exactly_one_primary_button_in_the_pre_run_branch():
+    """Two `primary` buttons is no hierarchy. The pre-run branch ends where the
+    in-run branch begins, at the banner that repeats the guarantee."""
+    pre = MODAL_SOURCE[: MODAL_SOURCE.index("The agent is filling this form")]
+    assert pre.count('className="primary"') == 1, "one action, one primary"
+
+
+def test_the_path_choice_is_a_radiogroup_and_not_a_form():
+    assert 'role="radiogroup"' in MODAL_SOURCE
+    assert 'type="radio"' in MODAL_SOURCE
+    # THE ONE RULE: a <form> would make Enter submit. Re-asserted HERE because
+    # this task is the one that introduces inputs.
+    assert "<form" not in MODAL_SOURCE
+    assert 'type="submit"' not in MODAL_SOURCE
+
+
+def test_the_guarantee_still_precedes_the_button_after_the_restructure():
+    """Duplicates the existing ordering assertion on purpose. Layout C satisfies it
+    BY CONSTRUCTION -- the radio descriptions sit above the footer -- and this test
+    is what makes a future revision that moves the action upward fail loudly."""
+    assert MODAL_SOURCE.index("It does not submit it") < MODAL_SOURCE.index(
+        "Open the form & autofill it"
+    )
+    assert MODAL_SOURCE.count("not submit") >= 2
+
+
+def test_the_resume_guard_survives_on_a_board_without_autofill():
+    """On a board the applier cannot read, the radiogroup never renders, so `path`
+    keeps its "autofill" default while the footer button actually calls `confirm`.
+    Keying the résumé guard off `path === "manual"` therefore dropped it entirely
+    there, letting a user with no résumé at all log an application and open a PDF
+    that does not exist. The guard must key off the EFFECTIVE action."""
+    assert "const autofillSelected = path === \"autofill\" && canAutofill" in MODAL_SOURCE
+    assert '!autofillSelected && !hasMaster && !choice' in MODAL_SOURCE
+    assert 'path === "manual" && !hasMaster' not in MODAL_SOURCE, (
+        "this is the dropped-guard expression; it is never true on an unsupported board"
+    )
+
+
+def test_the_selected_apply_path_tints_itself_from_the_active_planet_accent():
+    """`--accent` is themed per page (globals.css body[data-planet=…]); the jobs tab is
+    mars/orange. A hardcoded rgba(74,144,255,…) tint under a `var(--accent)` border gave
+    the selected radio card an orange border over Earth's blue wash — wrong on four of
+    the five planets. Found by looking at the rendered modal, which is the only way a
+    themed-token mismatch shows up."""
+    css = (WEB / "app" / "globals.css").read_text()
+    start = css.index(".apply-path.on")
+    block = css[start : css.index("}", start)]
+    assert "74, 144, 255" not in block and "74,144,255" not in block, (
+        "Earth's blue hardcoded into a themed rule"
+    )
+    assert "var(--accent)" in block, "the tint must derive from the active planet's accent"
