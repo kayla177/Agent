@@ -23,6 +23,8 @@ from __future__ import annotations
 import datetime as dt
 import json
 
+import pytest
+
 import config
 from agents.job_scraper import store as jobstore
 from agents.job_scraper.matching import stale_reason
@@ -745,3 +747,98 @@ def test_freshness_never_flags_a_row_with_blank_id_company_or_ats():
         "fetched_ok": {("Acme", "greenhouse"), ("Acme", ""), ("", "greenhouse")},
     })["new"]
     assert all(p["ghost"] is False for p in out)
+
+
+# ---------------------------------------------------------------------------
+# A run that reached no board at all is not a successful run
+# ---------------------------------------------------------------------------
+
+
+def test_a_run_where_every_board_failed_raises_instead_of_reporting_success(monkeypatch):
+    """Measured from jobscraper.log on 2026-08-06: one run had 261 fetch
+    failures — every configured board — all `[Errno 8] nodename nor servname
+    provided`, i.e. the machine had no DNS and therefore no network. launchd had
+    fired while it was asleep or before Wi-Fi came up.
+
+    That run was recorded as **success** with the message "No new co-op / intern
+    / new-grad roles since last check." Which is how it stayed invisible: a run
+    that reached nothing looked identical to a run that reached everything and
+    found nothing new. `server/runner.py` marks any graph that does not RAISE as
+    success, so returning `state["error"]` would not have helped either.
+
+    Nothing downstream is harmed by such a run — a board that raises never enters
+    `fetched_ok`, so nothing is falsely marked delisted — but the user is told a
+    lie about her own data, and she asked why there were no postings.
+    """
+    from agents.job_scraper.nodes import fetch as fetch_mod
+
+    monkeypatch.setattr(fetch_mod, "get_sources", lambda: [
+        {"company": "Acme", "ats": "greenhouse", "token": "acme"},
+        {"company": "Beta", "ats": "lever", "token": "beta"},
+    ])
+
+    def all_dns_failures(source):
+        raise OSError("[Errno 8] nodename nor servname provided, or not known")
+
+    monkeypatch.setattr(fetch_mod, "fetch_source", all_dns_failures)
+
+    with pytest.raises(fetch_mod.NoBoardReachable) as exc:
+        fetch_node({})
+    msg = str(exc.value)
+    assert "2" in msg, "say how many boards were attempted"
+    assert "network" in msg.lower(), "name the likely cause when every failure is a DNS error"
+
+
+def test_one_surviving_board_is_still_a_successful_run(monkeypatch):
+    """The bar is deliberately "reached NOTHING", not "reached less than usual".
+    A run that read one board really did learn something, and the per-board
+    warnings already report the rest."""
+    from agents.job_scraper.nodes import fetch as fetch_mod
+
+    monkeypatch.setattr(fetch_mod, "get_sources", lambda: [
+        {"company": "Acme", "ats": "greenhouse", "token": "acme"},
+        {"company": "Beta", "ats": "lever", "token": "beta"},
+    ])
+
+    def one_works(source):
+        if source["ats"] == "lever":
+            raise OSError("[Errno 8] nodename nor servname provided, or not known")
+        return [{"id": "Acme:greenhouse:1", "company": "Acme"}]
+
+    monkeypatch.setattr(fetch_mod, "fetch_source", one_works)
+    out = fetch_node({})
+    assert out["fetched_ok"] == {("Acme", "greenhouse")}
+    assert len(out["warnings"]) == 1
+
+
+def test_boards_that_all_succeed_but_are_empty_do_not_raise(monkeypatch):
+    """An empty board is not a failure — it is a board with no matching roles,
+    which is the normal case for most of 259 boards. Raising here would turn a
+    quiet week into an error every run."""
+    from agents.job_scraper.nodes import fetch as fetch_mod
+
+    monkeypatch.setattr(fetch_mod, "get_sources", lambda: [
+        {"company": "Acme", "ats": "greenhouse", "token": "acme"},
+    ])
+    monkeypatch.setattr(fetch_mod, "fetch_source", lambda s: [])
+    out = fetch_node({})
+    assert out["raw"] == [] and out["warnings"] == []
+
+
+def test_a_non_network_total_failure_still_raises_but_does_not_blame_the_network(monkeypatch):
+    """If every board 404s, the run still reached nothing and is still not a
+    success — but the message must not claim a network problem it has no evidence
+    for. Naming the wrong cause is how a reader stops trusting the other notes."""
+    from agents.job_scraper.nodes import fetch as fetch_mod
+
+    monkeypatch.setattr(fetch_mod, "get_sources", lambda: [
+        {"company": "Acme", "ats": "greenhouse", "token": "acme"},
+    ])
+
+    def not_found(source):
+        raise RuntimeError("Client error '404 Not Found'")
+
+    monkeypatch.setattr(fetch_mod, "fetch_source", not_found)
+    with pytest.raises(fetch_mod.NoBoardReachable) as exc:
+        fetch_node({})
+    assert "network" not in str(exc.value).lower()
