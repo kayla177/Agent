@@ -677,11 +677,17 @@ def _default_country(value: str) -> str:
 _WORK_AUTH_YES_NO = {
     "citizen": "Yes",
     "permanent_resident": "Yes",
+    # A held co-op/study permit authorizes work in the country that issued it.
+    "coop_permit": "Yes",
     "needs_sponsorship": "No",
 }
 _SPONSORSHIP_YES_NO = {
     "citizen": "No",
     "permanent_resident": "No",
+    # The permit is already held, so no sponsorship is needed to use it. Unlike
+    # f1_opt this is NOT conditional: a co-op permit's work authorization does
+    # not depend on an employer petitioning later.
+    "coop_permit": "No",
     "needs_sponsorship": "Yes",
 }
 

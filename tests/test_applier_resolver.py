@@ -40,6 +40,10 @@ SPARSE = {**{k: "" for k in FAKE}, "needs_sponsorship": 0,
 
 FIXTURE = pathlib.Path(__file__).parent / "fixtures" / "ats" / "greenhouse-questions.json"
 
+# Derived, never hand-listed: a status added to the enum must be exercised by the
+# tests that sweep every status, or it ships untested.
+from profile_store import WORK_AUTH as _ALL_STATUSES  # noqa: E402
+
 
 def q(label, required=True, kind="text"):
     return Question(key=label.lower().replace(" ", "_"), label=label, required=required, kind=kind, options=[])
@@ -912,10 +916,9 @@ def test_no_eligibility_phrasing_is_answered_from_an_unset_field(label, kind):
 
 @pytest.mark.parametrize("label", ELIGIBILITY_CORPUS)
 def test_no_eligibility_phrasing_ever_lands_off_menu_on_a_select(label):
-    """Across all six WORK_AUTH values and both widget kinds, a select may only
+    """Across every WORK_AUTH value and both widget kinds, a select may only
     ever hold one of its own options."""
-    for status in ("", "citizen", "permanent_resident", "f1_opt", "tn_eligible",
-                   "needs_sponsorship"):
+    for status in _ALL_STATUSES:
         for widget in ("select", "checkbox"):
             prof = {**RICH, "us_work_auth": status, "ca_work_auth": status}
             ans = resolve([sel(label, ["Yes", "No"], kind=widget)], prof)[0]
@@ -1606,3 +1609,75 @@ def test_a_profile_field_is_only_ever_copied_into_its_own_kind():
         assert allowed.get(ans.kind) in fields, (
             ans.question.label, ans.kind, allowed.get(ans.kind), fields)
     assert seen >= 5, seen
+
+
+# ------------------------------------------------- co-op / study work permit
+#
+# Kayla is an international co-op student at Waterloo: she holds a co-op work
+# permit, which authorizes work in CANADA and needs no sponsorship there. None
+# of the original six WORK_AUTH values said that. Two of them — `f1_opt` and
+# `tn_eligible` — are US immigration categories, and `tn_eligible` was actually
+# stored in `ca_work_auth`, where it produced the note "Eligible for TN status
+# under USMCA" on Canadian forms. TN is about working in the US.
+
+
+def test_the_enum_offers_a_status_for_a_co_op_or_study_work_permit():
+    from profile_store import WORK_AUTH
+
+    assert "coop_permit" in WORK_AUTH
+
+
+def test_a_co_op_permit_answers_canadian_work_authorization():
+    prof = {**FAKE, "ca_work_auth": "coop_permit"}
+    ans = resolve([sel("Are you legally authorized to work in Canada?", ["Yes", "No"])], prof)[0]
+    assert ans.source == "profile"
+    assert ans.value == "Yes"
+
+
+def test_a_co_op_permit_needs_no_sponsorship_in_canada():
+    prof = {**FAKE, "ca_work_auth": "coop_permit"}
+    ans = resolve(
+        [sel("Will you now or in the future require sponsorship to work in Canada?", ["Yes", "No"])],
+        prof,
+    )[0]
+    assert ans.source == "profile"
+    assert ans.value == "No"
+
+
+def test_a_co_op_permit_says_nothing_about_the_united_states():
+    """The permit is Canadian. A US question must stay blank even though the
+    Canadian field is confidently set — the same country gate that stops
+    `f1_opt` answering a Canadian question."""
+    prof = {**FAKE, "ca_work_auth": "coop_permit"}
+    for label in ("Are you legally authorized to work in the United States?",
+                  "Will you require sponsorship to work in the US?"):
+        ans = resolve([sel(label, ["Yes", "No"])], prof)[0]
+        assert (ans.source, ans.value) == ("blank", ""), label
+
+
+def test_a_co_op_permit_is_never_read_as_citizenship():
+    """Holding a work permit is the opposite of citizenship: a citizen needs no
+    permit. Inferring one from the other would put a false legal claim on a real
+    application."""
+    ans = resolve([sel("Are you a Canadian citizen?", ["Yes", "No"])],
+                  {**FAKE, "ca_work_auth": "coop_permit"})[0]
+    assert (ans.source, ans.value) == ("blank", "")
+
+
+def test_a_co_op_permit_is_still_surfaced_for_the_human_to_confirm():
+    """Every eligibility answer stays blocking. The value changes what is
+    SUGGESTED, never what is typed."""
+    prof = {**FAKE, "ca_work_auth": "coop_permit"}
+    ans = resolve([sel("Are you legally authorized to work in Canada?", ["Yes", "No"])], prof)[0]
+    assert ans.question.kind in ("select", "checkbox")
+    assert classify(ans.question) in BLOCKING_KINDS
+
+
+def test_the_enumerated_status_tests_cover_every_value_the_enum_offers():
+    """These tests hardcode status lists. Deriving the guard from the enum means
+    adding a seventh value cannot silently leave it untested — which is exactly
+    what adding the sixth-to-seventh value did to the list in
+    `test_no_eligibility_phrasing_ever_lands_off_menu_on_a_select`."""
+    from profile_store import WORK_AUTH
+
+    assert set(_ALL_STATUSES) == set(WORK_AUTH)
