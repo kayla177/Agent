@@ -2490,6 +2490,7 @@ class _Element:
         live_tag: str | None = None,
         live_type: str | None = None,
         no_shape_api: bool = False,
+        vanishes: bool = False,
     ) -> None:
         # What the LIVE element reports for `tagName` / the `type` attribute,
         # overriding whatever the snapshot HTML said. `None` means "the live DOM
@@ -2500,6 +2501,12 @@ class _Element:
         self.live_tag = live_tag
         self.live_type = live_type
         self.no_shape_api = no_shape_api
+        # Greenhouse REMOVES the hidden <input type=file> once a file is
+        # attached and renders the name as a chip instead. Measured live
+        # 2026-08-05: set_input_files succeeds, then every read of that node
+        # times out because it is gone.
+        self.vanishes = vanishes
+        self.vanished = False
         self.value = value
         # `reverts` models a React-controlled input that re-renders from its own
         # state after ANY write, including the clearing one — so the field snaps
@@ -2552,6 +2559,8 @@ class _FormLocator:
     def input_value(self, timeout: int | None = None) -> str:
         self._page.read_timeouts.append(("input_value", timeout))
         el = self._el
+        if el.vanished:
+            raise TimeoutError("locator.input_value: element is not attached")
         if el.files:
             # Measured on real headed Chromium: a file input's `value` is the
             # spec's deliberate fake path, Windows separator and all, on macOS.
@@ -2567,6 +2576,8 @@ class _FormLocator:
     def evaluate(self, script: str, arg=None, timeout: int | None = None):
         self._page.read_timeouts.append(("evaluate", timeout))
         el = self._el
+        if el.vanished:
+            raise TimeoutError("locator.evaluate: element is not attached")
         if "tagName" in script:
             # The LIVE shape. Defaults to what the snapshot HTML says for this
             # selector, so the overwhelming majority of tests — the ones where
@@ -2641,6 +2652,9 @@ class _FormLocator:
         if el.swallow:
             return
         el.files = [pathlib.Path(path).name]
+        if el.vanishes:
+            el.vanished = True
+            self._page.rendered_chips.append(el.files[0])
 
 
 class _FormPage:
@@ -2655,6 +2669,8 @@ class _FormPage:
         self.visibility_checks: list[str] = []
         self.read_timeouts: list[tuple[str, int | None]] = []
         self.content_calls = 0
+        #: Filenames the board DISPLAYS after removing the input on upload.
+        self.rendered_chips: list[str] = []
 
     def element(self, selector: str) -> _Element:
         return self._elements.setdefault(selector, _Element())
@@ -2675,8 +2691,15 @@ class _FormPage:
         return self._shapes.get(selector, ("", ""))
 
     def content(self) -> str:
+        """Snapshot HTML, plus any filename the board now displays.
+
+        Greenhouse removes the file input on upload and renders the name
+        instead, so that rendered name is the only evidence left that the
+        attach worked.
+        """
         self.content_calls += 1
-        return self._html
+        chips = "".join(f'<span class="chip">{c}</span>' for c in self.rendered_chips)
+        return self._html + chips
 
     def locator(self, selector: str) -> _FormLocator:
         return _FormLocator(self, selector)
@@ -4430,3 +4453,53 @@ def test_the_documented_retry_count_matches_the_constant():
     assert quoted == {str(MAX_ATTEMPTS)}, (
         f"the docstring says {quoted} but the constant is {MAX_ATTEMPTS}"
     )
+
+
+def test_a_board_that_removes_the_file_input_on_upload_is_not_reported_as_a_failure(tmp_path):
+    """Measured live against job-boards.greenhouse.io on 2026-08-05, on Kayla's
+    first real assisted-apply run.
+
+    `set_input_files` SUCCEEDS, and Greenhouse's uploader then REMOVES the hidden
+    `<input id="resume">` from the DOM and renders the filename as a chip. Both
+    read-back strategies then time out on a node that no longer exists,
+    `_read_filename` swallows the exception and returns "", and the handoff told
+    her “the résumé did not land: the field reads “nothing””.
+
+    Her résumé HAD attached — the page was displaying its name. The write was
+    fine; the verification was wrong. A read-back that cannot tell "the value is
+    absent" from "the element is gone" reports a false failure on the one field
+    the whole feature exists to fill.
+    """
+    html = '<label for="r">Resume/CV</label><input id="r" type="file">'
+    cv = tmp_path / "master__2026-07-24T21_30_36.pdf"
+    cv.write_bytes(b"%PDF-1.4\n")
+    page = _FormPage(html, **{'[id="r"]': _Element(vanishes=True)})
+
+    out = attach_resume(page, parse_controls(html), str(cv))
+
+    assert out.status == ATTACHED, out.note
+    assert out.value == "master__2026-07-24T21_30_36.pdf"
+    assert "nothing" not in out.note
+    # It must say HOW it knows, since it did not read the input back.
+    assert "removed" in out.note.lower() or "displays" in out.note.lower()
+
+
+def test_a_vanished_input_with_no_filename_on_the_page_is_still_a_failure(tmp_path):
+    """The other half, so the fix cannot become "assume success whenever the
+    element disappears". No rendered filename means no evidence, and no evidence
+    means blank — the same default-deny the rest of this module runs on."""
+    html = '<label for="r">Resume/CV</label><input id="r" type="file">'
+    cv = tmp_path / "testy-cv.pdf"
+    cv.write_bytes(b"%PDF-1.4\n")
+
+    class _SilentBoard(_FormPage):
+        """Removes the input and renders NOTHING in its place."""
+
+        def content(self) -> str:
+            self.content_calls += 1
+            return self._html
+
+    page = _SilentBoard(html, **{'[id="r"]': _Element(vanishes=True)})
+    out = attach_resume(page, parse_controls(html), str(cv))
+    assert out.status == BLANK, out.note
+    assert "attach it yourself" in out.note
