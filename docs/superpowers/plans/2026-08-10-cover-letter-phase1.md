@@ -1038,7 +1038,7 @@ Expected: 16 passed. If `test_the_agent_is_registered_on_the_resume_tab` fails o
 ```bash
 .venv/bin/python -m pytest tests/ --junitxml=/tmp/t3.xml -q; echo "exit=$?"
 ```
-Expected: exit 0, **2017** tests.
+Expected: exit 0, **2018** tests — 16 new, plus ONE more because `tests/test_applier_graph.py:1161` is `@pytest.mark.parametrize("key", sorted(REGISTRY))`, so registering an agent auto-adds a case.
 
 ```bash
 git add agents/cover_letter_generator/ agents/registry.py tests/test_cover_letter_agent.py
@@ -1189,7 +1189,7 @@ Expected: a JSON envelope with an empty body, and `cover_letter_generator` in th
 ```bash
 .venv/bin/python -m pytest tests/ --junitxml=/tmp/t4.xml -q; echo "exit=$?"
 ```
-Expected: exit 0, **2021** tests.
+Expected: exit 0, **2022** tests.
 
 ```bash
 git add server/routers/resume.py tests/test_cover_letter_agent.py
@@ -1391,7 +1391,7 @@ Report what you saw for each, and screenshot the section.
 cd /Users/kayla.li/.superset/Agent
 .venv/bin/python -m pytest tests/ --junitxml=/tmp/t5.xml -q; echo "exit=$?"
 ```
-Expected: exit 0, **2021** tests (this task adds no Python tests).
+Expected: exit 0, **2022** tests (this task adds no Python tests).
 
 ```bash
 git add web-next/src/components/resume/ "web-next/src/app/(hub)/resume/page.tsx"
@@ -1411,7 +1411,7 @@ refuses without one -- saying so up front beats starting a run that can only fai
 
 ## Done when
 
-- `2021 passed, 0 failures` from `.venv/bin/python -m pytest tests/` (1991 baseline + 30).
+- `2022 passed, 0 failures` from `.venv/bin/python -m pytest tests/` (1991 baseline + 30 new + 1 auto-added registry case).
 - `npm run db:check` no drift · `tsc --noEmit` clean · `eslint src` 0 errors.
 - `curl :8001/agents` lists `cover_letter_generator`.
 - The manual walkthrough in Task 5 Step 7 done, including the version-history check — that one proves the snapshot guarantee end to end, which no unit test can show her.
