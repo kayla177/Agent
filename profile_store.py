@@ -27,7 +27,15 @@ FIELDS: tuple[str, ...] = (
 
 # Accepted work-authorization values (free text elsewhere would defeat the
 # point of typed fields — an autofill must never guess this answer).
-WORK_AUTH = ("", "citizen", "permanent_resident", "f1_opt", "tn_eligible", "needs_sponsorship")
+WORK_AUTH = (
+    "", "citizen", "permanent_resident", "f1_opt", "tn_eligible",
+    # A Canadian co-op/study work permit. Kept distinct from the US categories
+    # above: f1_opt and tn_eligible are US immigration statuses and say nothing
+    # about working in Canada, which is how ca_work_auth came to hold
+    # "tn_eligible" and put "Eligible for TN status under USMCA" on Canadian forms.
+    "coop_permit",
+    "needs_sponsorship",
+)
 
 _INT_FIELDS = frozenset({"needs_sponsorship"})
 

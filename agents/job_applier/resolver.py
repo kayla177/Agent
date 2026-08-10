@@ -36,6 +36,7 @@ This module writes no browser code at all.
 
 from __future__ import annotations
 
+import datetime as dt
 import re
 from dataclasses import dataclass
 
@@ -499,6 +500,19 @@ _LABEL_RULES: tuple[tuple[str, re.Pattern[str]], ...] = (
         r"grad\s+date", r"grad\s+year",
         r"expected\s+completion",
     )),
+    # A yes/no about BEING a student is not a request for the school's NAME.
+    # Kayla's first real run reported this blank as "this reads as a yes/no
+    # question … so your profile's “school” is not the answer to it" — a correct
+    # refusal with the wrong conclusion. It IS answerable, just not from `school`.
+    # BEFORE `school`, or `school` claims the label first.
+    #
+    # Deliberately narrow: an enrolment token AND a return/continue token both
+    # have to appear, so "Which university are you enrolled at?" stays a name
+    # request and keeps going to `school`.
+    ("enrollment", re.compile(
+        r"(?=.*\b(?:enrolled|enrolment|enrollment|currently\s+a\s+student|attending)\b)"
+        r"(?=.*\b(?:return|returning|resume|continue|go\s+back)\b)",
+        re.IGNORECASE)),
     ("school", _rx(
         r"school", r"university", r"college", r"institution", r"alma\s+mater",
         r"education",
@@ -507,6 +521,23 @@ _LABEL_RULES: tuple[tuple[str, re.Pattern[str]], ...] = (
         r"degree", r"major", r"field\s+of\s+study", r"discipline", r"concentration",
     )),
 
+    # BEFORE `relocation` and `location`. Kayla's ruling, 2026-08-05, and the
+    # one place I declined her first instruction: she asked for "yes as long as
+    # it's inside the US and Canada" on questions like Cloudflare's "Are you
+    # currently residing in the greater Washington D.C. Area or have confirmed
+    # plans to be in Washington D.C. …". She lives in Waterloo. That question
+    # asks where she physically IS or WILL BE, and answering it from her target
+    # countries would put a false statement on a real application — the same
+    # defect class as the four wrong values Phase B found by reading output.
+    #
+    # A label carrying BOTH ("are you located there, or willing to relocate?")
+    # lands here rather than on `relocation`, because the residence half is the
+    # half that can be answered wrongly.
+    ("residence", _rx(
+        r"currently\s+resid\w*", r"confirmed\s+plans", r"currently\s+live\w*",
+        r"currently\s+located", r"currently\s+based", r"reside\s+in",
+        r"living\s+in", r"located\s+in", r"based\s+in",
+    )),
     # Before `location`: "willing to relocate to the job's location" is a
     # preference, not the user's current city, and mentions "location".
     ("relocation", _rx(r"relocat\w*", r"willing\s+to\s+move")),
@@ -515,6 +546,10 @@ _LABEL_RULES: tuple[tuple[str, re.Pattern[str]], ...] = (
         r"country\s+of\s+residence", r"where\s+are\s+you\s+(?:based|located)",
         r"current(?:ly)?\s+(?:reside|live|located|based)",
     )),
+    # A bare "Country" — the phone/address country Greenhouse asks for. AFTER
+    # `location`, whose pattern already claims "country of residence", so that
+    # phrasing keeps exactly the behaviour it had.
+    ("country", _rx(r"country")),
 
     # Free-text prompts recognisable from the label even on a single-line
     # input. The drafting node (Task 5) owns these.
@@ -677,11 +712,17 @@ def _default_country(value: str) -> str:
 _WORK_AUTH_YES_NO = {
     "citizen": "Yes",
     "permanent_resident": "Yes",
+    # A held co-op/study permit authorizes work in the country that issued it.
+    "coop_permit": "Yes",
     "needs_sponsorship": "No",
 }
 _SPONSORSHIP_YES_NO = {
     "citizen": "No",
     "permanent_resident": "No",
+    # The permit is already held, so no sponsorship is needed to use it. Unlike
+    # f1_opt this is NOT conditional: a co-op permit's work authorization does
+    # not depend on an employer petitioning later.
+    "coop_permit": "No",
     "needs_sponsorship": "Yes",
 }
 
@@ -734,6 +775,58 @@ def _normalize_option(text: str) -> str:
     from "Yes" and must not be selected on the strength of a shared prefix.
     """
     return re.sub(r"[\s.!*:]+$", "", text.strip().casefold())
+
+
+#: The only countries a profile here can be about (`config.JOB_COUNTRIES`), plus
+#: their common spellings. An ALLOWLIST, so a trailing province or postcode
+#: ("Waterloo, ON") is never mistaken for a country.
+_KNOWN_COUNTRIES = {
+    "canada", "united states", "united states of america",
+    "usa", "u.s.", "u.s.a.", "us", "america",
+}
+
+#: Option text meaning "I found this on the company's own site". The scraper
+#: reads official ATS boards, so that is true BY CONSTRUCTION rather than a
+#: guess about what the user did. Matched against the question's OWN options and
+#: never typed as free text — and deliberately not matching "Other", which is a
+#: different claim.
+_REFERRAL_WEBSITE_RE = re.compile(
+    r"\b(?:web\s?site|careers?\s*(?:page|site|portal)|company\s+site|job\s+board)\b",
+    re.IGNORECASE,
+)
+
+
+def _country_from_location(location: str) -> str:
+    """The country named at the end of a free-text location, or "".
+
+    `location` is one string the user typed ("Waterloo, ON, Canada"), so the
+    country — when it is there at all — is the last comma-separated segment.
+    Returns "" when the location names no country ("Waterloo"): inferring a
+    country from a city name is the same chained guess this module refuses when
+    it declines to read citizenship out of a work-auth status.
+    """
+    parts = [s.strip() for s in str(location or "").split(",") if s.strip()]
+    if len(parts) < 2:
+        return ""
+    tail = parts[-1]
+    return tail if tail.casefold() in _KNOWN_COUNTRIES else ""
+
+
+def _still_enrolled(profile: dict) -> bool:
+    """Whether the profile describes someone still in the middle of a program.
+
+    Keyed on `grad_date` being ahead of today rather than on a stored "I am a
+    student" flag, so the answer stops being Yes by itself in the month she
+    graduates instead of going quietly stale on a real application. A school is
+    required too: a date with no institution is not evidence of enrolment.
+    """
+    if not str(profile.get("school") or "").strip():
+        return False
+    m = re.match(r"^\s*(\d{4})(?:[-/](\d{1,2}))?", str(profile.get("grad_date") or ""))
+    if not m:
+        return False
+    today = dt.date.today()
+    return (int(m.group(1)), int(m.group(2) or 12)) > (today.year, today.month)
 
 
 def _emit(question: Question, kind: str, value: str, note: str = "") -> Answer:
@@ -990,10 +1083,58 @@ def _resolve_one(question: Question, profile: dict, default_country: str = "") -
         )
 
     if kind == "referral_source":
+        # Kayla's ruling, 2026-08-05: the scraper reads official ATS boards, so
+        # "found it on the company's site" is true by construction. Only ever
+        # selected from the question's OWN options — never typed as free text,
+        # where it would be a sentence the agent invented, and never falling back
+        # to "Other", which is a different claim.
+        match = next(
+            (opt for opt in (question.options or []) if _REFERRAL_WEBSITE_RE.search(opt)),
+            None,
+        )
+        if match and question.kind in ("select", "checkbox"):
+            return _emit(
+                question, kind, match,
+                note=("selected because this posting was found on the company's own "
+                      "job board, which is where the scraper reads from."),
+            )
         return _blank(
             question, kind,
-            "how you heard about this job is a fact only you know — fill it in "
+            "how you heard about this job is a fact only you know, and none of "
+            "this question's options says the company's own site — fill it in "
             "yourself.",
+        )
+
+    if kind == "enrollment":
+        # A yes/no about BEING a student, answerable from school + a graduation
+        # date still ahead of today. Not from a stored flag: see `_still_enrolled`.
+        if not _still_enrolled(profile):
+            return _blank(
+                question, kind,
+                "this asks whether you are still enrolled and returning, and your "
+                "profile's school and graduation date do not show that you are — "
+                "answer it yourself.",
+            )
+        return _emit(
+            question, kind, "Yes",
+            note=("your profile records “{school}” with graduation {grad}, which is "
+                  "still ahead — confirm it still holds.").format(
+                      school=str(profile.get("school") or "").strip(),
+                      grad=str(profile.get("grad_date") or "").strip()),
+        )
+
+    if kind == "country":
+        derived = _country_from_location(str(profile.get("location") or ""))
+        if not derived:
+            return _blank(
+                question, kind,
+                "“location” in your profile names no country, so there is nothing "
+                "to derive this from — add one there, or type this field in "
+                "yourself.",
+            )
+        return _emit(
+            question, kind, derived,
+            note="taken from the country at the end of your profile's location.",
         )
 
     if kind == "name_alt":
@@ -1010,11 +1151,38 @@ def _resolve_one(question: Question, profile: dict, default_country: str = "") -
             "itself — your profile has no answer to it, so type it in yourself.",
         )
 
-    if kind == "relocation":
+    if kind == "residence":
+        # Blank, and the note says WHICH location the profile holds so the
+        # refusal reads as a fact about the question rather than a gap in the
+        # resolver. See the rule's own comment for why this is never answered.
+        held = str(profile.get("location") or "").strip()
+        where = f" — it records “{held}”" if held else ""
         return _blank(
             question, kind,
-            "a relocation preference is not stored in your profile — answer it "
-            "yourself.",
+            f"this asks where you are, or have confirmed plans to be, and your "
+            f"profile records where you live{where}, which is a different claim. "
+            f"Answering it from your target countries would put a statement about "
+            f"your whereabouts on this application that your profile does not "
+            f"support — answer it yourself.",
+        )
+
+    if kind == "relocation":
+        # Kayla's ruling, 2026-08-05: she is willing to work anywhere in the US
+        # or Canada. Scoped to postings whose country is one of those two, so a
+        # posting elsewhere gets no answer rather than a willingness she never
+        # expressed. `default_country` is the posting's own country, from the
+        # scraped row — the same source the eligibility rules trust.
+        if _default_country(default_country) not in ("us", "ca"):
+            return _blank(
+                question, kind,
+                "you are willing to relocate anywhere in the US or Canada, but "
+                "this posting's country is not one of those (or is not known), so "
+                "this one is yours to answer.",
+            )
+        return _emit(
+            question, kind, "Yes",
+            note=("you are willing to relocate anywhere in the US or Canada, and "
+                  "this posting is in one of them — confirm it still holds."),
         )
 
     if kind == "gpa":

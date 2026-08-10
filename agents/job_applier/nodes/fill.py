@@ -1126,6 +1126,27 @@ def _read_filename(locator: Any, timeout_ms: int = DEFAULT_TIMEOUT_MS) -> str:
     return raw.replace("\\", "/").rsplit("/", 1)[-1] if raw else ""
 
 
+def _filename_rendered(page: Any, filename: str) -> bool:
+    """Whether the page itself now DISPLAYS `filename`.
+
+    The fallback evidence for an attach, and it exists because reading the input
+    back is not always possible. Measured live against job-boards.greenhouse.io
+    on 2026-08-05: `set_input_files` succeeds, Greenhouse's uploader REMOVES the
+    hidden `<input id="resume">` from the DOM and renders the name as a chip, and
+    both read-back strategies then time out on a node that is gone. `_read_filename`
+    swallows those timeouts and returns "", so a successful upload was reported as
+    "the field reads “nothing”".
+
+    This is deliberately NOT "assume success when the element disappears". The
+    filename has to be visible in the page's own markup — no rendered name, no
+    claim. Default-deny, like the rest of this module.
+    """
+    try:
+        return bool(filename) and filename in str(page.content() or "")
+    except Exception:  # noqa: BLE001 — a page we cannot read is not evidence
+        return False
+
+
 def attach_resume(
     page: Any,
     controls: list[Control],
@@ -1214,6 +1235,21 @@ def attach_resume(
             attempts=1,
             note=(f"“{filename}” attached to “{label}” and confirmed, after every "
                   f"other field was filled."),
+        )
+    # Nothing read back, but the page is displaying the name: the board removed
+    # the input on upload. Confirmed by the OTHER observable, and the note says
+    # so rather than implying the input was read.
+    if not landed and _filename_rendered(page, filename):
+        return FillOutcome(
+            key=RESUME_KEY, label=label, status=ATTACHED, value=filename,
+            intended=filename, kind="file_upload", source="file",
+            strategy="attach", attempts=1,
+            note=(
+                f"“{filename}” attached to “{label}”, after every other field was "
+                f"filled. This board removed the file input from the page on upload, "
+                f"so it was confirmed by the filename the page now displays rather "
+                f"than by reading the input back."
+            ),
         )
     return FillOutcome(
         key=RESUME_KEY, label=label, status=BLANK, value=landed, intended=filename,

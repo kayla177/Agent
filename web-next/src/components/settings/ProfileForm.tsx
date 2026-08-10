@@ -15,6 +15,7 @@ const WORK_AUTH = [
   { v: "permanent_resident", l: "permanent resident" },
   { v: "f1_opt", l: "F-1 / OPT" },
   { v: "tn_eligible", l: "TN eligible" },
+  { v: "coop_permit", l: "co-op / study work permit" },
   { v: "needs_sponsorship", l: "needs sponsorship" },
 ];
 
