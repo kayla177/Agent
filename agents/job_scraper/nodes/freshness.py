@@ -49,7 +49,17 @@ def _ghost_reason(p: dict, observed_ids: set[str], fetched_ok: set[tuple[str, st
     # Age / deadline / source-unlisted. Shared with store.sweep_ghosts so a
     # converged row that never re-enters the pipeline is judged by the same
     # rule (see matching.stale_reason).
-    return stale_reason(p)
+    #
+    # `on_board` is the same evidence the delisting check above relies on, read
+    # the other way round: the board was verified healthy this run AND this
+    # posting was in what it returned, so it is demonstrably still listed and the
+    # age inference must not overrule that.
+    on_board = bool(
+        p.get("id") and p.get("company") and p.get("ats")
+        and (p.get("company"), p.get("ats")) in fetched_ok
+        and p.get("id") in observed_ids
+    )
+    return stale_reason(p, on_board=on_board)
 
 
 def freshness_node(state: JobScraperState) -> JobScraperState:

@@ -310,11 +310,6 @@
     "token": "wealthsimple"
   },
   {
-    "company": "Whatnot",
-    "ats": "ashby",
-    "token": "whatnot"
-  },
-  {
     "company": "Accenture Federal Services",
     "ats": "greenhouse",
     "token": "accenturefederalservices"
@@ -638,11 +633,6 @@
     "company": "IEM",
     "ats": "greenhouse",
     "token": "industrialelectricmanufacturing"
-  },
-  {
-    "company": "iHerb",
-    "ats": "greenhouse",
-    "token": "iherb"
   },
   {
     "company": "Integra FEC",

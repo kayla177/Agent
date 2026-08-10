@@ -82,7 +82,7 @@ def age_days(posted_at: str) -> int | None:
     return (dt.date.today() - d).days
 
 
-def stale_reason(posting: dict) -> str:
+def stale_reason(posting: dict, *, on_board: bool = False) -> str:
     """Age/deadline/source staleness for one posting, or "" if it looks fine.
 
     This is the half of the ghost decision that depends ONLY on the posting's
@@ -117,12 +117,29 @@ def stale_reason(posting: dict) -> str:
     `posted_at` yields exactly the same number. The fallback therefore only ever
     matters for a caller that supplies `age_days` WITHOUT a usable `posted_at`.
     """
-    age = age_days(posting.get("posted_at") or "")
-    if age is None:
-        # No usable posted_at: honour a caller-supplied age if there is one.
-        age = posting.get("age_days")
-    if age is not None and age > config.JOB_MAX_AGE_DAYS:
-        return f"stale ({age}d old)"
+    # `on_board` means a caller has DIRECT EVIDENCE that this posting is still
+    # being served: the board was read completely and successfully this run and
+    # the posting was in what it returned. That outranks the age rule, which is
+    # only an inference about whether a posting is gone.
+    #
+    # Measured on the live store 2026-08-10: 252 rows carried `stale (Nd old)`
+    # and 209 of them had been observed in the latest scrape — still on their
+    # boards. In the default board view it was 42 of 42. The dates are not wrong;
+    # Lever reports the REQUISITION CREATION date, so Palantir's evergreen
+    # "Forward Deployed Software Engineer" genuinely carries posted_at=2016-02-24
+    # and is genuinely still open. The badge read "stale 132d" on postings the
+    # board was still serving, which is what made the list look empty.
+    #
+    # ONLY the age rule is suppressed. The two checks below are facts the board
+    # asserts — a stated deadline, and Ashby's own `listed: False` — not guesses,
+    # so they still apply to a posting that is on the board.
+    if not on_board:
+        age = age_days(posting.get("posted_at") or "")
+        if age is None:
+            # No usable posted_at: honour a caller-supplied age if there is one.
+            age = posting.get("age_days")
+        if age is not None and age > config.JOB_MAX_AGE_DAYS:
+            return f"stale ({age}d old)"
 
     deadline = (posting.get("deadline") or "")[:10]
     if deadline:
