@@ -398,7 +398,7 @@ def test_sweep_clears_a_delisting_flag_when_the_board_shows_it_again(temp_db):
     assert row["ghost_reason"] == ""
 
 
-def test_sweep_clear_pass_only_undoes_delisting_flags(temp_db, monkeypatch):
+def test_sweep_clear_pass_keeps_the_flags_the_board_itself_asserts(temp_db, monkeypatch):
     """The clear pass must ONLY undo a `delisted (...)` call. A `stale`,
     `deadline passed` or `delisted by source` flag came from a different rule
     and being visible on a board says nothing about it — clearing those would
@@ -427,10 +427,23 @@ def test_sweep_clear_pass_only_undoes_delisting_flags(temp_db, monkeypatch):
 
     assert counts["relisted"] == 0, "no delisting call existed to undo"
     recs = jobstore.load_records()
-    for pid in observed:
-        assert recs[pid]["ghost"] is True, pid
+
+    # The two flags the BOARD asserts survive, which is what this test is for:
+    # a clearing pass must not undo them.
+    assert recs["Acme:greenhouse:unlisted"]["ghost"] is True
     assert recs["Acme:greenhouse:unlisted"]["ghost_reason"] == "delisted by source"
+    assert recs["Acme:greenhouse:deadline"]["ghost"] is True
     assert recs["Acme:greenhouse:deadline"]["ghost_reason"] == "deadline passed (2020-01-01)"
+
+    # The age flag does NOT survive, and that changed deliberately on 2026-08-10.
+    # This row is in `observed` from a trusted board, so the board is still
+    # serving it: it is a 400-day-old posting that is demonstrably alive, not a
+    # dead one. Measured on the live store, 209 of 252 age-flagged rows were in
+    # exactly this state (42 of 42 in the default board view), which is what made
+    # the jobs list look empty. Direct observation outranks the age inference —
+    # see matching.stale_reason's `on_board`.
+    assert recs["Acme:greenhouse:stale"]["ghost"] is False
+    assert recs["Acme:greenhouse:stale"]["ghost_reason"] == ""
 
 
 def test_sweep_flags_a_converged_row_that_aged_into_staleness(temp_db, monkeypatch):
@@ -842,3 +855,63 @@ def test_a_non_network_total_failure_still_raises_but_does_not_blame_the_network
     with pytest.raises(fetch_mod.NoBoardReachable) as exc:
         fetch_node({})
     assert "network" not in str(exc.value).lower()
+
+
+# ---------------------------------------------------------------------------
+# Direct observation beats the age inference
+# ---------------------------------------------------------------------------
+
+
+def test_a_posting_seen_on_its_board_is_not_stale_however_old_it_is():
+    """Measured on Kayla's store, 2026-08-10: 252 rows were flagged
+    `stale (Nd old)` and **209 of them had been observed in the latest scrape** —
+    they were still on their boards. In her default view it was 42 of 42.
+
+    The dates are not wrong. Lever reports the REQUISITION CREATION date, so
+    Palantir's "Forward Deployed Software Engineer" really does carry
+    posted_at=2016-02-24 — an evergreen req opened in 2016 and still open. Age is
+    an INFERENCE about whether a posting is gone; `last_seen`/`observed_ids` is
+    DIRECT EVIDENCE that it is not. The inference was overriding the evidence,
+    and the badge read "stale 132d" on a posting the board was still serving.
+
+    Only the AGE rule is suppressed. A stated deadline and Ashby's own
+    `listed: False` are facts the board asserts, not guesses, so they still apply
+    to a posting that is on the board.
+    """
+    ancient = {"id": "P:lever:1", "company": "Palantir", "ats": "lever",
+               "posted_at": "2016-02-24"}
+    assert stale_reason(ancient).startswith("stale ("), "no evidence: age still decides"
+    assert stale_reason(ancient, on_board=True) == "", "seen on the board: not stale"
+
+
+def test_being_on_the_board_does_not_excuse_a_passed_deadline():
+    p = {"id": "x", "posted_at": "2026-08-01", "deadline": "2026-08-02"}
+    assert stale_reason(p, on_board=True).startswith("deadline passed")
+
+
+def test_being_on_the_board_does_not_override_the_sources_own_unlisted_flag():
+    """Ashby says `listed: False` about its own posting. That is the board
+    asserting a fact, not us inferring one."""
+    p = {"id": "x", "posted_at": "2026-08-01", "listed": False}
+    assert stale_reason(p, on_board=True) == "delisted by source"
+
+
+def test_the_pipeline_path_treats_an_observed_posting_as_on_the_board(monkeypatch):
+    """`freshness_node`: a posting on a board verified healthy this run, and
+    present in what that board returned, is live by direct observation."""
+    from agents.job_scraper.nodes.freshness import _ghost_reason
+    old_but_live = {"id": "P:lever:1", "company": "Palantir", "ats": "lever",
+                    "posted_at": "2016-02-24"}
+    assert _ghost_reason(old_but_live, {"P:lever:1"}, {("Palantir", "lever")}) == ""
+    # Same posting, board NOT verified healthy -> no evidence -> age decides.
+    assert _ghost_reason(old_but_live, set(), set()).startswith("stale (")
+
+
+def test_an_old_posting_that_stopped_being_observed_is_still_flagged():
+    """The age rule is not deleted, only outranked. A posting nobody has seen on
+    a board is exactly what it is for."""
+    from agents.job_scraper.nodes.freshness import _ghost_reason
+    old = {"id": "P:lever:1", "company": "Palantir", "ats": "lever",
+           "posted_at": "2016-02-24"}
+    # board healthy, posting absent -> delisted wins outright
+    assert _ghost_reason(old, set(), {("Palantir", "lever")}).startswith("delisted")

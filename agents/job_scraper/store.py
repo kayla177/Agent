@@ -416,11 +416,14 @@ def sweep_ghosts(
                 # Seen on the board again: the delisting call was wrong (or the
                 # posting was re-listed). Undo it, then re-derive staleness so
                 # an old-but-live posting still ends up correctly flagged.
-                reason, outcome = stale_reason(record), "relisted"
+                reason, outcome = stale_reason(record, on_board=True), "relisted"
             elif was_reason.startswith(_DELISTED_PREFIX):
                 continue  # no trusted evidence: never overrule a delisting call
             else:
-                reason = stale_reason(record)
+                # `trusted and pid in observed_ids` is direct evidence the board
+                # is still serving this posting (the branch above catches
+                # trusted-and-absent), so the age rule must not overrule it.
+                reason = stale_reason(record, on_board=trusted and pid in observed_ids)
                 outcome = "stale" if reason else "unstale"
 
             if bool(reason) == was_ghost and reason == was_reason:
