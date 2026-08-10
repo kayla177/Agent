@@ -75,6 +75,12 @@ def _resume_builder():
     return build_resume_generator_graph
 
 
+def _cover_letter_builder():
+    from agents.cover_letter_generator.graph import build_cover_letter_graph
+
+    return build_cover_letter_graph
+
+
 def _applier_builder():
     from agents.job_applier.graph import build_job_applier_graph
 
@@ -132,6 +138,15 @@ REGISTRY: dict[str, AgentSpec] = {
         emoji="📝",
         _builder=_resume_builder,
         node_order=("gather", "research", "keywords", "draft", "latexify", "save"),
+        planet="jupiter", label="resume",
+    ),
+    "cover_letter_generator": AgentSpec(
+        key="cover_letter_generator",
+        display_name="Cover Letter",
+        description="Draft a cover letter for a scraped job, in your own voice (per-job, not scheduled).",
+        emoji="✉️",
+        _builder=_cover_letter_builder,
+        node_order=("gather", "draft", "save"),
         planet="jupiter", label="resume",
     ),
     "job_applier": AgentSpec(
