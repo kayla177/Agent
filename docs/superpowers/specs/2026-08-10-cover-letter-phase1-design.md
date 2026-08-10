@@ -63,12 +63,17 @@ CREATE INDEX IF NOT EXISTS idx_cover_letter_versions_job ON cover_letter_version
 **`body` is plain text, not markdown.** A cover letter is prose that gets pasted into a textarea, and
 markdown syntax would land there literally — `**Dear**` is not a bold word on a Greenhouse form.
 
-**Deployment ordering, from `ARCHITECTURE.md`.** `store_db._migrate` is the only thing that `ALTER`s or
-adds to an existing database and it runs from `init_db()`, i.e. when a Python process starts — never
-from `npx prisma generate`. So: add to `schema.sql`, add additive `_migrate` guards, **run one Python
-entry point**, and only then regenerate Prisma and rebuild Next. Reversing that order gives a résumé
-page that 500s with `no such table` until some Python process happens to run. `CREATE TABLE IF NOT
-EXISTS` guards the table; `CREATE INDEX IF NOT EXISTS` guards the index *name*, not its column.
+**No `_migrate` guards are needed.** Corrected after checking `store_db.py:49`: `_migrate` exists only
+to ADD COLUMNS to tables that already exist, and its own docstring says `CREATE TABLE IF NOT EXISTS`
+in `schema.sql` "covers fresh databases **and new tables**". All three tables here are new, so
+`schema.sql` alone is sufficient and adding guards would be dead code. (`CREATE INDEX IF NOT EXISTS`
+guards the index *name* rather than its column, but that only bites when indexing a newly-*added*
+column on a pre-existing table, which is not this case.)
+
+**Deployment ordering still applies**, from `ARCHITECTURE.md`: the tables reach a live database only
+when a Python process starts and calls `init_db()` — never from `npx prisma generate`, which just
+rewrites a TypeScript client. So run one Python entry point *before* regenerating Prisma and rebuilding
+Next, or the résumé page 500s with `no such table` until some Python process happens to run.
 
 `web-next/prisma/schema.prisma` mirrors all three, verified by `npm run db:check`.
 
