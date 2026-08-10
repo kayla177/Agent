@@ -25,7 +25,7 @@ Every task's requirements implicitly include this section.
 - **Route naming mirrors the résumé's exactly**: singular `/data/cover-letter/master` for the one document she owns, plural `/data/cover-letters/{job_id}/…` for the per-job collection. This asymmetry matches `/data/resume/master` vs `/data/resumes/{job_id}/versions` and is deliberate — do not "correct" either one.
 - **Truthfulness rules for `draft`:** never invent an employer, title, date, school, degree, metric or technology. Mirror the posting's wording only where it truthfully describes real experience.
 - Python is `/Users/kayla.li/.superset/Agent/.venv/bin/python`. Do **NOT** use `uv`.
-- pytest prints **no summary line** (`addopts = "-q"`). Count with `--junitxml` and read the exit code. **Baseline: 1997 passed** on this branch.
+- pytest prints **no summary line** (`addopts = "-q"`). Count with `--junitxml` and read the exit code. **Baseline: 1991 passed** on this branch. (1997 is the count on `fix/honest-run-bookkeeping` / PR #26, which adds 6 tests and is NOT merged — do not use it.)
 - Node commands run from `/Users/kayla.li/.superset/Agent/web-next`.
 - Uvicorn is not reload-watching: restart `.venv/bin/python -m server` after adding routes. `:3000` serves a production build, so it needs `npm run build`, not just a restart.
 - No test may launch a browser, hit the network, or reach the model. `tests/conftest.py` installs a suite-wide `ModelCalledInTest` guard — use it.
@@ -187,7 +187,7 @@ model cover_letter_versions {
   status     String @default("")
   created_at String @default("")
 
-  @@index([job_id])
+  @@index([job_id], map: "idx_cover_letter_versions_job")
 }
 ```
 
@@ -219,7 +219,7 @@ Reversing that order gives a résumé page that 500s with `no such table` until 
 cd /Users/kayla.li/.superset/Agent
 .venv/bin/python -m pytest tests/ --junitxml=/tmp/t1.xml -q; echo "exit=$?"
 ```
-Expected: exit 0, **1998** tests.
+Expected: exit 0, **1992** tests.
 
 ```bash
 git add schema.sql web-next/prisma/schema.prisma tests/test_schema.py
@@ -513,7 +513,7 @@ Expected: 9 passed.
 ```bash
 .venv/bin/python -m pytest tests/ --junitxml=/tmp/t2.xml -q; echo "exit=$?"
 ```
-Expected: exit 0, **2007** tests.
+Expected: exit 0, **2001** tests.
 
 ```bash
 git add agents/cover_letter_generator/ tests/test_cover_letter_store.py
@@ -1038,7 +1038,7 @@ Expected: 16 passed. If `test_the_agent_is_registered_on_the_resume_tab` fails o
 ```bash
 .venv/bin/python -m pytest tests/ --junitxml=/tmp/t3.xml -q; echo "exit=$?"
 ```
-Expected: exit 0, **2023** tests.
+Expected: exit 0, **2017** tests.
 
 ```bash
 git add agents/cover_letter_generator/ agents/registry.py tests/test_cover_letter_agent.py
@@ -1189,7 +1189,7 @@ Expected: a JSON envelope with an empty body, and `cover_letter_generator` in th
 ```bash
 .venv/bin/python -m pytest tests/ --junitxml=/tmp/t4.xml -q; echo "exit=$?"
 ```
-Expected: exit 0, **2027** tests.
+Expected: exit 0, **2021** tests.
 
 ```bash
 git add server/routers/resume.py tests/test_cover_letter_agent.py
@@ -1391,7 +1391,7 @@ Report what you saw for each, and screenshot the section.
 cd /Users/kayla.li/.superset/Agent
 .venv/bin/python -m pytest tests/ --junitxml=/tmp/t5.xml -q; echo "exit=$?"
 ```
-Expected: exit 0, **2027** tests (this task adds no Python tests).
+Expected: exit 0, **2021** tests (this task adds no Python tests).
 
 ```bash
 git add web-next/src/components/resume/ "web-next/src/app/(hub)/resume/page.tsx"
@@ -1411,7 +1411,7 @@ refuses without one -- saying so up front beats starting a run that can only fai
 
 ## Done when
 
-- `2027 passed, 0 failures` from `.venv/bin/python -m pytest tests/` (1997 baseline + 30).
+- `2021 passed, 0 failures` from `.venv/bin/python -m pytest tests/` (1991 baseline + 30).
 - `npm run db:check` no drift · `tsc --noEmit` clean · `eslint src` 0 errors.
 - `curl :8001/agents` lists `cover_letter_generator`.
 - The manual walkthrough in Task 5 Step 7 done, including the version-history check — that one proves the snapshot guarantee end to end, which no unit test can show her.
