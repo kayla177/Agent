@@ -77,7 +77,6 @@ def test_the_cover_letter_tables_exist_with_the_columns_the_store_uses():
     letter cannot share it without a breaking composite-key migration on a live
     table — which is why these are separate tables rather than a `kind` column."""
     import sqlite3
-    import store_db
 
     conn = sqlite3.connect(":memory:")
     conn.executescript(pathlib.Path("schema.sql").read_text())
