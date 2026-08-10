@@ -163,3 +163,37 @@ def test_the_builder_accepts_and_ignores_send():
     """Same contract every registry builder has; there is no Discord delivery for
     a per-job document."""
     assert build_cover_letter_graph(send=True) is not None
+
+
+# ------------------------------------------------------------------ routes
+#
+# These use the EXISTING `client` fixture from tests/conftest.py, not a
+# hand-rolled TestClient. It shares the temp DB *and* repoints
+# `server.db.DB_PATH`, which matters: `server/db.py` caches DB_PATH at import, so
+# a bare TestClient(app) would let the app's startup hook
+# (`mark_stale_running_as_error()`) run against the REAL data/control_center.db.
+
+
+def test_the_master_letter_can_be_read_and_written_over_http(client):
+    assert client.get("/data/cover-letter/master").json()["cover_letter"]["body"] == ""
+    r = client.put("/data/cover-letter/master", json={"body": "Dear team,"})
+    assert r.status_code == 200
+    assert client.get("/data/cover-letter/master").json()["cover_letter"]["body"] == "Dear team,"
+
+
+def test_versions_are_served_for_one_job(client):
+    cl.upsert_cover_letter("j", company="A", role="R", body="one")
+    cl.upsert_cover_letter("j", company="A", role="R", body="two")
+    got = client.get("/data/cover-letters/j/versions").json()
+    assert [v["body"] for v in got["versions"]] == ["one"]
+
+
+def test_status_can_be_patched_and_a_bad_status_is_rejected(client):
+    cl.upsert_cover_letter("j", company="A", role="R", body="x")
+    assert client.patch("/data/cover-letters/j", json={"status": "final"}).status_code == 200
+    assert cl.get_cover_letter("j")["status"] == "final"
+    assert client.patch("/data/cover-letters/j", json={"status": "nope"}).status_code == 422
+
+
+def test_patching_a_missing_letter_is_a_404_not_a_500(client):
+    assert client.patch("/data/cover-letters/missing", json={"status": "final"}).status_code == 404

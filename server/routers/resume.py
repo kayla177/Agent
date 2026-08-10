@@ -10,11 +10,13 @@ from __future__ import annotations
 
 import tempfile
 from pathlib import Path
+from typing import Literal
 
-from fastapi import APIRouter, File, Form, Response, UploadFile
+from fastapi import APIRouter, File, Form, HTTPException, Response, UploadFile
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
+from agents.cover_letter_generator import store as cl_store
 from agents.resume_generator import parse_upload
 from agents.resume_generator import store as resume_store
 from agents.resume_generator.latex import CompileError, compile_tex
@@ -205,3 +207,38 @@ def put_master(body: MasterEdit):
         body.markdown, latex=body.latex, keywords=body.keywords
     )
     return {"master": master}
+
+
+# --------------------------------------------------------------------------
+# Cover letters — master sample letter + per-job drafts (single writer)
+# --------------------------------------------------------------------------
+class CoverLetterBody(BaseModel):
+    body: str
+
+
+class CoverLetterStatus(BaseModel):
+    status: Literal["draft", "final"]
+
+
+@router.get("/data/cover-letter/master")
+def read_master_cover_letter():
+    """The one sample letter the user owns. Absent reads as an empty body."""
+    return {"cover_letter": cl_store.get_master_cover_letter()}
+
+
+@router.put("/data/cover-letter/master")
+def write_master_cover_letter(payload: CoverLetterBody):
+    return {"cover_letter": cl_store.upsert_master_cover_letter(payload.body)}
+
+
+@router.get("/data/cover-letters/{job_id}/versions")
+def read_cover_letter_versions(job_id: str):
+    return {"versions": cl_store.list_cover_letter_versions(job_id)}
+
+
+@router.patch("/data/cover-letters/{job_id}")
+def patch_cover_letter_status(job_id: str, payload: CoverLetterStatus):
+    updated = cl_store.set_cover_letter_status(job_id, payload.status)
+    if updated is None:
+        raise HTTPException(status_code=404, detail="no cover letter for that job")
+    return {"cover_letter": updated}
