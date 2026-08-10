@@ -4,6 +4,9 @@ import PoolManager from "@/components/resume/PoolManager";
 import GenerateForm from "@/components/resume/GenerateForm";
 import ResumeCard from "@/components/resume/ResumeCard";
 import MasterResume from "@/components/resume/MasterResume";
+import MasterCoverLetter from "@/components/resume/MasterCoverLetter";
+import GenerateCoverLetter from "@/components/resume/GenerateCoverLetter";
+import CoverLetterCard from "@/components/resume/CoverLetterCard";
 
 export const dynamic = "force-dynamic";
 
@@ -16,7 +19,7 @@ export default async function ResumePage({
   searchParams: Promise<{ job?: string }>;
 }) {
   const focusJob = (await searchParams).job ?? "";
-  const [master, docsRaw, resumes, jobsRaw] = await Promise.all([
+  const [master, docsRaw, resumes, jobsRaw, masterLetter, letters] = await Promise.all([
     prisma.master_resume.findFirst({ orderBy: { id: "asc" } }),
     prisma.experience_docs.findMany({ orderBy: { id: "desc" } }),
     prisma.resumes.findMany({ orderBy: { updated_at: "desc" } }),
@@ -24,6 +27,8 @@ export default async function ResumePage({
       where: { NOT: [{ description: null }, { description: "" }] },
       select: { id: true, title: true, company: true, fit_score: true },
     }),
+    prisma.master_cover_letter.findFirst({ orderBy: { id: "asc" } }),
+    prisma.cover_letters.findMany({ orderBy: { updated_at: "desc" } }),
   ]);
   const docs = docsRaw.map((d) => ({
     id: d.id, filename: d.filename, kind: d.kind, chars: d.text.length, added_at: d.added_at,
@@ -60,6 +65,31 @@ export default async function ResumePage({
             <div className="resume-list">
               {(resumes as Resume[]).map((r) => (
                 <ResumeCard key={r.job_id} resume={r} defaultOpen={r.job_id === focusJob} />
+              ))}
+            </div>
+          )}
+        </section>
+
+        <section className="panel">
+          <div className="panel-head">
+            <h2>master cover letter</h2>
+            <span className="panel-sub">a sample letter in your own voice — every draft imitates it</span>
+          </div>
+          <MasterCoverLetter body={masterLetter?.body ?? ""} updatedAt={masterLetter?.updated_at ?? ""} />
+        </section>
+
+        <section className="panel">
+          <div className="panel-head">
+            <h2>cover letters</h2>
+            <span className="panel-sub">draft a cover letter for a scraped job</span>
+          </div>
+          <GenerateCoverLetter jobs={jobs} hasMaster={Boolean(masterLetter?.body?.trim())} />
+          {letters.length === 0 ? (
+            <p className="muted">No cover letters yet. Pick a job above and draft one.</p>
+          ) : (
+            <div className="resume-list">
+              {letters.map((l) => (
+                <CoverLetterCard key={l.job_id} letter={l} />
               ))}
             </div>
           )}
