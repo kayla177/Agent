@@ -188,7 +188,22 @@ def _drive(
 
         message = str(final_state.get("message") or "")
         _remember_report(run_id, final_state.get("report"))
-        db.finish_run(run_id, "success", message, None)
+        # A node that reported failure the INTENDED way — by returning
+        # `state["error"]` — used to produce a run filed as "success", because
+        # this only recorded "error" when the graph RAISED. Found 2026-08-10:
+        # a scrape that reached no board at all read as a successful quiet run,
+        # which is why it went unnoticed for days.
+        #
+        # The message is still stored. The applier's `handoff` node runs even on
+        # error precisely so a failed run still explains itself, and discarding
+        # that to record the failure would trade one lie for a silence.
+        state_error = final_state.get("error")
+        db.finish_run(
+            run_id,
+            "error" if state_error else "success",
+            message,
+            str(state_error) if state_error else None,
+        )
         _publish(loop, run_id, {"type": "run_finished", "message": message})
     except Exception as exc:  # noqa: BLE001
         # A raise here means the DRIVER broke, not that a node failed — the graph
