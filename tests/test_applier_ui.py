@@ -1328,3 +1328,43 @@ def test_the_selected_apply_path_tints_itself_from_the_active_planet_accent():
         "Earth's blue hardcoded into a themed rule"
     )
     assert "var(--accent)" in block, "the tint must derive from the active planet's accent"
+
+
+def test_a_run_whose_state_carries_an_error_is_not_filed_as_success(run_db):
+    """Both drivers called `finish_run(..., "success", ...)` for ANY graph that
+    completed, and only recorded "error" when the graph RAISED. So a node that
+    reported failure the intended way — by returning `state["error"]` — produced a
+    run that `/history` showed as successful.
+
+    Found on 2026-08-10 while fixing the scraper: a scrape that reached NO board
+    was filed as success with "No new roles since last check", indistinguishable
+    from a healthy quiet run, which is why it went unnoticed for days. The scraper
+    now raises, but the underlying bookkeeping was wrong for every agent that sets
+    `error` — `resume_generator.gather_node` for a missing job, and every refusal
+    in `job_applier` (`no_browser`, `form_unreachable`, `unsupported_ats`).
+
+    The message is still stored: the applier's `handoff` node runs even on error
+    precisely so a failed run still explains itself, and throwing that away to
+    record the failure would trade one lie for a silence.
+    """
+    events = _node_pair("fetch_form", {"error": "no_browser", "message": "Playwright is not installed."})
+    applier_run._graph_factory = lambda: _FakeGraph(events)
+
+    run_id = run_db.create_run("job_applier", False)
+    _drive_on_session_thread(run_id, "Acme:greenhouse:1", "", _FakeLoop())
+
+    run = run_db.get_run(run_id)
+    assert run["status"] == "error", "a state-level error must not read as success"
+    assert "no_browser" in (run["error"] or ""), "say which error it was"
+    assert run["output_message"] == "Playwright is not installed.", \
+        "the explanation the graph produced must survive"
+
+
+def test_a_clean_run_is_still_filed_as_success(run_db):
+    """The other half, so the change cannot become "call everything an error"."""
+    events = _node_pair("handoff", {"message": "NOTHING WAS SUBMITTED."})
+    applier_run._graph_factory = lambda: _FakeGraph(events)
+    run_id = run_db.create_run("job_applier", False)
+    _drive_on_session_thread(run_id, "j", "", _FakeLoop())
+    run = run_db.get_run(run_id)
+    assert run["status"] == "success" and not run["error"]

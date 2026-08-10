@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import argparse
 import sys
+import traceback
 from pathlib import Path
 
 # Allow running as a plain script (e.g. from launchd) by putting the project
@@ -22,6 +23,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from agents.registry import get_spec, list_specs
+from server import db
 
 
 def main() -> None:
@@ -38,12 +40,44 @@ def main() -> None:
     )
     args = parser.parse_args()
 
-    graph = get_spec(args.agent).build_graph(send=args.send)
-    final = graph.invoke({"backfill": True} if args.backfill else {})
+    # Record the run, the same way the FastAPI drivers do.
+    #
+    # This entry point is what launchd calls, and it used to record NOTHING: the
+    # graph was invoked directly, so no `runs` row existed and `/history` showed
+    # only the runs started by hand from the dashboard. That is how a scrape with
+    # 261 fetch failures went unnoticed for days — `jobscraper.log` was the only
+    # place it appeared at all — and it would have made the `NoBoardReachable`
+    # guard invisible too, since there was no row for it to fail.
+    #
+    # Deliberately NOT the whole of `server/runner.py`: no SSE, no per-node
+    # events. A scheduled run has no subscriber to stream to, and the row plus
+    # its status and message is what was actually missing.
+    run_id = db.create_run(args.agent, args.send)
+    try:
+        graph = get_spec(args.agent).build_graph(send=args.send)
+        final = graph.invoke({"backfill": True} if args.backfill else {})
+    except BaseException as exc:  # noqa: BLE001 — record it, then re-raise
+        # Re-raised, so launchd still sees a non-zero exit and the traceback
+        # still reaches jobscraper.error.log. The row is an addition, not a
+        # replacement for the log.
+        db.finish_run(run_id, "error", None, traceback.format_exc())
+        print(f"! {args.agent} failed: {exc}", file=sys.stderr)
+        raise
+
+    message = final.get("message", "") or ""
+    state_error = final.get("error")
+    db.finish_run(
+        run_id,
+        "error" if state_error else "success",
+        message,
+        str(state_error) if state_error else None,
+    )
 
     print("=" * 60)
-    print(final.get("message", "(no message produced)"))
+    print(message or "(no message produced)")
     print("=" * 60)
+    if state_error:
+        print(f"! finished with error: {state_error}", file=sys.stderr)
     if args.send:
         print("Delivery attempted (see above for any warnings).")
 
