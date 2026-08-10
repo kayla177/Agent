@@ -41,7 +41,7 @@ export default function MasterCoverLetter({
   return (
     <div>
       {error ? <p className="banner err">{error}</p> : null}
-      {!body ? (
+      {!body && !dirty ? (
         <p className="banner">
           Empty. Drafting is blocked until you write one, because a letter with no
           voice to imitate could only be invented.

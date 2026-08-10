@@ -294,6 +294,14 @@ details.panel > summary + * { margin-top: .9rem; }
 }
 .resume-md { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: .85rem; line-height: 1.55; }
 
+/* A drafted cover letter is PROSE, so each paragraph is one long line. `.resume-md`
+   was written for a <textarea> and sets no white-space, so the UA default
+   `white-space: pre` applied and the letter ran off the page instead of wrapping. */
+.letter-body {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
 .resume-list { display: flex; flex-direction: column; gap: .75rem; }
 .resume-card { background: var(--panel); border: 1px solid var(--border-soft); border-radius: var(--radius); padding: .5rem 1rem; }
 .resume-card summary { display: flex; align-items: center; gap: .75rem; cursor: pointer; list-style: none; padding: .5rem 0; }

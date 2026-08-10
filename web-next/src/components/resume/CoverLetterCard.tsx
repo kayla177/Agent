@@ -78,7 +78,7 @@ export default function CoverLetterCard({ letter }: { letter: CoverLetter }) {
         <span className="muted resume-updated">updated {letter.updated_at}</span>
       </summary>
 
-      <pre className="resume-md">{letter.body}</pre>
+      <pre className="resume-md letter-body">{letter.body}</pre>
 
       <div className="resume-actions">
         <button className="primary" disabled={busy} onClick={copy}>
@@ -107,7 +107,7 @@ export default function CoverLetterCard({ letter }: { letter: CoverLetter }) {
                   <span className="version-when">{v.created_at}</span>
                   <span className="status-pill" style={{ color: STATUS_COLOR[v.status] ?? "var(--muted)", borderColor: STATUS_COLOR[v.status] ?? "var(--border)" }}>{v.status}</span>
                 </div>
-                <pre className="version-md">{v.body}</pre>
+                <pre className="version-md letter-body">{v.body}</pre>
               </div>
             ))}
           </div>

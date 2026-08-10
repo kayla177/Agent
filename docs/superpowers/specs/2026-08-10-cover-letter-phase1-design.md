@@ -128,7 +128,10 @@ Sets `error` (which every downstream node honours) when:
 Reads:
 
 - the **job record** — title, company, description, location;
-- the **applicant profile** (`profile_store`) — name, school, degree, graduation, links;
+- the **applicant profile** (`profile_store`) — `full_name`, `degree`, `school`, `grad_date`.
+  `linkedin_url` / `github_url` / `portfolio_url` are deliberately NOT passed to the model — a cover
+  letter is prose, not a document with a links section, so there is nowhere truthful to put them.
+  *(Corrected after implementation: this originally said the profile's "links" were read.)*
 - the **master cover letter** — as the voice, structure and rhythm to imitate;
 - the **tailored résumé for this job if one exists** (`resume_generator.store.get_resume(job_id)`) —
   so the letter cannot claim experience the résumé does not show. Absent is fine; it is context, not a
@@ -155,8 +158,10 @@ Three components beside the existing four (`MasterResume`, `GenerateForm`, `Resu
 - **`MasterCoverLetter`** — a textarea to write and save the sample letter, with `updated_at`. Mirrors
   `MasterResume`. When empty, it says so and explains that drafting is blocked until it is filled,
   matching `gather`'s refusal.
-- **`GenerateCoverLetter`** — pick a scraped job, POST the run, stream node events through the existing
-  `RunStream`. Mirrors `GenerateForm`.
+- **`GenerateCoverLetter`** — pick a scraped job, POST the run, stream node events via its own inline
+  `EventSource` against `/runs/{run_id}/events`. Mirrors `GenerateForm`, which does the same rather than
+  using `RunStream`. *(Corrected after implementation: this originally said `RunStream`; the code — and
+  the component it mirrors — never used it.)*
 - **`CoverLetterCard`** — the draft, with **copy to clipboard** as the primary action (the letter's
   destination is a textarea, so copying is the action, not downloading), plus version history and a
   draft/final status control. Mirrors `ResumeCard`.
