@@ -151,6 +151,32 @@ model resume_versions {
   @@index([job_id], map: "idx_resume_versions_job")
 }
 
+model master_cover_letter {
+  id         Int    @id @default(autoincrement())
+  body       String @default("")
+  updated_at String @default("")
+}
+
+model cover_letters {
+  job_id     String @id
+  company    String @default("")
+  role       String @default("")
+  body       String @default("")
+  status     String @default("draft")
+  created_at String @default("")
+  updated_at String @default("")
+}
+
+model cover_letter_versions {
+  id         Int    @id @default(autoincrement())
+  job_id     String
+  body       String @default("")
+  status     String @default("")
+  created_at String @default("")
+
+  @@index([job_id], map: "idx_cover_letter_versions_job")
+}
+
 // Stock digest — persisted analysis snapshots. Created by the Python agent's
 // store (agents/stock_digest/store.py); mirrors schema.sql. The '__market__'
 // symbol row carries the overview blob; every other row is one analyzed ticker.

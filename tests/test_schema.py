@@ -3,6 +3,8 @@ migration of a pre-existing one (schema.sql only covers fresh databases)."""
 
 from __future__ import annotations
 
+import pathlib
+
 import store_db
 
 
@@ -175,3 +177,27 @@ def test_indexed_new_column_survives_a_preexisting_table(tmp_path, monkeypatch):
         assert "country" in _cols(conn, "jobs")
         idx = {r[1] for r in conn.execute("PRAGMA index_list(jobs)")}
         assert "idx_jobs_country" in idx
+
+
+def test_the_cover_letter_tables_exist_with_the_columns_the_store_uses():
+    """Three new tables mirroring the résumé's three. `resumes.job_id` is a
+    PRIMARY KEY, so that table holds exactly one document per job and a cover
+    letter cannot share it without a breaking composite-key migration on a live
+    table — which is why these are separate tables rather than a `kind` column."""
+    import sqlite3
+
+    conn = sqlite3.connect(":memory:")
+    conn.executescript(pathlib.Path("schema.sql").read_text())
+
+    def cols(table):
+        return {r[1] for r in conn.execute(f"PRAGMA table_info({table})")}
+
+    assert cols("master_cover_letter") == {"id", "body", "updated_at"}
+    assert cols("cover_letters") == {
+        "job_id", "company", "role", "body", "status", "created_at", "updated_at",
+    }
+    assert cols("cover_letter_versions") == {"id", "job_id", "body", "status", "created_at"}
+
+    # One letter per job, same as one résumé per job.
+    pk = [r[1] for r in conn.execute("PRAGMA table_info(cover_letters)") if r[5]]
+    assert pk == ["job_id"]

@@ -143,6 +143,44 @@ CREATE TABLE IF NOT EXISTS resume_versions (
 CREATE INDEX IF NOT EXISTS idx_resume_versions_job ON resume_versions(job_id);
 
 -- ---------------------------------------------------------------------------
+-- Cover letters. Deliberately separate tables rather than a `kind` column on
+-- `resumes`: that table's job_id is a PRIMARY KEY, so it holds exactly one
+-- document per job, and widening it to a composite key is a breaking migration
+-- on a live table.
+-- ---------------------------------------------------------------------------
+
+-- The one sample letter the user owns, in her own voice. Each draft imitates its
+-- voice, structure and rhythm rather than filling placeholders in it.
+CREATE TABLE IF NOT EXISTS master_cover_letter (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    body        TEXT NOT NULL DEFAULT '',
+    updated_at  TEXT NOT NULL DEFAULT ''
+);
+
+-- `body` is PLAIN TEXT, not markdown: a cover letter is prose pasted into a
+-- textarea, where "**Dear**" would land literally.
+CREATE TABLE IF NOT EXISTS cover_letters (
+    job_id      TEXT NOT NULL PRIMARY KEY,
+    company     TEXT NOT NULL DEFAULT '',
+    role        TEXT NOT NULL DEFAULT '',
+    body        TEXT NOT NULL DEFAULT '',
+    status      TEXT NOT NULL DEFAULT 'draft',   -- draft | final
+    created_at  TEXT NOT NULL DEFAULT '',
+    updated_at  TEXT NOT NULL DEFAULT ''
+);
+
+-- Snapshot of a letter's body, appended before it is overwritten, so a
+-- regenerate never destroys a draft.
+CREATE TABLE IF NOT EXISTS cover_letter_versions (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    job_id      TEXT NOT NULL,
+    body        TEXT NOT NULL DEFAULT '',
+    status      TEXT NOT NULL DEFAULT '',
+    created_at  TEXT NOT NULL DEFAULT ''
+);
+CREATE INDEX IF NOT EXISTS idx_cover_letter_versions_job ON cover_letter_versions(job_id);
+
+-- ---------------------------------------------------------------------------
 -- Stock digest — persisted analysis snapshots (one row per symbol per run, plus
 -- a single '__market__' row holding the overview). Lets the /stocks desk serve
 -- the last LLM-written analysis without re-running the model on every page load.
